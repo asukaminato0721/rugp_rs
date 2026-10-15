@@ -19,11 +19,13 @@ fn main() -> Result<()> {
         let header = R6Header::read(&mut r, archive.address_shift)?;
         let tail = &bytes[r.input.position - 8..r.input.position];
         println!(
-            "{offset:#x}: {}x{} crop {}x{} flags={:#x} depth={:#x} tail={tail:02x?} floats={:?}",
+            "{offset:#x}: {}x{} crop {}x{} at {},{} flags={:#x} depth={:#x} tail={tail:02x?} floats={:?}",
             header.canvas_width,
             header.canvas_height,
             header.width,
             header.height,
+            header.x,
+            header.y,
             header.flags,
             header.depth,
             tail.as_chunks::<4>()

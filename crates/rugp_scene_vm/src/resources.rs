@@ -86,6 +86,34 @@ impl ResourceIndex {
             });
         }
     }
+    /// Image-menu states and hit maps are indirect resources, not scene
+    /// operands. Keep expansion explicit, like sound-wrapper expansion.
+    pub fn expand_menu_sources(&mut self, archive: &RioArchive) -> Result<()> {
+        let menus: Vec<_> = self
+            .resources
+            .values()
+            .filter(|r| r.class.name == "CRbx")
+            .cloned()
+            .collect();
+        for resource in menus {
+            ensure!(resource.size <= 16 * 1024 * 1024, "oversized menu resource");
+            let menu = rugp_assets::menu::ImageMenu::parse(
+                &archive.read_at(resource.offset, resource.size as usize)?,
+                resource.class.schema,
+                archive.address_shift,
+            )?;
+            menu.visit_references(&mut |r| self.add(r));
+        }
+        for r in self.resources.values() {
+            ensure!(
+                r.offset
+                    .checked_add(u64::from(r.size))
+                    .is_some_and(|end| end <= archive.len()),
+                "expanded menu resource outside archive"
+            );
+        }
+        Ok(())
+    }
     pub fn read(&self, archive: &RioArchive, offset: u64) -> Result<Vec<u8>> {
         let resource = self
             .resources

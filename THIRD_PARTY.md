@@ -2,7 +2,7 @@
 
 RIO/ICI decryption, serialized class names, and address transforms were ported
 from [GARbro ArcRIO.cs](https://github.com/morkt/GARbro/blob/master/ArcFormats/rUGP/ArcRIO.cs).
-CRip007 decoding and quantization tables are ported from
+CRip007 decoding, indexed CRip/SIA run coding, and quantization tables are ported from
 [GARbro ImageRIP.cs](https://github.com/morkt/GARbro/blob/master/ArcFormats/rUGP/ImageRIP.cs).
 
 Copyright (C) 2016 by morkt

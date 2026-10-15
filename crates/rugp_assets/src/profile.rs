@@ -4,7 +4,7 @@
 use crate::binary::Reader;
 use anyhow::{Result, ensure};
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Profile {
     text: String,
 }
