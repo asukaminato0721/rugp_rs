@@ -42,6 +42,10 @@ impl Game {
     }
     /// Capture a playable checkpoint only when the script allows saving.
     pub fn snapshot(&self) -> Result<GameSnapshot> {
+        ensure!(
+            !self.load_requested,
+            "cannot save while browsing for a load"
+        );
         ensure!(self.script_save_enabled, "saving is disabled by the script");
         ensure!(!self.ended, "cannot save an ended game");
         self.capture_snapshot()
@@ -140,6 +144,7 @@ impl Game {
         // The registry already contains every queued play/gain/stop effect.
         // Replaying the old output queue would duplicate those effects.
         self.sounds.clear();
+        self.load_requested = false;
         Ok(audio.playbacks)
     }
 }

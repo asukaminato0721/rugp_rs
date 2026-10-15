@@ -202,4 +202,73 @@ mod tests {
         assert!(path(Path::new("."), SLOT_COUNT).is_err());
         Ok(())
     }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_native_browse_load_suspends_until_cancel_or_successful_restore() -> Result<()> {
+        use rugp_assets::{object::ClassId, script::Script};
+        use rugp_scene_vm::Scenario;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 252)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let mut request = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x1484)
+            .context("native load packet missing")?
+            .clone();
+        request.address = 0;
+        request.next_address = 48;
+        let mut program = Program::default();
+        program.insert(
+            0,
+            Scenario {
+                object_id: 1,
+                memory_size: 64,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    request,
+                    Instruction {
+                        index: 1,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmRet".into(),
+                            schema: 17,
+                        },
+                        address: 48,
+                        next_address: u32::MAX,
+                        flags: 0,
+                        arguments: vec![],
+                    },
+                ],
+            },
+        )?;
+        game.vm = Vm::new(Arc::new(program), 1)?;
+        let saved = game.snapshot()?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert!(game.waiting_for_load());
+        assert!(game.snapshot().is_err());
+        let audio = serde_json::to_vec(&game.audio_state.snapshot(&mut Default::default())?)?;
+        assert_eq!(game.step(10000)?, RunState::Waiting);
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        assert_eq!(
+            serde_json::to_vec(&game.audio_state.snapshot(&mut Default::default())?)?,
+            audio
+        );
+        let mut resources = AudioResources::new(Arc::clone(&game.archive))?;
+        game.restore_snapshot(&saved, &mut resources)?;
+        assert!(!game.waiting_for_load());
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert!(game.waiting_for_load());
+        game.cancel_load_request()?;
+        assert!(!game.waiting_for_load());
+        assert_eq!(game.vm.cursor().unwrap().address, 48);
+        assert_eq!(game.step(0)?, RunState::Ended);
+        Ok(())
+    }
 }

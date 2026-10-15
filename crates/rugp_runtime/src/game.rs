@@ -219,6 +219,8 @@ pub struct Game {
     pointer_armed: bool,
     pub navigation: String,
     script_save_enabled: bool,
+    /// Native browse/load suspends its host instruction until load or cancel.
+    load_requested: bool,
     pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
     ended: bool,
 }
@@ -282,6 +284,7 @@ impl Game {
             pointer_armed: false,
             navigation: String::new(),
             script_save_enabled: true,
+            load_requested: false,
             settings: BTreeMap::new(),
             ended: false,
         })
@@ -292,6 +295,31 @@ impl Game {
     /// Script permission flag; the save operation additionally checks lifecycle/waits.
     pub fn script_save_enabled(&self) -> bool {
         self.script_save_enabled
+    }
+    pub fn waiting_for_load(&self) -> bool {
+        self.load_requested
+    }
+    pub fn cancel_load_request(&mut self) -> Result<()> {
+        if self.load_requested {
+            self.vm.acknowledge_host()?;
+            self.load_requested = false;
+        }
+        Ok(())
+    }
+    /// Host UI uses the user's trusted font preference, not paths from saves.
+    pub fn interface_font(&self, size: u16) -> Result<crate::font::TextFont> {
+        if let Some(font) = &self.font {
+            return font.resized(size);
+        }
+        if let Some((path, index)) = &self.font_file {
+            return crate::font::TextFont::from_file(path, *index, size);
+        }
+        let root = self.archive.volumes[0]
+            .path
+            .parent()
+            .context("game directory missing")?;
+        let config = crate::message_window::MessageConfig::load(root)?;
+        crate::font::TextFont::system(&config.family, size)
     }
     /// Desktop sessions use a per-game user-data folder. The ordinary `open`
     /// remains volatile for deterministic diagnostics and tests.
@@ -455,6 +483,21 @@ impl Game {
                 bail!("invalid navigation text");
             };
             self.navigation = text.clone();
+            return Ok(());
+        }
+        if message.class == "OM_TryBrowseAndLoadUuc" {
+            let null_target = matches!(&message.target, Value::Null)
+                || matches!(&message.target, Value::Reference(r) if r.class.is_none()
+                    && r.flags == 0 && r.offset.is_none() && r.inline.is_none());
+            ensure!(
+                null_target && fields.len() == 1 && number(&fields, "状態", -1)? == 0,
+                "unsupported browse/load request"
+            );
+            ensure!(
+                !self.load_requested && self.selection.is_none() && self.dialogue.is_none(),
+                "overlapping browse/load request"
+            );
+            self.load_requested = true;
             return Ok(());
         }
         if message.class == "OM_ChangeSetting" {
@@ -871,7 +914,7 @@ impl Game {
                     self.parse_wait = true;
                     return Ok(());
                 }
-                if self.selection.is_some() {
+                if self.selection.is_some() || self.load_requested {
                     return Ok(());
                 }
             }
@@ -1030,6 +1073,9 @@ impl Game {
         if self.ended {
             return Ok(RunState::Ended);
         }
+        if self.load_requested {
+            return Ok(RunState::Waiting);
+        }
         self.audio_state.advance(dt_ms);
         self.advance_timers(dt_ms)?;
         self.advance_async_images(dt_ms)?;
@@ -1119,6 +1165,7 @@ impl Game {
                         || self.image_wait.is_some()
                         || self.selection.is_some()
                         || self.dialogue.is_some()
+                        || self.load_requested
                     {
                         return Ok(RunState::Waiting);
                     }

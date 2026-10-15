@@ -11,7 +11,7 @@ Two additional choice plans have completed headless host-logic runs. This
 does not prove every branch or pixel equivalence to the original. Presentation uses a
 software framebuffer. Playability takes priority over exact effect fidelity:
 static portrait projection and some transitions intentionally approximate rUGP.
-The full port is **not complete**: all-route verification, galleries, save/load,
+The full port is **not complete**: all-route verification, galleries, original-save imports,
 3D rendering and some effects/UI remain incomplete. An optional Kira audio-device adapter
 handles ordinary sample playback; specialized sound operations remain incomplete.
 
@@ -119,20 +119,19 @@ subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
 another root. Saves are atomically replaced with a process-exclusive lock;
 corrupt or oversized saved profiles return errors instead of being reset.
 The original game directory is rejected as an output location. Diagnostics and
-`Game::open` remain volatile. This currently persists CStdb key/value writes,
-not complete VM/game save slots or imports of original Windows save files.
+`Game::open` remain volatile. CStdb progress is shared across playthroughs and
+is deliberately not rolled back by portable game slots.
 The asset layer now provides a versioned reference-graph snapshot foundation:
 inline-instance aliases (including bitmap-header references) survive a round
 trip without saving process addresses or inventing archive offsets. It rejects
 conflicting aliases, malformed graphs, and excessive expanded payloads. This
 also supports checked rebinding to loaded script constants, verified against
-all retail script inline references and initial object-variable values. It is
-not yet connected to VM/game save slots or the original load menu.
+all retail script inline references and initial object-variable values.
 The VM snapshot layer preserves call frames/arguments, globals, shared typed
 slots, synchronization status and suspended host operations, with a streaming
 script compatibility fingerprint. Restoring a pending host operation does not
-acknowledge or skip it. Runtime windows, audio, waits and UI still need their
-own coordinated snapshot before playable save slots can be offered.
+acknowledge or skip it. Runtime windows, audio, waits and UI are captured in the
+same coordinated checkpoint described below.
 Logical dialogue snapshots now retain consumed/remaining controls, displayed
 text, partial glyph/pause delays, and clear-versus-continue confirmation waits;
 restoring does not reveal text or confirm a page. The static audit checks
@@ -140,7 +139,7 @@ round-trip progress for all 100,923 real dialogue bodies, not their window layou
 Movie snapshots reconstruct pixels from the original archive and exact clock,
 including delta-frame dependencies and fractional/end boundaries. A retail
 opening regression compares restored frames and subsequent advancement directly
-with uninterrupted playback. Full runtime/window/voice coordination remains pending.
+with uninterrupted playback.
 Scene snapshots now preserve typed window/layer state, shared dynamic/offscreen
 textures, world geometry/flags, cameras and their cached projection center,
 character parts and placement, staged ParseScreen scenes, framebuffer-fade
@@ -149,10 +148,7 @@ history and fractional clock instead of restarting motion. Texture-table IDs
 preserve shared storage without merging independent equal-pixel surfaces.
 Retail-host checks cover exact scene/VM round trips during startup, the opening,
 title and first dialogue, plus synthetic in-progress ParseScreen/fade/posture
-waits on that host. These still do not constitute complete game save slots:
-other actors, menu/text/voice coordination, settings, save-file I/O and desktop
-load/save interaction remain to be connected. No-raster diagnostics cannot
-capture portable scene snapshots.
+waits on that host. No-raster diagnostics cannot capture portable scene snapshots.
 Independent actor snapshots now preserve generic wait tails, complete unsigned
 timer epochs/thresholds, image-fade clocks and cancelled/completed event handles,
 movie synchronization, and staff-roll progress. Event handles use the same
@@ -163,8 +159,6 @@ require the original font cache or reflow already-rendered text. Native packet
 regressions now perform coordinated VM/scene/actor wire round trips during
 image fades, timer waits, and credits. The opening movie also survives delta-frame
 and final-boundary restores without overwriting the subsequently restored title.
-These components still need UI/settings/audio coordination and user-facing
-save-file/slot integration before they form complete playable saves.
 UI snapshots now reload immutable image-menu/message-window resources while
 retaining selector enable/ignore flags, hover/pressed visuals, text-menu hit
 rectangles and ordinal output destinations. Retained message pages stay separate
@@ -185,7 +179,17 @@ expanded size limits, CRC checking, and atomic temporary-file replacement.
 They do not import or overwrite Windows UUC saves. Script-disabled/ended states
 cannot be saved, global CStdb progress is not rolled back, and project/layout
 identity plus the complete script fingerprint guard compatibility (not full
-retail-asset authentication). Desktop slot controls are still being connected.
+retail-asset authentication).
+
+In desktop play, **F5** opens Save and **F9** opens Load. Choose a slot with
+0–9, arrows, or the mouse; Enter/the action button confirms and Escape cancels.
+Replacing an occupied slot needs a second confirmation. The title's original
+load command opens the same portable chooser; cancelling resumes its pending
+script instead of inventing a successful load. While a chooser is open the
+VM/media clock is paused and output is suspended, then rebuilt at the same PCM
+epoch on return. Input used to close/load the chooser cannot confirm a restored
+page. Invalid/incompatible saves report a nonfatal error in the chooser and
+leave the current game intact. These are Rust-port saves, not Windows UUC files.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.
@@ -345,7 +349,7 @@ phase and remaining gain motion rather than replaying from the beginning.
 Fade-stop reconstruction preserves current attenuation and its remaining stop
 time, but Kira's restarted decibel tween remains a presentation approximation.
 Synthetic output samples and a real retail PCM/VM-wait round trip verify these
-components. They are not yet a coordinated full-game save or save-slot UI.
+components, which are now included in the coordinated full-game slots above.
 
 The chapter regression now reaches actual character dialogue at scene 483,
 PC `0xea4`, instead of asserting an expected unsupported-operation error.
@@ -528,7 +532,7 @@ changing its completion deadline. Device output ramps from current gain to the
 target (rather than reproducing the native initial-gain reset); zero duration
 uses the packet's start gain. Kira mock samples verify the live looping handle.
 `OM_SetUucSaveSwitch` retains the script's save-enable state even when sent to
-the global/unbound system target. This is not a complete save-slot implementation.
+the global/unbound system target; portable save slots honor that permission.
 `OM_ParseImageBuild` renders the world and visible portraits into an offscreen
 surface without presenting it; `OM_UpdateAllView` explicitly refreshes the
 logical scene; `OM_AgesRecalc` refreshes the portable geometry/rendered view.
