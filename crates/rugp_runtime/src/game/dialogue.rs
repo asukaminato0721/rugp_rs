@@ -271,6 +271,68 @@ mod tests {
     }
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_all_dialogue_bodies_primary_targets_and_voice_callbacks_parse() -> Result<()> {
+        use rugp_scene_vm::Argument;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let archive = RioArchive::open(root)?;
+        let native = NativeSchema::from_directory(archive.volumes[0].path.parent().unwrap())?;
+        let program = Program::load(&archive, &native)?;
+        let mut count = 0;
+        for scene in program.scenes.values() {
+            for instruction in scene
+                .instructions
+                .iter()
+                .filter(|i| i.class.name == "CVmMsg")
+            {
+                let location = || {
+                    format!(
+                        "dialogue format at {}:{:#x}",
+                        scene.object_id, instruction.address
+                    )
+                };
+                ensure!(
+                    supported_text_mode(instruction.flags),
+                    "unsupported {}",
+                    location()
+                );
+                let [
+                    Argument::Reference(target),
+                    Argument::Text(text),
+                    Argument::Reference(callback),
+                    ..,
+                ] = instruction.arguments.as_slice()
+                else {
+                    bail!("unsupported operands in {}", location());
+                };
+                ensure!(
+                    target
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "CMsgSelBox"),
+                    "unsupported target in {}",
+                    location()
+                );
+                ensure!(
+                    callback
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "COptimizedObs")
+                        || (callback.cache_index == Some(0) && callback.offset.is_none()),
+                    "unsupported callback in {}",
+                    location()
+                );
+                // Check actual syntax without logging or embedding original text.
+                // This is a static packet audit, not execution/layout verification.
+                Dialogue::new(text, 0, vec![]).with_context(location)?;
+                count += 1;
+            }
+        }
+        assert_eq!(count, 100923);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_two_family_packet_keeps_text_input_wait_and_one_voice_callback() -> Result<()> {
         check_retail_packet(467, 0x7588, 0x22000000)
     }

@@ -579,6 +579,10 @@ the documented presentation approximations do not replace story/control state.
 CFrameImage border-piece references, with truncation/version regressions and a
 retail metadata test. This is separate from UI snapshot/save-state parsing;
 all eight referenced CS5i border pieces now decode as bottom-up BGRA surfaces.
+An opt-in retail audit parses every one of the 100,923 dialogue bodies and
+checks their primary window/voice-callback types and output families without
+logging original text. This is syntax coverage, not proof of execution, layout,
+trailing display-modifier fidelity or completion of every branch.
 The image manager and `image OFFSET` can load these indirect border resources.
 Eight-piece border placement and the configured non-gradient backdrop blend
 now compose in Rust, including the original additive/shift blend rather than
