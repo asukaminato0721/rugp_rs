@@ -2,6 +2,24 @@
 use super::*;
 use rugp_assets::mime::MimeCurve;
 
+/// Vm60 10040c10 is OM_ParseScreenTrigger (dispatch pair 100a4d80).
+/// 10040d52..10040d7c enters the window's wait message unless style bit
+/// 0x8000 is set. The earlier setup always starts the same render clock.
+pub(super) fn validate_trigger(fields: &BTreeMap<String, Value>) -> Result<()> {
+    let style = number(fields, "スタイル", 0)?;
+    ensure!(
+        matches!(style, 0 | 0x8000),
+        "ParseScreen trigger style {style:#x} is not implemented yet"
+    );
+    for name in ["マイムデータ", "その他データ", "非同期ハンドル"] {
+        ensure!(
+            matches!(fields.get(name), None | Some(Value::Null)),
+            "ParseScreen trigger {name} is not implemented yet"
+        );
+    }
+    Ok(())
+}
+
 pub(super) struct ParseTransition {
     pub(super) scene: BTreeMap<u64, ObjectState>,
     curves: BTreeMap<u64, MimeCurve>,
@@ -287,11 +305,39 @@ mod tests {
             fields,
         }
     }
+    #[test]
+    fn trigger_rejects_unknown_styles_effects_and_output_handles() {
+        for style in [0, 0x8000] {
+            assert!(
+                validate_trigger(&BTreeMap::from([(
+                    "スタイル".into(),
+                    Value::Integer(style)
+                )]))
+                .is_ok()
+            );
+        }
+        assert!(
+            validate_trigger(&BTreeMap::from([("スタイル".into(), Value::Integer(1))])).is_err()
+        );
+        for field in ["マイムデータ", "その他データ", "非同期ハンドル"] {
+            assert!(
+                validate_trigger(&BTreeMap::from([(
+                    field.into(),
+                    Value::Reference(reference("CVmVarObj", 1, 900, 7))
+                )]))
+                .is_err()
+            );
+            assert!(validate_trigger(&BTreeMap::from([(field.into(), Value::Null)])).is_ok());
+        }
+    }
     fn trigger(duration: i32) -> Message {
         message(
             212259,
             "OM_ParseScreenTrigger",
-            BTreeMap::from([("総処理時間基".into(), Value::Integer(duration))]),
+            BTreeMap::from([
+                ("総処理時間基".into(), Value::Integer(duration)),
+                ("スタイル".into(), Value::Integer(0x8000)),
+            ]),
         )
     }
     fn ratio(id: u64, mode: i32, curve: Value) -> Message {
@@ -362,6 +408,114 @@ mod tests {
         game.vm = Vm::new(Arc::new(program), 1)?;
         assert_eq!(game.step(0)?, RunState::Waiting);
         Ok(game)
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_parse_trigger_waits_for_clock_unless_explicitly_asynchronous() -> Result<()> {
+        use rugp_scene_vm::{Argument, Scenario};
+        let mut game = waiting_game()?;
+        let install = |game: &mut Game, style: u32, duration: u32| -> Result<()> {
+            let mut program = Program::default();
+            let ins = |address, class: &str, arguments| Instruction {
+                index: address / 64,
+                stream_offset: 0,
+                class: ClassId {
+                    name: class.into(),
+                    schema: 17,
+                },
+                address,
+                next_address: address + 64,
+                flags: 0,
+                arguments,
+            };
+            program.insert(
+                0,
+                Scenario {
+                    object_id: 1,
+                    memory_size: 192,
+                    null_records: vec![],
+                    trailing_bytes: 0,
+                    instructions: vec![
+                        ins(
+                            0,
+                            "CVmGenericMsg",
+                            vec![
+                                Argument::Reference(reference("CParseBgBox", 15, 212259, 118)),
+                                Argument::Message {
+                                    class: ClassId {
+                                        name: "OM_ParseScreenTrigger".into(),
+                                        schema: 1,
+                                    },
+                                    arguments: [("スタイル", style), ("総処理時間基", duration)]
+                                        .map(|(name, value)| Argument::Field {
+                                            name: name.into(),
+                                            offset: 0,
+                                            argument: Box::new(Argument::Number(value)),
+                                        })
+                                        .to_vec(),
+                                },
+                                Argument::Number(0),
+                            ],
+                        ),
+                        ins(
+                            64,
+                            "CVmSync",
+                            vec![
+                                Argument::Reference(
+                                    rugp_assets::object::ObjectReader::new(&[0; 3]).reference(0)?,
+                                ),
+                                Argument::Number(0),
+                                Argument::Number(1000000),
+                            ],
+                        ),
+                        ins(128, "CVmRet", vec![]),
+                    ],
+                },
+            )?;
+            game.vm = Vm::new(Arc::new(program), 1)?;
+            game.wait_ms = None;
+            Ok(())
+        };
+        // Both the legacy framebuffer fallback and live property tracks
+        // must hold the actual VM instruction, without reissuing the message.
+        for live in [false, true] {
+            for style in [0, 0x8000] {
+                install(&mut game, style, 400)?;
+                let mut object = ObjectState {
+                    rect: (0, 0, 4, 4),
+                    ..ObjectState::default()
+                };
+                object.layers.insert(512, image([255; 4]));
+                if live {
+                    object.pending_draw_ratio = Some(MimeCurve::alpha_ramp(false));
+                }
+                game.objects.insert(212259, object);
+                game.frame.clear([0; 3]);
+                assert_eq!(game.step(0)?, RunState::Waiting);
+                let expected_pc = if style == 0 { 0 } else { 64 };
+                assert_eq!(game.vm.cursor().unwrap().address, expected_pc);
+                assert_eq!(game.parse_wait, style == 0);
+                pixels(&game, [0, 0, 0, 255]);
+                game.step(200)?;
+                assert_eq!(game.vm.cursor().unwrap().address, expected_pc);
+                pixels(&game, [128, 128, 128, 255]);
+                game.step(199)?;
+                assert_eq!(game.vm.cursor().unwrap().address, expected_pc);
+                game.step(0)?;
+                assert_eq!(game.vm.cursor().unwrap().address, expected_pc);
+                game.step(1)?;
+                assert_eq!(game.vm.cursor().unwrap().address, 64);
+                assert!(!game.parse_wait);
+                assert!(game.wait_ms.is_some());
+                pixels(&game, [255; 4]);
+            }
+        }
+        install(&mut game, 0, 0)?;
+        game.step(0)?;
+        assert_eq!(game.vm.cursor().unwrap().address, 64);
+        assert!(!game.parse_wait);
+        Ok(())
     }
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]

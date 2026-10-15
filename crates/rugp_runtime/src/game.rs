@@ -130,6 +130,8 @@ pub struct Game {
     buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
     parse_transition: Option<parse_screen::ParseTransition>,
+    /// A synchronous OM_ParseScreenTrigger remains pending on the VM.
+    parse_wait: bool,
     wait_ms: Option<u32>,
     audio_wait: Option<Vec<u64>>,
     audio_state: crate::audio_state::PlaybackRegistry,
@@ -181,6 +183,7 @@ impl Game {
             buffers: BTreeMap::new(),
             transition: None,
             parse_transition: None,
+            parse_wait: false,
             wait_ms: None,
             audio_wait: None,
             audio_state: crate::audio_state::PlaybackRegistry::default(),
@@ -252,6 +255,10 @@ impl Game {
     }
     pub fn take_sounds(&mut self) -> Vec<SoundRequest> {
         std::mem::take(&mut self.sounds)
+    }
+    /// Inspect queued requests without consuming playback tickets.
+    pub fn pending_sounds(&self) -> &[SoundRequest] {
+        &self.sounds
     }
     pub fn finish_audio_ticket(&mut self, ticket: u64) {
         self.audio_state.finish(ticket);
@@ -433,6 +440,7 @@ impl Game {
                     .insert(style, Layer::World(image));
             }
             "OM_ParseScreenTrigger" => {
+                parse_screen::validate_trigger(&fields)?;
                 ensure!(
                     number(&fields, "方式ID", 0)? == 0,
                     "transition effect is not implemented yet"
@@ -466,7 +474,16 @@ impl Game {
         match instruction.class.name.as_str() {
             "CVmMsg" => return self.begin_dialogue(instruction),
             "CVmGenericMsg" => {
-                self.message(self.vm.message(instruction)?)?;
+                let message = self.vm.message(instruction)?;
+                let synchronous_parse = message.class == "OM_ParseScreenTrigger"
+                    && number(&message.fields, "スタイル", 0)? & 0x8000 == 0;
+                self.message(message)?;
+                if synchronous_parse
+                    && (self.parse_transition.is_some() || self.transition.is_some())
+                {
+                    self.parse_wait = true;
+                    return Ok(());
+                }
                 if self.selection.is_some() {
                     return Ok(());
                 }
@@ -570,6 +587,13 @@ impl Game {
                 self.vm.acknowledge_host()?;
             }
         }
+        if self.parse_wait {
+            if self.parse_transition.is_some() || self.transition.is_some() {
+                return Ok(RunState::Waiting);
+            }
+            self.parse_wait = false;
+            self.vm.acknowledge_host()?;
+        }
         if self.video_wait || self.selection.is_some() {
             return Ok(RunState::Waiting);
         }
@@ -613,6 +637,7 @@ impl Game {
                         format!("runtime at {}:{:#x}", cursor.scene, cursor.address)
                     })?;
                     if self.wait_ms.is_some()
+                        || self.parse_wait
                         || self.audio_wait.is_some()
                         || self.video_wait
                         || self.selection.is_some()

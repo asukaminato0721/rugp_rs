@@ -8,7 +8,7 @@ fn first_logo_is_loaded_by_real_vm_and_faded_to_framebuffer() -> Result<()> {
     assert_eq!(game.step(0)?, RunState::Waiting);
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((252, 0x400))
+        Some((60, 0x9c)) // synchronous ParseScreen, before the later explicit wait
     );
     let original = rugp_assets::image::decode_r6ti(
         &game.archive.read_at(0xcdefba, 23171)?,
@@ -70,7 +70,7 @@ fn startup_half_scale_bitmap_and_double_focal_length() -> Result<()> {
     let mut game = Game::open(root.as_ref())?;
     let mut audio = None;
     game.step(0)?;
-    for _ in 0..100 {
+    for _ in 0..300 {
         rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
         if game
             .vm
@@ -255,7 +255,7 @@ fn startup_movie_uses_real_sync_and_fractional_frame_clock() -> Result<()> {
     let mut game = Game::open(root.as_ref())?;
     let mut audio = None;
     game.step(0)?;
-    for _ in 0..150 {
+    for _ in 0..300 {
         rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
         if game.video().is_some() {
             break;
@@ -305,6 +305,8 @@ fn startup_movie_uses_real_sync_and_fractional_frame_clock() -> Result<()> {
     assert!(game.video().unwrap().finished());
     assert_ne!(game.vm.cursor(), movie_pc.as_ref());
     assert_eq!(game.vm.variables[&213487].integer()?, 0);
+    // Title presentation is synchronous; input begins only after its fade.
+    game.step(1000)?;
     assert!(game.waiting_for_selection());
     Ok(())
 }
@@ -314,7 +316,7 @@ fn open_title() -> Result<Game> {
     let mut game = Game::open(root.as_ref())?;
     let mut audio = None;
     game.step(0)?;
-    for _ in 0..150 {
+    for _ in 0..300 {
         rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
         if game.video().is_some() {
             break;
@@ -322,10 +324,17 @@ fn open_title() -> Result<Game> {
         game.step(100)?;
     }
     game.step(117034)?;
+    for _ in 0..100 {
+        if game.waiting_for_selection() {
+            break;
+        }
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        game.step(100)?;
+    }
     assert!(game.waiting_for_selection());
     let starting = game.frame().to_vec();
     game.step(1000)?;
-    assert_ne!(game.frame(), starting);
+    assert_eq!(game.frame(), starting); // the synchronous title fade has completed
     Ok(game)
 }
 
@@ -469,9 +478,16 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     assert_ne!(game.vm.cursor().map(|pc| pc.address), Some(0x1c8));
     // Follow real page input through sound status queries to the next boundary.
     let mut boundary = None;
+    let mut saw_ramp = false;
     for _ in 0..100 {
         if game.dialogue_waits_for_input() {
             game.activate_selection()?;
+        }
+        for request in game.pending_sounds().iter().filter(|r| r.kind == 4) {
+            assert!(request.ticket.is_some());
+            assert_eq!(request.parameters, [0, 4096, 2500]);
+            assert_eq!(request.gain_envelope()?.duration_ms(), 2500);
+            saw_ramp = true;
         }
         rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
         match game.step(100) {
@@ -489,11 +505,11 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         .get(&212259)
         .context("chapter background missing")?
         .camera;
-    assert_eq!(camera.focal_length, 1752, "{boundary:#}");
-    assert_eq!(camera.angles_q4, [-5920, -1776, 0], "{boundary:#}");
+    assert_eq!(camera.focal_length, 2040, "{boundary:#}");
+    assert_eq!(camera.angles_q4, [-5840, -1200, 0], "{boundary:#}");
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((79, 0x3c)),
+        Some((79, 0x60)),
         "{boundary:#}"
     );
     let layers = game.objects[&212259].world_layers;
@@ -506,29 +522,22 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}")
-            .contains("camera replacement during an active ParseScreen transition"),
+        format!("{boundary:#}").contains("3D camera ３ＤＸ is not implemented yet"),
         "{boundary:#}"
     );
-    let ramp = game
-        .take_sounds()
-        .into_iter()
-        .find(|r| r.kind == 4)
-        .context("chapter must queue the real ramped playback")?;
-    assert!(ramp.ticket.is_some());
-    assert_eq!(ramp.parameters, [0, 4096, 2500]);
-    assert_eq!(ramp.gain_envelope()?.duration_ms(), 2500);
+    assert!(saw_ramp, "chapter must queue the real ramped playback");
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_SetWorldCameraAsScreen");
+        assert_eq!(message.class, "OM_SetWorldCamera");
         assert!(matches!(
             message.fields.get("スタイル"),
             Some(rugp_scene_vm::vm::Value::Integer(0))
         ));
         assert_eq!(message.fields["フェード方式"].integer()?, 0);
+        assert_ne!(message.fields["３ＤＸ"].integer()?, 0);
     } else {
-        panic!("unsupported active camera replacement was acknowledged");
+        panic!("unsupported translated camera was acknowledged");
     }
     Ok(())
 }

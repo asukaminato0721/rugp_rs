@@ -187,7 +187,7 @@ destination, and another retail regression writes, closes, reopens, and reads
 an isolated user-data directory. CRbx image-menu selection now blocks the VM
 until an actual choice and writes the numeric selector result back to it.
 The title regression checks disabled items, hover/pressed images, cancelled
-drags, keyboard order, the asynchronous title fade, and mouse result binding.
+drags, keyboard order, the completed synchronous title fade, and mouse result binding.
 
 All five directly referenced CRbx menus parse (137 selectors), and their five
 indexed SIA masks and 250 state/background image references decode. The SIA
@@ -222,8 +222,9 @@ regression verifies cumulative flags, independent clearing, type behavior,
 unsupported dispatch, and unchanged fast-pass pixels.
 Chapter execution now passes the camera, layer-control messages and the
 extended background at scene 88, PC `0x7c`, and synchronized camera setup
-at scene 79, PC `0x428`. The next boundary is a new screen-camera command
-while ParseScreen is still active, on re-entering scene 79 at PC `0x3c`.
+at scene 79, PC `0x428`. Correct synchronous ParseScreen waits now allow
+later camera setup; the next boundary is a nonzero 3D camera translation
+on re-entering scene 79 at PC `0x60`.
 Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
@@ -258,6 +259,13 @@ pixels, VM waits, zero duration, large time jumps, curve replacement/reset,
 and staged image replacement. Independent-clock draw ratios, special default
 after-image curves, non-background targets, overlapping ParseScreen clocks
 and framebuffer effects during them remain explicitly unsupported.
+ParseScreen now holds the actual VM message until its render clock finishes;
+only trigger style `0x8000` returns asynchronously. This applies to live
+camera/opacity tracks and the legacy framebuffer fallback, without resetting
+the clock or blocking audio timing. A host regression verifies the pending PC,
+intermediate/final pixels, repeated zero-time steps, exact completion, and
+zero-duration behavior. Unknown trigger styles, non-null effect data and
+asynchronous output handles still stop explicitly.
 Static native inspection establishes that script camera angles use 4096 units
 per turn (internally shifted left by four for a 65536-unit
 matrix), and fade mode 0 takes the target state directly, not a linear 400ms
