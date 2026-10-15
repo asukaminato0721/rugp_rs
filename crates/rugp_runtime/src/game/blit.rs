@@ -13,6 +13,7 @@ impl Game {
             return Ok(Arc::new(Texture {
                 width: self.frame.width,
                 height: self.frame.height,
+                display_scale: 1.0,
                 rgba: self.frame.rgba.clone(),
             }));
         }
@@ -26,13 +27,12 @@ impl Game {
         {
             let mut frame = Framebuffer::new(self.frame.width, self.frame.height)?;
             if let Some(object) = self.objects.get(&id) {
-                for layer in object.layers.values() {
-                    frame.blit(&layer.texture, object.rect, 255)?;
-                }
+                object.render(&mut frame)?;
             }
             return Ok(Arc::new(Texture {
                 width: frame.width,
                 height: frame.height,
+                display_scale: 1.0,
                 rgba: frame.rgba,
             }));
         }
@@ -66,11 +66,13 @@ impl Game {
                 .as_ref()
                 .is_some_and(|c| c.name == "CParseBgBox")
             {
-                self.objects
-                    .entry(id)
-                    .or_default()
-                    .layers
-                    .insert(0, Layer { texture });
+                self.objects.entry(id).or_default().layers.insert(
+                    0,
+                    Layer {
+                        texture,
+                        plane: None,
+                    },
+                );
             }
         }
         Ok(())
@@ -134,6 +136,7 @@ impl Game {
             Arc::new(Texture {
                 width: frame.width,
                 height: frame.height,
+                display_scale: 1.0,
                 rgba: frame.rgba,
             })
         } else {
@@ -161,6 +164,7 @@ impl Game {
                 Texture {
                     width: source.width,
                     height: source.height,
+                    display_scale: 1.0,
                     rgba,
                 },
             )?;

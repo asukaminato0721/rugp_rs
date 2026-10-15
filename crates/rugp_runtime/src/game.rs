@@ -1,6 +1,7 @@
 use crate::{
     image_manager::ImageManager,
     render::{Framebuffer, Texture},
+    world::{Camera, Plane},
 };
 use anyhow::{Context, Result, bail, ensure};
 use rugp_assets::{RioArchive, fade::FadeCurve, native_schema::NativeSchema, object::ObjectRef};
@@ -28,6 +29,7 @@ pub struct SoundRequest {
 }
 struct Layer {
     texture: Arc<Texture>,
+    plane: Option<Plane>,
 }
 pub struct ObjectState {
     pub enabled: bool,
@@ -37,6 +39,7 @@ pub struct ObjectState {
     pub auto_update: bool,
     pub rect: (i32, i32, u32, u32),
     pub properties: BTreeMap<String, Value>,
+    pub camera: Camera,
     layers: BTreeMap<i32, Layer>,
 }
 impl Default for ObjectState {
@@ -49,8 +52,21 @@ impl Default for ObjectState {
             auto_update: true,
             rect: (0, 0, 1024, 600),
             properties: BTreeMap::new(),
+            camera: Camera::default(),
             layers: BTreeMap::new(),
         }
+    }
+}
+impl ObjectState {
+    fn render(&self, frame: &mut Framebuffer) -> Result<()> {
+        for layer in self.layers.values() {
+            let rect = layer
+                .plane
+                .as_ref()
+                .map_or(Ok(self.rect), |plane| plane.rect(&self.camera, self.rect))?;
+            frame.blit(&layer.texture, rect, 255)?;
+        }
+        Ok(())
     }
 }
 struct Transition {
@@ -140,9 +156,7 @@ impl Game {
     fn scene_frame(&self) -> Result<Framebuffer> {
         let mut frame = Framebuffer::new(self.frame.width, self.frame.height)?;
         for object in self.objects.values().filter(|o| o.visible) {
-            for layer in object.layers.values() {
-                frame.blit(&layer.texture, object.rect, 255)?;
-            }
+            object.render(&mut frame)?;
         }
         Ok(frame)
     }
@@ -239,15 +253,17 @@ impl Game {
             "OM_SetWorldCameraAsScreen" => {
                 ensure!(
                     number(&fields, "スクリーン座標Ｘ", 0)? == 0
-                        && number(&fields, "スクリーン座標Ｙ", 0)? == 0
-                        && number(&fields, "ズーム率", 720)? == 720,
-                    "non-default screen camera is not implemented yet"
+                        && number(&fields, "スクリーン座標Ｙ", 0)? == 0,
+                    "translated screen camera is not implemented yet"
                 );
-                self.objects
-                    .entry(id)
-                    .or_default()
-                    .properties
-                    .extend(fields);
+                let focal = number(&fields, "ズーム率", 720)?;
+                ensure!(
+                    (1..=32767).contains(&focal),
+                    "invalid camera focal length {focal}"
+                );
+                let object = self.objects.entry(id).or_default();
+                object.camera.focal_length = focal as u16;
+                object.properties.extend(fields);
             }
             "OM_SetWorldCamera" => {
                 for field in [
@@ -299,12 +315,13 @@ impl Game {
                     "expression-image composition is not implemented yet"
                 );
                 let texture = self.images.load(image)?;
+                let plane = Some(Plane::bitmap(&texture)?);
                 self.buffers.remove(&id);
                 self.objects
                     .entry(id)
                     .or_default()
                     .layers
-                    .insert(style, Layer { texture });
+                    .insert(style, Layer { texture, plane });
             }
             "OM_ParseScreenTrigger" => {
                 ensure!(

@@ -292,6 +292,7 @@ impl MipLevel {
             height: height as u32,
             x: 0,
             y: 0,
+            display_scale: 1.0,
             rgba: pixels.into_iter().flatten().collect(),
         })
     }

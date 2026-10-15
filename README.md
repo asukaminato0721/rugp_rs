@@ -122,6 +122,10 @@ The next startup regression exercises native framebuffer snapshots, CFadeNormal
 copying, the serialized CFadeMergeWhite curve, its blocking 800ms wait, and the
 subsequent white CBg2d background. Only full-screen blit regions are implemented;
 other effects, transformed regions, and timed offscreen blits remain unsupported.
+Native Cr6Ti world-display scales are preserved independently of pixels. The
+following startup screen's 0.5 bitmap scale and 1440 camera focal length now
+project to the full viewport, covered by a retail pixel-equality regression.
+Camera rotation, translated view targets, and general 3D geometry remain incomplete.
 Desktop presentation and automatic exit have also been exercised under Xvfb.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game

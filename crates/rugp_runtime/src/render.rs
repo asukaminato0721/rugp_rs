@@ -5,6 +5,7 @@ use rugp_assets::image::Image;
 pub struct Texture {
     pub width: u32,
     pub height: u32,
+    pub display_scale: f32,
     pub rgba: Vec<u8>,
 }
 impl Texture {
@@ -32,6 +33,7 @@ impl Texture {
             return Ok(Self {
                 width: image.width,
                 height: image.height,
+                display_scale: image.display_scale,
                 rgba: image.rgba,
             });
         }
@@ -45,6 +47,7 @@ impl Texture {
         Ok(Self {
             width: image.canvas_width,
             height: image.canvas_height,
+            display_scale: image.display_scale,
             rgba,
         })
     }
@@ -125,6 +128,7 @@ mod tests {
             height: 1,
             x: 1,
             y: 0,
+            display_scale: 1.0,
             rgba: vec![255, 0, 0, 128],
         })?;
         let mut frame = Framebuffer::new(4, 2)?;

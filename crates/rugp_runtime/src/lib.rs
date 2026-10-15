@@ -5,4 +5,5 @@ pub mod audio_device;
 pub mod game;
 pub mod image_manager;
 pub mod render;
+pub mod world;
 pub use game::{Game, RunState};

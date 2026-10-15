@@ -65,6 +65,46 @@ fn startup_snapshot_and_native_white_fade() -> Result<()> {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn startup_half_scale_bitmap_and_double_focal_length() -> Result<()> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+    let mut game = Game::open(root.as_ref())?;
+    let mut audio = None;
+    game.step(0)?;
+    for _ in 0..100 {
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        if game
+            .vm
+            .cursor()
+            .is_some_and(|pc| pc.scene == 252 && pc.address == 0xc40)
+        {
+            break;
+        }
+        game.step(100)?;
+    }
+    assert_eq!(
+        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
+        Some((252, 0xc40))
+    );
+    let image = rugp_assets::image::decode_r6ti(
+        &game.archive.read_at(0xcf677c, 86679)?,
+        game.archive.address_shift,
+    )?;
+    assert_eq!(image.display_scale, 0.5);
+    assert_eq!(
+        game.objects
+            .get(&0x33d23)
+            .context("background object missing")?
+            .camera
+            .focal_length,
+        1440
+    );
+    assert_eq!(game.step(1000)?, RunState::Waiting);
+    assert_eq!(game.frame(), image.rgba);
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
 fn resolves_bgm_wrapper_to_cached_pcm() -> Result<()> {
     use rugp_assets::object::{ClassId, ObjectRef};
     use std::sync::Arc;

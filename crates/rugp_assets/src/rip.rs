@@ -368,6 +368,7 @@ pub fn decode_rip_pixels(header: &RipHeader, data: &[u8]) -> Result<Image> {
         height: height as u32,
         x: 0,
         y: 0,
+        display_scale: 1.0,
         rgba,
     })
 }

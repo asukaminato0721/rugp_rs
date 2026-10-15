@@ -10,6 +10,9 @@ pub struct Image {
     pub height: u32,
     pub x: u16,
     pub y: u16,
+    /// Native world-space bitmap scale; zero in the file means the default 1.
+    /// This does not resample pixels or affect image export.
+    pub display_scale: f32,
     pub rgba: Vec<u8>,
 }
 
@@ -25,6 +28,8 @@ pub struct R6Header {
     pub flags: u32,
     pub depth: u32,
     pub data_size: u32,
+    pub display_scale: f32,
+    pub auxiliary: u32,
     pub image_properties: Box<crate::object::ObjectRef>,
 }
 
@@ -42,7 +47,8 @@ impl R6Header {
         r.input.skip(3)?;
         let image_properties = Box::new(r.reference(shift)?);
         let data_size = r.input.u32()?;
-        r.input.skip(8)?;
+        let display_scale = f32::from_bits(r.input.u32()?);
+        let auxiliary = r.input.u32()?;
         ensure!(
             width > 0 && height > 0 && width as usize * height as usize <= 16_777_216,
             "invalid bitmap dimensions {width}x{height}"
@@ -58,6 +64,8 @@ impl R6Header {
             flags,
             depth,
             data_size,
+            display_scale,
+            auxiliary,
             image_properties,
         })
     }
@@ -261,6 +269,11 @@ pub fn decode_r6ti_pixels(header: &R6Header, compressed: &[u8]) -> Result<Image>
         height: header.height as u32,
         x: header.x,
         y: header.y,
+        display_scale: if header.display_scale > 0.0 {
+            header.display_scale
+        } else {
+            1.0
+        },
         // Predictor variables follow the original engine's B,G,R order.
         rgba: pixels
             .into_iter()

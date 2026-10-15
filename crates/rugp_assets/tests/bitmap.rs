@@ -42,6 +42,18 @@ fn r6_channel_order_opaque_transparent_and_truncation() {
 }
 
 #[test]
+fn r6_preserves_world_display_scale_without_resampling() {
+    let mut data = r6_fixture(2, &[8]);
+    assert_eq!(decode_r6ti(&data, 0).unwrap().display_scale, 1.0);
+    data[37..41].copy_from_slice(&0.5f32.to_le_bytes());
+    data[41..45].copy_from_slice(&0x12345678u32.to_le_bytes());
+    let image = decode_r6ti(&data, 0).unwrap();
+    assert_eq!(image.display_scale, 0.5);
+    assert_eq!((image.width, image.height), (1, 1));
+    assert_eq!(image.rgba, [0, 0, 2, 255]);
+}
+
+#[test]
 fn rip_007_and_008_pixel_layouts() {
     let mut old = bitmap_header(2);
     old.extend([0, 0, 0, 1, 8, 8, 8]);
