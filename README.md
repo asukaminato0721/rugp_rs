@@ -242,7 +242,9 @@ by original page/selector. They use actual story image use, check the original m
 enabled selector, and drive the unchanged replay back to its page and title.
 These long regressions are still being run; merely having a fixture in the
 table does not establish that its playback has passed. Original story choice
-plans earn the appropriate branch's image. One sequence also needs the native
+plans earn the appropriate branch's image. Later-chapter fixtures first run
+the original SC427 chapter initializer and confirm its first dialogue; raw
+serialized plot-variable defaults are not fresh-chapter state. One sequence also needs the native
 encounter counter: its fixture actually plays two preceding SC425 sequences,
 letting the original script increment it, rather than writing the counter.
 
@@ -688,7 +690,17 @@ message's duration field. The full-scene renderer rebuilds pixels instead of
 using those incremental window backing caches.
 Mode 12 now uses the portable synchronized absolute interpolation as a
 playability fallback; its native rotation/spatial effect is not reproduced.
-Additive/relative styles and active-camera replacement remain unsupported.
+The original SC130 camera style `0x11` is also accepted as absolute linear
+interpolation: the native sampler uses the low four easing bits, not this
+extra bit. Its original style is retained and validated in snapshots. A host
+regression covers the same pixel/clock/capture cases in modes 4, 8 and 12.
+Additive/relative style `0x400` and active-camera replacement remain unsupported.
+Plain bitmap `OM_HumanIn` placement now honors its signed global X/Y and
+absolute Z (zero defaults to 720), including SC217's CRip008 Y offset. These
+32-bit offsets remain separate from bounded immutable vertices and cached
+image data; projection, angular bounds and scene snapshots retain them. Native
+camera-relative slots still ignore global XYZ. Nonzero CBg2d-group placement
+and textured-model geometry deformation remain separate unsupported cases.
 Absolute XYZ camera positions now apply in instant mode and animated modes 4/8,
 including signed-floor interpolation, captured starts and combined screen-zoom
 commands. World planes subtract the camera position before projecting at their

@@ -780,6 +780,48 @@ mod tests {
         );
         let native = NativeSchema::from_directory(root.as_ref())?;
         let program = Arc::new(Program::load(&game.archive, &native)?);
+        if !matches!(entry, 478 | 346 | 327) {
+            // Later-chapter scene isolation must first run its real initializer.
+            // Stored scalar defaults are not a fresh chapter: e.g. the native
+            // encounter/day counters start at 1/3, and SC427 resets them to 0.
+            // Execute through its first actual dialogue confirmation, rather
+            // than copying its assignments or overwriting plot/unlock flags.
+            let mut vm = Vm::new(Arc::clone(&program), 427)?;
+            vm.variables = std::mem::take(&mut game.vm.variables);
+            game.vm = vm;
+            game.selection = None;
+            let mut initialized = false;
+            for tick in 0..1000 {
+                if game.dialogue_waits_for_input() {
+                    game.activate_selection()?;
+                    if game.dialogue.is_none() {
+                        initialized = true;
+                        break;
+                    }
+                }
+                if game.waiting_for_input() {
+                    game.activate_selection()?;
+                }
+                ensure!(
+                    !game.waiting_for_selection(),
+                    "chapter initializer reached an unexpected menu"
+                );
+                crate::audio::mute_requests(&mut game, &mut audio)?;
+                ensure!(
+                    game.step(1000)
+                        .with_context(|| format!("chapter initialization tick {tick}"))?
+                        != RunState::Ended,
+                    "chapter initializer ended before its first dialogue"
+                );
+            }
+            ensure!(initialized, "chapter initializer did not reach dialogue");
+            for offset in [1776983, 5021287, 4919559] {
+                ensure!(
+                    game.vm.variables[&offset].integer()? == 0,
+                    "native chapter initializer did not reset {offset}"
+                );
+            }
+        }
         if page == 0 && selector == 12 {
             // SC296:186808 requires the original encounter counter >= 2.
             // Earn it by running SC425 twice in normal (not replay) mode;
@@ -812,14 +854,10 @@ mod tests {
                         game.navigate_selection(1)?;
                         game.activate_selection()?;
                     }
-                    crate::audio::mute_requests(&mut game, &mut audio)?;
-                    ensure!(
-                        game.step(1000).with_context(|| format!(
-                            "replay prerequisite {required}, tick {tick}"
-                        ))? != RunState::Ended,
-                        "prerequisite ended before incrementing its counter"
-                    );
-                    if game.vm.variables[&1776983].integer()? == required {
+                    if game.vm.variables[&1776983].integer()? == required
+                        && game.dialogue.is_none()
+                        && game.vm.pending_instruction().is_none()
+                    {
                         ensure!(pages > 0, "prerequisite incremented without dialogue");
                         eprintln!(
                             "original prerequisite earned counter {required}: tick={tick}, pages={pages}"
@@ -827,6 +865,13 @@ mod tests {
                         completed = true;
                         break;
                     }
+                    crate::audio::mute_requests(&mut game, &mut audio)?;
+                    ensure!(
+                        game.step(1000).with_context(|| format!(
+                            "replay prerequisite {required}, tick {tick}"
+                        ))? != RunState::Ended,
+                        "prerequisite ended before incrementing its counter"
+                    );
                 }
                 ensure!(
                     completed,
