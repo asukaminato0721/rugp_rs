@@ -290,3 +290,70 @@ fn scoped_arguments_and_message_overrides() {
     }
     assert!(matches!(vm.step().unwrap(), Step::Halted));
 }
+
+#[test]
+fn message_output_references_are_not_scalar_values() {
+    let mut program = Program::default();
+    let message = instruction(
+        "CVmGenericMsg",
+        0,
+        28,
+        vec![
+            reference("CStdb", 900),
+            Argument::Message {
+                class: ClassId {
+                    name: "&-OM_AccessGetValue".into(),
+                    schema: 0,
+                },
+                arguments: vec![
+                    Argument::Field {
+                        name: "destination".into(),
+                        offset: 16,
+                        argument: Box::new(reference("CInt", 600)),
+                    },
+                    Argument::Field {
+                        name: "value".into(),
+                        offset: 20,
+                        argument: Box::new(Argument::Value {
+                            descriptor: 0,
+                            arguments: vec![reference("CInt", 600)],
+                        }),
+                    },
+                ],
+            },
+            Argument::Number(0),
+            Argument::Parameter(vec![
+                Argument::Text("&-OM_AccessGetValue".into()),
+                Argument::Number(0),
+                Argument::Value {
+                    descriptor: 0,
+                    arguments: vec![reference("CInt", 700)],
+                },
+            ]),
+        ],
+    );
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![message.clone(), instruction("CVmRet", 28, u32::MAX, vec![])],
+            ),
+        )
+        .unwrap();
+    let mut vm = Vm::new(Arc::new(program), 1).unwrap();
+    vm.variables.insert(600, Value::Integer(12));
+    vm.variables.insert(700, Value::Integer(5));
+    let resolved = vm.message(&message).unwrap();
+    assert_eq!(resolved.fields["value"].integer().unwrap(), 12);
+    let Value::Reference(destination) = &resolved.fields["destination"] else {
+        panic!("output pointer was dereferenced");
+    };
+    assert_eq!(destination.offset, Some(700));
+    vm.step().unwrap();
+    vm.write_object(destination, Value::Integer(42)).unwrap();
+    assert_eq!(vm.variables[&700].integer().unwrap(), 42);
+    assert_eq!(vm.cursor().unwrap().address, 0); // write does not acknowledge
+    vm.acknowledge_host().unwrap();
+    assert_eq!(vm.variables[&600].integer().unwrap(), 12);
+}

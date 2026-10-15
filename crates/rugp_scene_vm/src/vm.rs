@@ -352,23 +352,65 @@ impl Vm {
             _ => bail!("assignment target is not a variable reference"),
         }
     }
+    /// Resolve an object pointer without reading a scalar object's contents.
+    /// Native reference fields (including output destinations) use this path;
+    /// valiant/value fields continue to use `evaluate`.
+    pub fn resolve_object(&self, arg: &Argument) -> Result<Value> {
+        let value = match arg {
+            Argument::Reference(reference) => {
+                if let Some(Place::Parameter { depth, index }) = self.parameter_place(reference)? {
+                    self.parameter(depth, index)?.clone()
+                } else if reference.offset.is_none() && reference.cache_index == Some(0) {
+                    Value::Null
+                } else {
+                    Value::Reference(reference.clone())
+                }
+            }
+            Argument::Value {
+                descriptor,
+                arguments,
+            } if descriptor & 3 == 0 => {
+                return self.resolve_object(arguments.first().context("empty object value")?);
+            }
+            _ => self.evaluate(arg)?,
+        };
+        ensure!(
+            matches!(value, Value::Reference(_) | Value::Null),
+            "object field is not a reference"
+        );
+        Ok(value)
+    }
+    /// Host-side scalar assignment uses the same scoped/global destinations as
+    /// VM operations. It does not acknowledge or advance a pending instruction.
+    pub fn write_object(&mut self, reference: &ObjectRef, value: Value) -> Result<()> {
+        let destination = self.destination(&Argument::Reference(reference.clone()))?;
+        self.assign(destination, value)
+    }
     /// Resolve native defaults and the VM's named/indexed parameter overrides.
     pub fn message(&self, ins: &Instruction) -> Result<Message> {
         ensure!(
             ins.class.name == "CVmGenericMsg",
             "instruction is not an object message"
         );
-        let target = self.evaluate(ins.arguments.first().context("missing message target")?)?;
+        let target =
+            self.resolve_object(ins.arguments.first().context("missing message target")?)?;
         let Some(Argument::Message { class, arguments }) = ins.arguments.get(1) else {
             bail!("missing message body");
         };
         let mut fields = BTreeMap::new();
         let mut order = Vec::new();
+        let mut reference_fields = Vec::new();
         for field in arguments {
             let Argument::Field { name, argument, .. } = field else {
                 bail!("message body lacks native field metadata");
             };
-            fields.insert(name.clone(), self.evaluate(argument)?);
+            let value = if matches!(argument.as_ref(), Argument::Reference(_)) {
+                reference_fields.push(name.clone());
+                self.resolve_object(argument)?
+            } else {
+                self.evaluate(argument)?
+            };
+            fields.insert(name.clone(), value);
             order.push(name.clone());
         }
         for parameter in ins.arguments.iter().skip(3) {
@@ -398,10 +440,12 @@ impl Vm {
                 "message {} has no field {name}",
                 class.name
             );
-            fields.insert(
-                name,
-                self.evaluate(args.last().context("empty message override")?)?,
-            );
+            let value = if reference_fields.contains(&name) {
+                self.resolve_object(args.last().context("empty message override")?)?
+            } else {
+                self.evaluate(args.last().context("empty message override")?)?
+            };
+            fields.insert(name, value);
         }
         Ok(Message {
             class: class
