@@ -8,6 +8,8 @@ use anyhow::{Context, Result, ensure};
 use rugp_assets::layout_text::LayoutText;
 use std::sync::Arc;
 
+pub(crate) mod snapshot;
+
 pub(crate) struct StaffRoll {
     pub window: u64,
     width: u32,

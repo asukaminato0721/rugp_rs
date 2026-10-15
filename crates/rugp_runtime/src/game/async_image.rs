@@ -2,16 +2,16 @@ use super::*;
 use rugp_assets::object::{ClassId, InlineIdentity};
 
 pub(super) struct ImageFade {
-    handle: ObjectRef,
-    window: u64,
-    elapsed: u32,
-    total: u32,
-    fade_in: u32,
-    fade_out: u32,
-    cancelled: bool,
+    pub(super) handle: ObjectRef,
+    pub(super) window: u64,
+    pub(super) elapsed: u32,
+    pub(super) total: u32,
+    pub(super) fade_in: u32,
+    pub(super) fade_out: u32,
+    pub(super) cancelled: bool,
 }
 impl ImageFade {
-    fn identity(&self) -> InlineIdentity {
+    pub(super) fn identity(&self) -> InlineIdentity {
         self.handle.inline.as_ref().unwrap().identity()
     }
     pub(super) fn finished(&self) -> bool {
@@ -353,7 +353,12 @@ mod tests {
             let mut query = sync.clone();
             query.address = 0;
             query.next_address = 0;
-            query.arguments[0] = Argument::Reference(handle.clone());
+            let Value::Reference(current_handle) =
+                game.vm.evaluate(&Argument::Reference(output.clone()))?
+            else {
+                bail!("current fade handle missing")
+            };
+            query.arguments[0] = Argument::Reference(current_handle);
             query.arguments[1] = Argument::Number(34);
             query.arguments[2] = Argument::Number(4000);
             program.insert(
@@ -376,6 +381,11 @@ mod tests {
             Ok(())
         };
         query(&mut game, true)?;
+        super::actor_snapshot::test_roundtrip(&mut game)?;
+        let Layer::Screen(red) = &game.objects[&id].layers[&0] else {
+            bail!("restored image missing")
+        };
+        let mut red = Arc::clone(red);
         for (dt, alpha) in [(1000, 128), (1000, 255), (2500, 128), (499, 0)] {
             assert_eq!(game.step(dt)?, RunState::Waiting);
             assert_eq!(game.objects[&id].opacity, alpha);
@@ -383,6 +393,13 @@ mod tests {
             expected.clear([0, 0, 255]);
             expected.blit(&red, (1, 1, 2, 2), alpha)?;
             assert_eq!(game.frame(), expected.rgba);
+            if dt == 1000 {
+                super::actor_snapshot::test_roundtrip(&mut game)?;
+                let Layer::Screen(current) = &game.objects[&id].layers[&0] else {
+                    bail!("restored image missing")
+                };
+                red = Arc::clone(current);
+            }
         }
         assert_eq!(game.step(1)?, RunState::Ended);
         query(&mut game, false)?;

@@ -360,6 +360,10 @@ fn capture_objects(
 impl SceneSnapshot {
     fn validate(&self) -> Result<()> {
         ensure!(self.version == 1, "unsupported scene snapshot version");
+        ensure!(
+            !(self.parse_wait && self.posture_wait.is_some()),
+            "overlapping scene snapshot waits"
+        );
         let mut budget = Budget::default();
         validate_objects(&self.objects, &mut budget)?;
         ensure!(
@@ -702,6 +706,15 @@ pub struct RestoredScene {
     posture_wait: Option<posture::PostureWait>,
 }
 impl RestoredScene {
+    pub(crate) fn object(&self, id: u64) -> Option<&ObjectState> {
+        self.objects.get(&id)
+    }
+    pub(crate) fn size(&self) -> (u32, u32) {
+        (self.frame.width, self.frame.height)
+    }
+    pub(crate) fn wait_count(&self) -> usize {
+        usize::from(self.parse_wait) + usize::from(self.posture_wait.is_some())
+    }
     /// Component application only, not a public save-slot operation. The caller
     /// coordinates VM, actor identities, audio and UI before resuming the game.
     pub fn apply(self, game: &mut Game) -> Result<()> {

@@ -2,7 +2,8 @@ use super::*;
 
 /// CWaitableTimer uses unsigned GetTickCount differences from one playback
 /// epoch. Changing the interval does NOT restart the epoch (rvmm 10079510).
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Timer {
     enabled: bool,
     elapsed: u32,
@@ -225,12 +226,14 @@ mod tests {
         let before = game.frame().to_vec();
         assert_eq!(game.step(0)?, RunState::Waiting);
         assert_eq!(game.step(200)?, RunState::Waiting);
+        super::actor_snapshot::test_roundtrip(&mut game)?;
         game.message(interval(400))?;
         assert_eq!(game.step(199)?, RunState::Waiting);
         assert_eq!(game.step(1)?, RunState::Ended);
         assert_eq!(game.frame(), before);
         assert!(game.pending_sounds().is_empty());
         assert!(game.video.is_none() && game.staffroll.is_none());
+        super::actor_snapshot::test_roundtrip(&mut game)?;
         // A larger threshold revives the same running epoch; query is
         // nonblocking and reports active, not the opposite completion bit.
         game.message(interval(450))?;

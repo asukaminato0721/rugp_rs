@@ -153,6 +153,18 @@ waits on that host. These still do not constitute complete game save slots:
 other actors, menu/text/voice coordination, settings, save-file I/O and desktop
 load/save interaction remain to be connected. No-raster diagnostics cannot
 capture portable scene snapshots.
+Independent actor snapshots now preserve generic wait tails, complete unsigned
+timer epochs/thresholds, image-fade clocks and cancelled/completed event handles,
+movie synchronization, and staff-roll progress. Event handles use the same
+reference graph as VM variables; waits retain their original event even if an
+operand is replaced. Completed events remain queryable without reviving their
+old window. Credit rolls retain positioned glyph masks, so restoration does not
+require the original font cache or reflow already-rendered text. Native packet
+regressions now perform coordinated VM/scene/actor wire round trips during
+image fades, timer waits, and credits. The opening movie also survives delta-frame
+and final-boundary restores without overwriting the subsequently restored title.
+These components still need UI/settings/audio coordination and user-facing
+save-file/slot integration before they form complete playable saves.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.

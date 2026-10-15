@@ -11,6 +11,7 @@ use rugp_scene_vm::{
 };
 use std::{cell::Cell, collections::BTreeMap, path::Path, sync::Arc};
 
+pub mod actor_snapshot;
 mod alpha;
 mod async_image;
 mod blit;

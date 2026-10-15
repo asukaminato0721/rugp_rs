@@ -304,6 +304,11 @@ mod tests {
         assert_eq!(game.vm.cursor().unwrap().address, 0);
         assert_eq!(game.step(70650)?, RunState::Waiting);
         assert_ne!(game.frame(), expected);
+        super::actor_snapshot::test_roundtrip(&mut game)?;
+        let Layer::Screen(base) = &game.objects[&window].layers[&0] else {
+            bail!("restored base missing")
+        };
+        let base = Arc::clone(base);
         assert_eq!(game.step(70649)?, RunState::Waiting);
         assert_eq!(game.step(1)?, RunState::Ended);
         assert_eq!(game.frame(), expected);
