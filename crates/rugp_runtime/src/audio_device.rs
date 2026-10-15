@@ -180,10 +180,10 @@ impl DeviceAudio {
             .class
             .as_ref()
             .context("sound source class missing")?;
-        let bus = if class.name == "CPmBgm" {
-            Bus::Bgm
-        } else {
-            Bus::Effect
+        let bus = match class.name.as_str() {
+            "CPmBgm" => Bus::Bgm,
+            "COptimizedObs" => Bus::Voice,
+            _ => Bus::Effect,
         };
         let looped = if ["CPmBgm", "CPmEffect"].contains(&class.name.as_str()) {
             let bytes = self

@@ -8,6 +8,7 @@ use crate::{
 pub(super) struct DialogueWait {
     target: u64,
     stream: Dialogue,
+    voice: Option<ObjectRef>,
 }
 impl Game {
     /// An outline font is supplied by the user/system, never extracted from
@@ -84,10 +85,18 @@ impl Game {
         let Value::Text(text) = self.vm.evaluate(&instruction.arguments[1])? else {
             bail!("dialogue body is not text");
         };
-        ensure!(
-            matches!(self.vm.evaluate(&instruction.arguments[2])?, Value::Null),
-            "dialogue resource callback is not implemented"
-        );
+        let voice = match self.vm.evaluate(&instruction.arguments[2])? {
+            Value::Null => None,
+            Value::Reference(reference)
+                if reference
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "COptimizedObs") =>
+            {
+                Some(reference)
+            }
+            _ => bail!("unsupported dialogue resource callback"),
+        };
         let id = self.ensure_message_window(&target)?;
         self.ensure_text_font()?;
         let object = &self.objects[&id];
@@ -111,12 +120,25 @@ impl Game {
             speed as u32
         };
         let stream = Dialogue::new(&text, speed, self.message_windows[&id].page.clone())?;
+        if let Some(source) = &voice {
+            self.queue_sound(SoundRequest {
+                ticket: None,
+                source: Some(source.clone()),
+                kind: 2,
+                flags: 0,
+                parameters: [0; 3],
+            })?;
+        }
         let object = self.objects.get_mut(&id).unwrap();
         // CVmMsg execution (Vm60 0x1006ecb5) clears CBox's hidden bit before
         // output. Chapter startup deliberately hides this box until then.
         object.visible = true;
         object.backdrop = Some(self.message_config.as_ref().unwrap().backdrop);
-        self.dialogue = Some(DialogueWait { target: id, stream });
+        self.dialogue = Some(DialogueWait {
+            target: id,
+            stream,
+            voice,
+        });
         self.dialogue_pressed = false;
         self.tick_dialogue(0)
     }
@@ -137,6 +159,15 @@ impl Game {
         if self.dialogue.as_ref().is_some_and(|d| d.stream.finished()) {
             self.vm.acknowledge_host()?;
             let d = self.dialogue.take().unwrap();
+            if let Some(source) = d.voice {
+                self.queue_sound(SoundRequest {
+                    ticket: None,
+                    source: Some(source),
+                    kind: 3,
+                    flags: 0,
+                    parameters: [0; 3],
+                })?;
+            }
             self.message_windows.get_mut(&d.target).unwrap().page = d.stream.page;
         }
         Ok(())

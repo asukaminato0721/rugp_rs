@@ -79,6 +79,15 @@ cargo run --release --features audio -- --project-dir /run/media/w/KIMINOZO_LE p
 
 Muted/headless runs still honor the duration of scripted waiting one-shot sounds.
 
+The headless playability probe executes the same runtime, automatically advances
+dialogue and chooses the first menu entry. It prints only cursors/counters and
+uses volatile state (no save/profile writes). Optional arguments are maximum
+ticks and milliseconds per tick; failures identify the next missing operation:
+
+```sh
+cargo run --release -p rugp_runtime --no-default-features --example autoplay -- /run/media/w/KIMINOZO_LE 10000 1000
+```
+
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
 `~/.local/share/rugp_rs` on Linux). Use `play --user-data-dir PATH` to choose
@@ -227,8 +236,11 @@ later camera setup. Native default angular boundary correction now passes
 the translated target at scene 79, PC `0x60`, and mode-4 camera setup
 at scene 79, PC `0x3a8`. Posture motion now passes scene 64, PC `0x0`,
 including object assignment and the later query/cancel through `CVmVarObj`.
-The chapter now reaches voiced dialogue at scene 483, PC `0xc28`, whose
-resource callback is the next unimplemented boundary.
+Voiced dialogue now passes scene 483, PC `0xc28`: its `COptimizedObs`
+callback queues the real PCM voice on a separate voice bus, without blocking
+text input. Completing/skipping the message stops that voice; refreshing text
+does not replay it. The chapter now reaches sound fade-stop operation 5 at
+scene 483, PC `0xd10`, the next unimplemented boundary.
 Its inline `CPostureMoment#4` resources now retain typed numeric fields and
 all five context-bound references during the original archive-reading pass.
 Inner versions 0–2, conditional vectors/modes, signed vectors and finite channel

@@ -483,6 +483,8 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     let mut saw_posture_stop = false;
     let mut posture_start = None;
     let mut saw_posture_camera_change = false;
+    let mut voice_plays = 0;
+    let mut voice_stops = 0;
     for _ in 0..1000 {
         if let Some(object) = game.objects.get(&212259) {
             if object.active_posture_count() > 0 {
@@ -502,6 +504,23 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
                 assert_eq!(request.parameters, [0, 4096, 2500]);
                 assert_eq!(request.gain_envelope()?.duration_ms(), 2500);
                 saw_ramp = true;
+            }
+        }
+        for request in game.pending_sounds().iter().filter(|r| {
+            r.source
+                .as_ref()
+                .is_some_and(|s| s.class.as_ref().is_some_and(|c| c.name == "COptimizedObs"))
+        }) {
+            match request.kind {
+                2 => {
+                    assert!(request.ticket.is_some());
+                    voice_plays += 1;
+                }
+                3 => {
+                    assert!(request.ticket.is_none());
+                    voice_stops += 1;
+                }
+                other => panic!("unexpected dialogue voice operation {other}"),
             }
         }
         rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
@@ -543,7 +562,7 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     );
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((483, 0xc28)),
+        Some((483, 0xd10)),
         "{boundary:#}"
     );
     let layers = game.objects[&212259].world_layers;
@@ -559,18 +578,19 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("dialogue resource callback is not implemented"),
+        format!("{boundary:#}").contains("unsupported sound operation 5"),
         "{boundary:#}"
     );
     assert!(saw_ramp, "chapter must queue the real ramped playback");
+    assert!(
+        voice_plays > 0 && voice_stops > 0,
+        "voiced dialogue must play and stop actual voice resources"
+    );
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
-        assert_eq!(instruction.class.name, "CVmMsg");
-        assert!(matches!(
-            game.vm.evaluate(&instruction.arguments[2])?,
-            rugp_scene_vm::vm::Value::Reference(_)
-        ));
+        assert_eq!(instruction.class.name, "CVmSound");
+        assert_eq!(game.vm.evaluate(&instruction.arguments[1])?.integer()?, 5);
     } else {
-        panic!("unimplemented dialogue callback was acknowledged");
+        panic!("unimplemented sound fade-stop was acknowledged");
     }
     Ok(())
 }

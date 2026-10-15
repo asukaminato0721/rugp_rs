@@ -26,10 +26,10 @@ impl Game {
             match request.kind {
                 2 | 4 => {
                     request.gain_envelope()?;
-                    let bus = if source.class.as_ref().is_some_and(|c| c.name == "CPmBgm") {
-                        Bus::Bgm
-                    } else {
-                        Bus::Effect
+                    let bus = match source.class.as_ref().map(|c| c.name.as_str()) {
+                        Some("CPmBgm") => Bus::Bgm,
+                        Some("COptimizedObs") => Bus::Voice,
+                        _ => Bus::Effect,
                     };
                     request.ticket = Some(self.audio_state.play(id, bus)?);
                 }
