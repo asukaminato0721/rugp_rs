@@ -592,6 +592,9 @@ dialogue regression requires `RUGP_TEST_GAME` and an installed Japanese font
 (or `RUGP_TEST_FONT`). The `dialogue_stats` example emits only aggregate metadata.
 The `sound_stats` example similarly inventories control kinds/flags; add
 `--transitions` to print distinct gain/transition tuples without sound data.
+Null-source `CVmSound` dispatches only the four native global-stop kinds;
+other kinds (including a real scene-345 play packet) are native no-ops, not
+implicit stops or waits. Both device and muted paths preserve active channels.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.

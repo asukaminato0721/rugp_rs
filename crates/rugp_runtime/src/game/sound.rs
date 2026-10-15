@@ -3,6 +3,12 @@ use crate::audio_envelope::GainEnvelope;
 use crate::audio_state::Bus;
 
 impl SoundRequest {
+    /// Vm60 10073467..100734e5 only dispatches the four global stop
+    /// operations for null sources. All other kind bytes return immediately,
+    /// without playback, gain validation, waiting or channel changes.
+    pub fn null_source_is_noop(&self) -> bool {
+        self.source.is_none() && !matches!(self.kind, 0 | 1 | 254 | 255)
+    }
     /// Null-source native operations address channel groups, not PCM sources.
     /// `None` denotes every bus; zero stops the native 3..11 effect group.
     pub fn global_stop_bus(&self) -> Result<Option<Bus>> {
@@ -32,6 +38,9 @@ impl SoundRequest {
 
 impl Game {
     pub(super) fn queue_sound(&mut self, mut request: SoundRequest) -> Result<bool> {
+        if request.null_source_is_noop() {
+            return Ok(false);
+        }
         if let Some(source) = &request.source {
             let id = source.offset.context("sound source identity missing")?;
             match request.kind {
@@ -116,6 +125,84 @@ impl Game {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_null_sound_play_is_a_native_noop_not_a_global_stop_or_wait() -> Result<()> {
+        use rugp_assets::{object::ClassId, script::Script};
+        use rugp_scene_vm::Scenario;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 345)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let mut instruction = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x3318)
+            .context("null-source sound packet")?
+            .clone();
+        assert!(matches!(
+            game.vm.evaluate(&instruction.arguments[0])?,
+            Value::Null
+        ));
+        assert_eq!(game.vm.evaluate(&instruction.arguments[1])?.integer()?, 2);
+        let tickets = [
+            game.audio_state.play(1, Bus::Bgm)?,
+            game.audio_state.play(2, Bus::Effect)?,
+            game.audio_state.play(3, Bus::Voice)?,
+        ];
+        let before = game.frame().to_vec();
+        instruction.address = 0;
+        instruction.next_address = 24;
+        let mut program = Program::default();
+        program.insert(
+            0,
+            Scenario {
+                object_id: 1,
+                memory_size: 40,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    instruction,
+                    Instruction {
+                        index: 1,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmRet".into(),
+                            schema: 17,
+                        },
+                        address: 24,
+                        next_address: u32::MAX,
+                        flags: 0,
+                        arguments: vec![],
+                    },
+                ],
+            },
+        )?;
+        game.vm = Vm::new(Arc::new(program), 1)?;
+        assert_eq!(game.step(0)?, RunState::Ended);
+        assert!(game.pending_sounds().is_empty() && game.audio_wait.is_none());
+        for kind in 0..=255 {
+            if matches!(kind, 0 | 1 | 254 | 255) {
+                continue;
+            }
+            assert!(!game.queue_sound(SoundRequest {
+                ticket: None,
+                source: None,
+                kind,
+                flags: 255,
+                parameters: [u16::MAX; 3],
+            })?);
+        }
+        assert!(game.pending_sounds().is_empty() && game.audio_wait.is_none());
+        assert!(tickets.iter().all(|t| !game.audio_state.finished(*t)));
+        assert_eq!(game.frame(), before);
+        Ok(())
+    }
+
+    #[test]
     fn global_channel_commands_share_device_and_muted_group_mapping() -> Result<()> {
         let mut request = SoundRequest {
             ticket: None,
@@ -135,6 +222,13 @@ mod tests {
         }
         request.kind = 2;
         assert!(request.global_stop_bus().is_err());
+        for kind in 0..=255 {
+            request.kind = kind;
+            assert_eq!(
+                request.null_source_is_noop(),
+                !matches!(kind, 0 | 1 | 254 | 255)
+            );
+        }
         Ok(())
     }
     #[test]

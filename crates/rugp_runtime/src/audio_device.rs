@@ -180,6 +180,9 @@ impl DeviceAudio {
         })
     }
     pub fn request(&mut self, request: SoundRequest) -> Result<Option<u64>> {
+        if request.null_source_is_noop() {
+            return Ok(None);
+        }
         let envelope = if [2, 4].contains(&request.kind) {
             Some(request.gain_envelope()?)
         } else {
