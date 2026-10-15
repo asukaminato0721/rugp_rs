@@ -23,6 +23,7 @@ mod scroll;
 mod sound;
 mod staffroll;
 mod text_menu;
+mod timer;
 mod var_data;
 mod video;
 #[cfg(test)]
@@ -189,6 +190,8 @@ pub struct Game {
     video_wait: bool,
     staffroll: Option<(u64, crate::staffroll::StaffRoll)>,
     staffroll_wait: bool,
+    timers: BTreeMap<u64, timer::Timer>,
+    timer_wait: Option<u64>,
     profiles: crate::profile_store::ProfileStore,
     menus: BTreeMap<u64, crate::menu::MenuState>,
     selection: Option<menu::SelectionWait>,
@@ -247,6 +250,8 @@ impl Game {
             video_wait: false,
             staffroll: None,
             staffroll_wait: false,
+            timers: BTreeMap::new(),
+            timer_wait: None,
             profiles: crate::profile_store::ProfileStore::default(),
             menus: BTreeMap::new(),
             selection: None,
@@ -505,6 +510,14 @@ impl Game {
                 for (key, value) in fields {
                     properties.insert(format!("render.{channel}.{key}"), value);
                 }
+            }
+            "OM_PlayMedia" | "OM_SetTimeInterval"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CWaitableTimer") =>
+            {
+                self.timer_message(&target, &message.class, &fields)?;
             }
             "OM_PlayMedia"
                 if target
@@ -903,6 +916,15 @@ impl Game {
                         let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
                         return self.synchronize_staffroll(&reference, mode, timeout);
                     }
+                    if reference
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "CWaitableTimer")
+                    {
+                        let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                        let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+                        return self.synchronize_timer(&reference, mode, timeout);
+                    }
                     ensure!(
                         reference
                             .class
@@ -953,6 +975,7 @@ impl Game {
             return Ok(RunState::Ended);
         }
         self.audio_state.advance(dt_ms);
+        self.advance_timers(dt_ms)?;
         self.advance_parse_transition(dt_ms)?;
         self.advance_postures(dt_ms)?;
         if let Some(t) = &mut self.transition {
@@ -979,7 +1002,11 @@ impl Game {
             self.parse_wait = false;
             self.vm.acknowledge_host()?;
         }
-        if self.video_wait || self.staffroll_wait || self.selection.is_some() {
+        if self.video_wait
+            || self.staffroll_wait
+            || self.timer_wait.is_some()
+            || self.selection.is_some()
+        {
             return Ok(RunState::Waiting);
         }
         if self.dialogue.is_some() {
@@ -1030,6 +1057,7 @@ impl Game {
                         || self.posture_wait.is_some()
                         || self.video_wait
                         || self.staffroll_wait
+                        || self.timer_wait.is_some()
                         || self.selection.is_some()
                         || self.dialogue.is_some()
                     {

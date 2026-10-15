@@ -358,6 +358,11 @@ the credits overlay, preserving the background/camera. All four original text
 sources and a real playback packet pass framebuffer/clock regressions. Native
 font faces/style/alignment, embedded bitmaps, looping, nonzero offsets, and
 non-default sequence settings remain unsupported or approximate.
+`CWaitableTimer` supports asynchronous `OM_PlayMedia`, `OM_SetTimeInterval`,
+mode-0/16 waits and mode-32 active-state queries. Threshold updates keep the
+original playback epoch, including updates after an earlier threshold has
+elapsed; the clock uses native unsigned wrapping. A real ending timer packet
+regression verifies exact waits, nonblocking queries and no audio/frame changes.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
