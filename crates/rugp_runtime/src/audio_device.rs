@@ -134,6 +134,15 @@ impl<B: Backend> Mixer<B> {
             }
         });
     }
+    pub fn fade_stop_source(&mut self, source: u64, duration_ms: u16) {
+        for p in self.playing.values_mut().filter(|p| p.source == source) {
+            p.handle.stop(Tween {
+                duration: std::time::Duration::from_millis(u64::from(duration_ms)),
+                easing: kira::tween::Easing::Linear,
+                ..Tween::default()
+            });
+        }
+    }
 }
 pub struct DeviceAudio {
     mixer: Mixer<DefaultBackend>,
@@ -168,6 +177,10 @@ impl DeviceAudio {
         let offset = source.offset.context("sound source offset missing")?;
         if request.kind == 3 {
             self.mixer.stop_source(offset);
+            return Ok(None);
+        }
+        if request.kind == 5 {
+            self.mixer.fade_stop_source(offset, request.parameters[2]);
             return Ok(None);
         }
         ensure!(
@@ -218,6 +231,37 @@ impl DeviceAudio {
 mod tests {
     use super::*;
     use kira::manager::backend::mock::{MockBackend, MockBackendSettings};
+    #[test]
+    fn fade_stop_does_not_restart_looping_audio_and_finishes_after_the_ramp() -> Result<()> {
+        let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {
+            backend_settings: MockBackendSettings { sample_rate: 1000 },
+            ..Default::default()
+        })
+        .map_err(|_| anyhow::anyhow!("mock init"))?;
+        let mut mixer = Mixer::new(manager);
+        let data = SoundData {
+            sample_rate: 1000,
+            channels: 1,
+            pcm: vec![16384; 1000],
+        };
+        let ticket = mixer.play(7, Bus::Bgm, &data, true)?;
+        mixer.manager.backend_mut().on_start_processing();
+        for _ in 0..100 {
+            let _ = mixer.manager.backend_mut().process();
+        }
+        mixer.fade_stop_source(7, 400);
+        mixer.manager.backend_mut().on_start_processing();
+        let mut samples = Vec::new();
+        for _ in 0..800 {
+            samples.push(mixer.manager.backend_mut().process().left);
+        }
+        assert!(samples[100].abs() > samples[300].abs());
+        // Kira's stop tween interpolates decibels, not linear amplitude.
+        assert!(samples[100].abs() > 0.01);
+        assert!(samples[799].abs() < 0.001);
+        assert!(mixer.finished(ticket));
+        Ok(())
+    }
     #[test]
     fn mock_output_and_stop_are_real_audio_commands() -> Result<()> {
         let settings = AudioManagerSettings::<MockBackend> {

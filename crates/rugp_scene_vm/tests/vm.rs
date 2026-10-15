@@ -49,6 +49,72 @@ fn immediate(value: i32) -> Argument {
     }
 }
 #[test]
+fn assignment_initializes_unsupplied_local_slots_without_reading_them() {
+    let Argument::Reference(owner) = reference("CRsa", 200) else {
+        unreachable!()
+    };
+    let Argument::Reference(mut local) = reference("整数", 700) else {
+        unreachable!()
+    };
+    local.flags |= 1;
+    local.owner = Some(Box::new(owner));
+    local.selector = 8;
+    let local = Argument::Reference(local);
+    let mut program = Program::default();
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![
+                    instruction(
+                        "CVmCall",
+                        0,
+                        32,
+                        vec![reference("CRsa", 200), immediate(17)],
+                    ),
+                    instruction("CVmRet", 32, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    program
+        .insert(
+            200,
+            scene(
+                2,
+                vec![
+                    instruction(
+                        "CVmFlagOp",
+                        0,
+                        32,
+                        flag(0, immediate(42), local.clone(), 32),
+                    ),
+                    instruction(
+                        "CVmFlagOp",
+                        32,
+                        64,
+                        flag(1, immediate(5), local.clone(), 64),
+                    ),
+                    instruction("CVmRet", 64, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    let mut vm = Vm::new(Arc::new(program), 1).unwrap();
+    vm.step().unwrap();
+    assert!(vm.evaluate(&local).is_err()); // reads are still checked
+    vm.step().unwrap();
+    assert_eq!(vm.arguments().len(), 9);
+    assert_eq!(vm.arguments()[0].integer().unwrap(), 17);
+    assert_eq!(vm.evaluate(&local).unwrap().integer().unwrap(), 42);
+    vm.step().unwrap();
+    assert_eq!(vm.evaluate(&local).unwrap().integer().unwrap(), 47);
+    vm.step().unwrap();
+    assert!(vm.arguments().is_empty()); // locals do not leak into the caller
+}
+
+#[test]
 fn synchronization_queries_acknowledge_and_preserve_the_status_value() {
     let mut program = Program::default();
     program

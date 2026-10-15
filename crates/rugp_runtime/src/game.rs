@@ -13,6 +13,7 @@ use std::{cell::Cell, collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
 mod camera;
+mod character;
 mod dialogue;
 mod menu;
 mod parse_screen;
@@ -68,6 +69,7 @@ pub struct ObjectState {
     menu: Option<u64>,
     backdrop: Option<crate::message_window::Backdrop>,
     layers: BTreeMap<i32, Layer>,
+    character: character::CharacterState,
 }
 impl Default for ObjectState {
     fn default() -> Self {
@@ -90,10 +92,14 @@ impl Default for ObjectState {
             menu: None,
             backdrop: None,
             layers: BTreeMap::new(),
+            character: character::CharacterState::default(),
         }
     }
 }
 impl ObjectState {
+    pub fn has_character_image(&self) -> bool {
+        self.character.has_image()
+    }
     pub fn active_posture_count(&self) -> usize {
         self.postures.len()
     }
@@ -126,6 +132,7 @@ impl ObjectState {
                 Layer::Screen(texture) => frame.blit(texture, self.rect, self.opacity)?,
             }
         }
+        self.character.render(frame, self.rect, self.opacity)?;
         Ok(())
     }
 }
@@ -290,7 +297,17 @@ impl Game {
         size: (u32, u32),
     ) -> Result<Framebuffer> {
         let mut frame = Framebuffer::new(size.0, size.1)?;
-        for object in objects.values().filter(|o| o.visible) {
+        // Message-window backdrops/text stay above standing portraits, even
+        // when the character's serialized object address sorts after the UI.
+        for object in objects
+            .values()
+            .filter(|o| o.visible && o.backdrop.is_none())
+            .chain(
+                objects
+                    .values()
+                    .filter(|o| o.visible && o.backdrop.is_some()),
+            )
+        {
             object.render(&mut frame)?;
         }
         Ok(frame)
@@ -361,6 +378,8 @@ impl Game {
             self.ensure_message_window(&target)?;
         }
         match message.class.as_str() {
+            "OM_QueueFace2Data" => self.queue_character_face(id, &fields)?,
+            "OM_SetLayerData2D" => self.set_character_layer(id, &fields)?,
             "OM_AddPostureMomentum" => self.add_posture(&target, &fields)?,
             "OM_SetVarData" => self.set_var_data(&target, &fields)?,
             "OM_SetDrawRatioAsParseWnd" => self.set_draw_ratio(&target, &fields)?,
@@ -420,6 +439,7 @@ impl Game {
             "OM_HumanOut" => {
                 let style = number(&fields, "スタイル", 0)?;
                 let object = self.objects.entry(id).or_default();
+                object.character.remove(style);
                 if style == 0 {
                     object.layers.clear();
                     object.menu = None;
@@ -429,6 +449,13 @@ impl Game {
                 }
             }
             "OM_HumanIn" | "OM_HumanIn2" => {
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| matches!(c.name.as_str(), "CCharBox" | "CCharBox2"))
+                {
+                    return self.show_character(id, &fields);
+                }
                 for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
                     ensure!(
                         number(&fields, field, 0)? == 0,

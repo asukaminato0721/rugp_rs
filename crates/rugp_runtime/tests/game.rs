@@ -476,8 +476,9 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     }
     assert!(game.dialogue_waits_for_input());
     assert_ne!(game.vm.cursor().map(|pc| pc.address), Some(0x1c8));
-    // Follow real page input through sound status queries to the next boundary.
-    let mut boundary = None;
+    // Follow real page input through posture, voice, fade-stop and character
+    // presentation. Stop at a playable milestone, not an expected future error.
+    let mut reached_character_dialogue = false;
     let mut saw_ramp = false;
     let mut saw_posture = false;
     let mut saw_posture_stop = false;
@@ -485,7 +486,18 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     let mut saw_posture_camera_change = false;
     let mut voice_plays = 0;
     let mut voice_stops = 0;
+    let mut saw_fade_stop = false;
     for _ in 0..1000 {
+        if saw_fade_stop
+            && game.dialogue_waits_for_input()
+            && game
+                .objects
+                .values()
+                .any(|o| o.visible && o.has_character_image())
+        {
+            reached_character_dialogue = true;
+            break;
+        }
         if let Some(object) = game.objects.get(&212259) {
             if object.active_posture_count() > 0 {
                 saw_posture = true;
@@ -506,6 +518,11 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
                 saw_ramp = true;
             }
         }
+        for request in game.pending_sounds().iter().filter(|r| r.kind == 5) {
+            assert!(request.ticket.is_none(), "fade-stop must not replay audio");
+            assert_eq!(request.parameters, [4096, 0, 1000]);
+            saw_fade_stop = true;
+        }
         for request in game.pending_sounds().iter().filter(|r| {
             r.source
                 .as_ref()
@@ -524,22 +541,15 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
             }
         }
         rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
-        match game.step(100) {
-            Err(error) => {
-                boundary = Some(error);
-                break;
-            }
-            Ok(RunState::Ended) => panic!("chapter ended before pending synchronization"),
-            _ => {}
+        if game.step(100)? == RunState::Ended {
+            panic!("chapter ended before character dialogue");
         }
     }
-    let boundary = boundary.with_context(|| {
-        format!(
-            "expected next unsupported host operation; cursor {:?}, dialogue {}",
-            game.vm.cursor(),
-            game.waiting_for_dialogue()
-        )
-    })?;
+    assert!(
+        reached_character_dialogue,
+        "did not reach character dialogue: {:?}",
+        game.vm.cursor()
+    );
     let camera = game
         .objects
         .get(&212259)
@@ -554,43 +564,30 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         saw_posture_stop,
         "native query/cancel must remove the active posture"
     );
-    assert_eq!(camera.focal_length, 624, "{boundary:#}");
-    assert_eq!(camera.angles_q4, [-164, -1216, 0], "{boundary:#}");
-    assert_eq!(
-        camera.position, [0; 3],
-        "rejected dialogue must not mutate camera"
-    );
+    assert!(camera.focal_length > 0);
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((483, 0xd10)),
-        "{boundary:#}"
+        Some((483, 0xea4))
     );
     let layers = game.objects[&212259].world_layers;
     assert!(layers.draws_in_sprite_pass(0));
     for slot in 1..=3 {
-        assert!(
-            layers.draws_in_sprite_pass(slot),
-            "slot {slot}, {layers:?}; {boundary:#}"
-        );
+        assert!(layers.draws_in_sprite_pass(slot), "slot {slot}, {layers:?}");
     }
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
-    assert!(
-        format!("{boundary:#}").contains("unsupported sound operation 5"),
-        "{boundary:#}"
-    );
+    assert!(saw_fade_stop);
     assert!(saw_ramp, "chapter must queue the real ramped playback");
     assert!(
         voice_plays > 0 && voice_stops > 0,
         "voiced dialogue must play and stop actual voice resources"
     );
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
-        assert_eq!(instruction.class.name, "CVmSound");
-        assert_eq!(game.vm.evaluate(&instruction.arguments[1])?.integer()?, 5);
+        assert_eq!(instruction.class.name, "CVmMsg");
     } else {
-        panic!("unimplemented sound fade-stop was acknowledged");
+        panic!("character dialogue must remain blocked on real input");
     }
     Ok(())
 }

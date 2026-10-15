@@ -4,7 +4,9 @@ Native Rust reimplementation of rUGP, targeting the 2008 **君が望む永遠
 ～Latest Edition～** disc. This is an active port: archive and scene decoding
 work, along with Cr6Ti/CRip007/CRip008, CRmt mipmaps, CBg2d image planes,
 and OOR/Vorbis audio decoding. A first vertical slice runs the real startup VM
-through logo loading, timed waits, and crossfades into a software framebuffer.
+through the title menu into chapter-one dialogue and standing portraits in a
+software framebuffer. Playability takes priority over exact effect fidelity:
+static portrait projection and some transitions intentionally approximate rUGP.
 The full game is **not yet playable**: 3D rendering, effects, interactive UI,
 and save/load remain incomplete. An optional Kira audio-device adapter
 handles ordinary sample playback; specialized sound operations remain incomplete.
@@ -239,8 +241,29 @@ including object assignment and the later query/cancel through `CVmVarObj`.
 Voiced dialogue now passes scene 483, PC `0xc28`: its `COptimizedObs`
 callback queues the real PCM voice on a separate voice bus, without blocking
 text input. Completing/skipping the message stops that voice; refreshing text
-does not replay it. The chapter now reaches sound fade-stop operation 5 at
-scene 483, PC `0xd10`, the next unimplemented boundary.
+does not replay it. Sound operation 5 now fades/stops the existing instance,
+without replaying it or extending its natural duration. Device output uses
+Kira's current-gain stop tween rather than reproducing the packet's initial
+gain/reset and native mixing curve exactly. Late PCM-duration reporting cannot
+overwrite a pending fade-stop deadline.
+
+The chapter regression now reaches actual character dialogue at scene 483,
+PC `0xea4`, instead of asserting an expected unsupported-operation error.
+`OM_QueueFace2Data` retains the face parts, `OM_SetLayerData2D` retains layer
+vectors, and character `OM_HumanIn` composites the real body/face textures.
+Portraits currently use approximate depth/horizontal placement, static eyes
+and mouth, and instant replacement; native sprite geometry, layer-vector
+deformation and animated lips/blinks remain incomplete. Message windows render
+above portraits regardless of serialized object-address ordering.
+Script helper functions can initialize local parameter slots not supplied by
+the caller; assignment does not first read an uninitialized destination.
+Region blits now crop/scale between differently sized surfaces and preserve
+pixels outside the destination region. `CFadeShock` currently uses its common
+transition curve/wait without the displacement effect. Standard `0x6` text
+packet variants share the portable layout while retaining their explicit text
+control-code waits. The real-host first-choice autoplay probe has advanced
+22 text waits and now reaches `OM_SetBBInfoForQueue` at scene 51, PC `0x60`,
+the next unimplemented boundary; full-game completion is not yet verified.
 Its inline `CPostureMoment#4` resources now retain typed numeric fields and
 all five context-bound references during the original archive-reading pass.
 Inner versions 0–2, conditional vectors/modes, signed vectors and finite channel
@@ -369,8 +392,9 @@ composition, sprite interleaving and full-matrix modes remain unsupported.
 For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.
-Unsupported host messages are never skipped; dialogue resource callbacks,
-substitutions and alternate modes still stop with explicit errors.
+Unknown host messages are never silently skipped. Unsupported dialogue
+callbacks, substitutions and packet families still stop with explicit errors;
+the documented presentation approximations do not replace story/control state.
 
 `rugp_assets::message` reads the native CMsgSelBox resource layout and its
 CFrameImage border-piece references, with truncation/version regressions and a

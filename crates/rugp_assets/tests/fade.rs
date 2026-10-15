@@ -23,6 +23,9 @@ fn native_curve_interpolation_and_color() -> Result<()> {
     assert_eq!(fade.curve.alpha(625, 1000), 192);
     assert_eq!(fade.curve.alpha(u32::MAX, 1000), 256);
     assert_eq!(fade.curve.alpha(0, 0), 256);
+    let shock = Fade::from_inline("CFadeShock", &body(false))?;
+    assert_eq!(shock.color, None);
+    assert_eq!(shock.curve.alpha(1000, 1000), 256);
     let mut data = body(true);
     data.extend(0x00123456u32.to_le_bytes());
     let fade = Fade::from_inline("CFadeMergeColor", &data)?;

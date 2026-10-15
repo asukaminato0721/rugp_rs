@@ -50,7 +50,11 @@ impl Fade {
         ensure!(
             matches!(
                 class,
-                "CFadeNormal" | "CFadeMergeBlack" | "CFadeMergeWhite" | "CFadeMergeColor"
+                "CFadeNormal"
+                    | "CFadeMergeBlack"
+                    | "CFadeMergeWhite"
+                    | "CFadeMergeColor"
+                    | "CFadeShock"
             ),
             "unimplemented fade class {class}"
         );
@@ -85,7 +89,9 @@ impl Fade {
             "unordered fade curve"
         );
         let color = match class {
-            "CFadeNormal" => None,
+            // Shock currently uses the common transition endpoint/clock. The
+            // native displacement is a presentation-only runtime enhancement.
+            "CFadeNormal" | "CFadeShock" => None,
             "CFadeMergeBlack" => Some([0, 0, 0]),
             _ => {
                 let c = r.u32()?;

@@ -36,6 +36,18 @@ impl Game {
                 3 => {
                     self.audio_state.stop_source(id);
                 }
+                5 => {
+                    // Native CVmSound dispatch 100738c3 fades the existing
+                    // instance; it does not replay the sample. Playback-first:
+                    // use the device's current amplitude rather than resetting
+                    // to the packet's initial gain. Bit 0 is invalid natively.
+                    ensure!(
+                        request.flags & 1 == 0,
+                        "cannot wait directly on sound fade-stop"
+                    );
+                    self.audio_state
+                        .fade_stop_source(id, u32::from(request.parameters[2]));
+                }
                 other => bail!("unsupported sound operation {other}"),
             }
         } else {

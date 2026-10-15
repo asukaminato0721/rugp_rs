@@ -268,6 +268,7 @@ impl Vm {
                 self.variables.insert(offset, value);
             }
             Place::Parameter { depth, index } => {
+                ensure!(index < 65536, "parameter slot exceeds frame limit");
                 let frame = if depth == 0 {
                     self.frame.as_mut().context("no active frame")?
                 } else {
@@ -280,10 +281,12 @@ impl Vm {
                         .get_mut(position)
                         .context("invalid parameter frame")?
                 };
-                *frame
-                    .arguments
-                    .get_mut(index)
-                    .context("assignment to missing argument")? = value;
+                // Script helpers also use parameter slots as locals. A plain
+                // assignment can initialize a slot not supplied by the caller.
+                if index >= frame.arguments.len() {
+                    frame.arguments.resize(index + 1, Value::Null);
+                }
+                frame.arguments[index] = value;
             }
         }
         Ok(())
@@ -571,7 +574,11 @@ impl Vm {
                 } else {
                     self.evaluate(&ins.arguments[0])?.integer()?
                 };
-                let current = self.evaluate(&ins.arguments[1])?.integer()?;
+                let current = if operation == 0 {
+                    0 // assignment does not read the destination's old value
+                } else {
+                    self.evaluate(&ins.arguments[1])?.integer()?
+                };
                 let next = match operation {
                     0 => Some(source),
                     1 => Some(current.wrapping_add(source)),

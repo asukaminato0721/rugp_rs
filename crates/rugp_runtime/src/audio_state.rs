@@ -53,7 +53,8 @@ impl PlaybackRegistry {
     /// its output queue. A stale completion can never finish a newer instance.
     pub fn set_duration(&mut self, ticket: u64, ms: u32) {
         if let Some(p) = self.playing.get_mut(&ticket) {
-            p.deadline = Some(p.started.saturating_add(u64::from(ms)));
+            let end = p.started.saturating_add(u64::from(ms));
+            p.deadline = Some(p.deadline.map_or(end, |old| old.min(end)));
         }
         self.advance(0);
     }
@@ -73,6 +74,13 @@ impl PlaybackRegistry {
     pub fn stop_source(&mut self, source: u64) {
         self.playing.retain(|_, p| p.source != source);
     }
+    pub fn fade_stop_source(&mut self, source: u64, duration_ms: u32) {
+        let end = self.clock.saturating_add(u64::from(duration_ms));
+        for p in self.playing.values_mut().filter(|p| p.source == source) {
+            p.deadline = Some(p.deadline.map_or(end, |old| old.min(end)));
+        }
+        self.advance(0);
+    }
     pub fn stop_bus(&mut self, bus: Bus) {
         self.playing.retain(|_, p| p.bus != bus);
     }
@@ -84,6 +92,32 @@ impl PlaybackRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fade_stop_uses_existing_instances_and_survives_late_pcm_duration() -> Result<()> {
+        let mut p = PlaybackRegistry::default();
+        let first = p.play(7, Bus::Bgm)?;
+        p.advance(2000);
+        p.fade_stop_source(7, 1000);
+        p.set_duration(first, 10000); // draining the original play is not a restart
+        p.advance(999);
+        assert!(!p.finished(first));
+        p.advance(1);
+        assert!(p.finished(first));
+        let second = p.play(7, Bus::Bgm)?;
+        p.set_duration(second, 100);
+        p.fade_stop_source(7, 1000); // fade must not extend natural completion
+        p.advance(100);
+        assert!(p.finished(second));
+        let third = p.play(7, Bus::Bgm)?;
+        p.fade_stop_source(7, 1000);
+        let replacement = p.play(7, Bus::Bgm)?;
+        p.advance(1000);
+        assert!(p.finished(third));
+        assert!(!p.finished(replacement));
+        p.fade_stop_source(7, 0);
+        assert!(p.finished(replacement));
+        Ok(())
+    }
     #[test]
     fn elapsed_async_duration_exact_boundary_and_stale_completion() -> Result<()> {
         let mut p = PlaybackRegistry::default();

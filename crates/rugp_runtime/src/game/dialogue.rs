@@ -10,6 +10,12 @@ pub(super) struct DialogueWait {
     stream: Dialogue,
     voice: Option<ObjectRef>,
 }
+fn supported_text_mode(flags: u32) -> bool {
+    // The 0x6 family is the same text/callback packet with output modifiers.
+    // Portable presentation currently shares its layout for these variants;
+    // controls in the text still determine page/input waits.
+    flags & 0xf0000000 == 0x60000000
+}
 impl Game {
     /// An outline font is supplied by the user/system, never extracted from
     /// the retail Windows-generated 5RF cache. Loaded lazily at first dialogue.
@@ -75,7 +81,7 @@ impl Game {
             "overlapping dialogue/menu waits"
         );
         ensure!(
-            instruction.flags & !0xfffff == 0x60000000,
+            supported_text_mode(instruction.flags),
             "unsupported CVmMsg mode flags {:#x}",
             instruction.flags & !0xfffff
         );
@@ -195,5 +201,21 @@ impl Game {
             self.refresh_dialogue()?;
         }
         self.finish_dialogue_if_done()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn output_modifiers_do_not_reject_the_standard_text_packet_family() {
+        for flags in [
+            0x60000000, 0x60100000, 0x61100000, 0x620001a6, 0x64200000, 0x66000000,
+        ] {
+            assert!(supported_text_mode(flags));
+        }
+        for flags in [0, 0x20000000, 0x40000000, 0x80000000, 0xe0000000] {
+            assert!(!supported_text_mode(flags));
+        }
     }
 }
