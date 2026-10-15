@@ -6,10 +6,10 @@ use crate::{
 };
 
 pub(super) struct DialogueWait {
-    target: u64,
-    stream: Dialogue,
-    voice: Option<ObjectRef>,
-    forced_clock: bool,
+    pub(super) target: u64,
+    pub(super) stream: Dialogue,
+    pub(super) voice: Option<ObjectRef>,
+    pub(super) forced_clock: bool,
 }
 fn output_speed(value: i32, default: u32) -> Result<u32> {
     ensure!(
@@ -408,6 +408,7 @@ mod tests {
         game.vm = message_then_return(message)?;
         assert_eq!(game.step(0)?, RunState::Waiting);
         assert!(!game.dialogue_waits_for_input());
+        super::ui_snapshot::test_roundtrip(&mut game)?;
         assert_eq!(
             game.pending_sounds()
                 .iter()
@@ -416,6 +417,11 @@ mod tests {
             usize::from(has_voice)
         );
         assert_eq!(game.step(10000)?, RunState::Waiting);
+        assert!(game.dialogue_waits_for_input());
+        game.pointer_move(0, 0)?;
+        game.pointer_button(true)?;
+        super::ui_snapshot::test_roundtrip(&mut game)?;
+        game.pointer_button(false)?;
         assert!(game.dialogue_waits_for_input());
         assert_eq!(game.vm.cursor().unwrap().address, 0);
         assert_eq!(
@@ -519,6 +525,7 @@ mod tests {
             1
         );
         let before = game.frame().to_vec();
+        super::ui_snapshot::test_roundtrip(&mut game)?;
         game.activate_selection()?;
         assert_eq!(game.frame(), before);
         assert_eq!(game.step(499)?, RunState::Waiting);

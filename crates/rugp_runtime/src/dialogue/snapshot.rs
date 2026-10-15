@@ -6,6 +6,31 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+pub(crate) fn validate_page(page: &[TextPart]) -> Result<()> {
+    ensure!(
+        page.len() <= 65_536,
+        "dialogue snapshot exceeds retained-page limit"
+    );
+    for part in page {
+        validate_part(part)?;
+    }
+    Ok(())
+}
+fn validate_part(part: &TextPart) -> Result<()> {
+    match part {
+        TextPart::Glyph(ch) => ensure!(
+            !ch.is_control(),
+            "control code stored as dialogue snapshot glyph"
+        ),
+        TextPart::Speaker(name) => ensure!(
+            name.len() <= 131 && !name.chars().any(char::is_control),
+            "invalid dialogue snapshot speaker"
+        ),
+        TextPart::Newline => {}
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DialogueSnapshot {
@@ -64,19 +89,9 @@ impl DialogueSnapshot {
                 }
             }))
         {
-            match part {
-                TextPart::Glyph(ch) => ensure!(
-                    !ch.is_control(),
-                    "control code stored as dialogue snapshot glyph"
-                ),
-                // The parser checks the byte count BEFORE the last character;
-                // a valid four-byte final character can bring it up to 131.
-                TextPart::Speaker(name) => ensure!(
-                    name.len() <= 131 && !name.chars().any(char::is_control),
-                    "invalid dialogue snapshot speaker"
-                ),
-                TextPart::Newline => {}
-            }
+            // The parser checks speaker byte count before its final character,
+            // so a four-byte final character can bring a valid name to 131.
+            validate_part(part)?;
         }
         Ok(())
     }

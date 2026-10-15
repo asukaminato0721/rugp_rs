@@ -240,6 +240,23 @@ impl Game {
         Ok(())
     }
     pub fn pointer_button(&mut self, pressed: bool) -> Result<()> {
+        let armed = if pressed {
+            self.pointer_armed = true;
+            true
+        } else {
+            std::mem::take(&mut self.pointer_armed)
+        };
+        if !pressed && !armed {
+            self.dialogue_pressed = false;
+            if let Some(target) = self.selection_text_target() {
+                self.text_menus.get_mut(&target).unwrap().pressed = None;
+                self.refresh_text_menu(target)?;
+            } else if let Some(id) = self.selection_menu() {
+                self.menus.get_mut(&id).unwrap().pressed = None;
+                self.refresh_menu(id, true)?;
+            }
+            return Ok(());
+        }
         if self.dialogue.is_some() {
             if pressed {
                 self.dialogue_pressed = self.pointer_inside;

@@ -3,7 +3,8 @@
 //! portable outlined text, not the native markup/highlight renderer.
 use super::*;
 
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TextMenu {
     pub entries: Vec<String>,
     pub hover: Option<usize>,
@@ -187,12 +188,14 @@ mod tests {
             assert_eq!(game.text_menus[&target].entries.len(), 2);
             assert_eq!(game.step(100000)?, RunState::Waiting);
             assert_eq!(game.vm.cursor().unwrap().address, 56);
+            super::ui_snapshot::test_roundtrip(&mut game)?;
             game.activate_selection()?; // No hover: no implicit default choice.
             assert!(game.waiting_for_selection());
             if branch == 0 {
                 let frame = game.frame().to_vec();
                 game.navigate_selection(1)?;
                 assert_ne!(game.frame(), frame);
+                super::ui_snapshot::test_roundtrip(&mut game)?;
                 game.activate_selection()?;
             } else {
                 let rect = game.objects[&target].rect;

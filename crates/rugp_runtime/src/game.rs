@@ -32,6 +32,7 @@ mod staffroll;
 mod sync_tests;
 mod text_menu;
 mod timer;
+pub mod ui_snapshot;
 mod var_data;
 mod video;
 #[cfg(test)]
@@ -213,6 +214,7 @@ pub struct Game {
     font_file: Option<(std::path::PathBuf, u32)>,
     pointer_inside: bool,
     dialogue_pressed: bool,
+    pointer_armed: bool,
     pub navigation: String,
     script_save_enabled: bool,
     pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
@@ -275,6 +277,7 @@ impl Game {
             font_file: None,
             pointer_inside: false,
             dialogue_pressed: false,
+            pointer_armed: false,
             navigation: String::new(),
             script_save_enabled: true,
             settings: BTreeMap::new(),

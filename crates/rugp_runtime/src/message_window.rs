@@ -15,6 +15,8 @@ use rugp_assets::{
 };
 use std::{path::Path, sync::Arc};
 
+pub mod snapshot;
+
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Backdrop {
     pub color: [u8; 3],
@@ -49,6 +51,8 @@ impl Backdrop {
     }
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MessageConfig {
     pub family: String,
     pub font_size: u16,
@@ -137,6 +141,7 @@ impl MessageConfig {
 }
 
 pub struct MessageWindow {
+    source: ObjectRef,
     pub data: MessageBox,
     pub border: FrameImage,
     pieces: Vec<Arc<Texture>>,
@@ -183,6 +188,7 @@ impl MessageWindow {
             .map(|r| images.load(r))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
+            source: reference.clone(),
             data,
             border,
             pieces,

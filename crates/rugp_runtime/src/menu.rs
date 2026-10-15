@@ -10,7 +10,10 @@ use rugp_assets::{
     object::ObjectRef,
 };
 
+pub mod snapshot;
+
 pub struct MenuState {
+    source: Option<ObjectRef>,
     pub data: ImageMenu,
     mask: SelectorMask,
     pub hover: Option<u32>,
@@ -52,6 +55,7 @@ impl MenuState {
             "menu/hit-map dimensions differ"
         );
         Ok(Self {
+            source: Some(reference.clone()),
             data,
             mask,
             hover: None,
@@ -210,6 +214,7 @@ mod tests {
             trailing_data: vec![0; 4],
         };
         let mut state = MenuState {
+            source: None,
             data,
             mask: SelectorMask {
                 width: 4,

@@ -706,6 +706,9 @@ pub struct RestoredScene {
     posture_wait: Option<posture::PostureWait>,
 }
 impl RestoredScene {
+    pub(crate) fn objects(&self) -> &BTreeMap<u64, ObjectState> {
+        &self.objects
+    }
     pub(crate) fn object(&self, id: u64) -> Option<&ObjectState> {
         self.objects.get(&id)
     }

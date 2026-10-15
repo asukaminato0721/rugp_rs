@@ -165,6 +165,15 @@ image fades, timer waits, and credits. The opening movie also survives delta-fra
 and final-boundary restores without overwriting the subsequently restored title.
 These components still need UI/settings/audio coordination and user-facing
 save-file/slot integration before they form complete playable saves.
+UI snapshots now reload immutable image-menu/message-window resources while
+retaining selector enable/ignore flags, hover/pressed visuals, text-menu hit
+rectangles and ordinal output destinations. Retained message pages stay separate
+from the current output stream; voice callbacks and forced-clock behavior are
+restored without restarting output. Script navigation/save flags, variant-valued
+settings and lifecycle state are preserved, but global CStdb progress is not
+rewound. A non-persistent physical press latch prevents an old/load-button
+release from confirming restored dialogue or menus. Retail packet/title checks
+exercise these round trips, including suspended text choices and timed speech.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.
