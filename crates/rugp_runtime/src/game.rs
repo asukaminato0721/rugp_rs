@@ -19,6 +19,7 @@ mod menu;
 mod parse_screen;
 mod posture;
 mod profile;
+mod scroll;
 mod sound;
 mod text_menu;
 mod var_data;
@@ -587,6 +588,9 @@ impl Game {
                 let object = self.objects.entry(id).or_default();
                 object.rect.2 = w as u32;
                 object.rect.3 = h as u32;
+            }
+            "OM_BodyScroll" | "OM_BoxScroll" => {
+                scroll::apply(self.objects.entry(id).or_default(), &message.class, fields)?;
             }
             "OM_SetWorldPlayerHeight"
             | "OM_SetBBInfoForQueue"

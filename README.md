@@ -292,6 +292,10 @@ Rain/snow packets and the named scalar members of their independent
 `CNormalCamera` objects are retained without drawing weather particles or
 interpolating their intensity. Explicit script waits still run; non-null
 weather completion handles remain unsupported rather than being abandoned.
+Image-area `OM_BodyScroll` retains the configured origin/time but currently
+shows the full source surface without independent body cropping/panning.
+Mode-zero `OM_BoxScroll` uses staged absolute endpoint placement, without native
+in-flight movement; the helper's separate blocking blit still retains its clock.
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
 geometry/deformation/tinting. The
