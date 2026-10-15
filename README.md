@@ -180,5 +180,10 @@ clicking the first title button: the VM enters chapter one and reaches the
 current boundary, `CVmMsg` at scene 483, PC `0x118`. Dialogue rendering and
 advancement are not yet implemented. Unsupported host messages are never skipped.
 
+`rugp_assets::message` reads the native CMsgSelBox resource layout and its
+CFrameImage border-piece references, with truncation/version regressions and a
+retail metadata test. This is separate from UI snapshot/save-state parsing;
+the referenced CS5i border format is not yet decoded.
+
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.
