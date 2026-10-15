@@ -32,6 +32,9 @@ enum Command {
         /// User-owned configuration/progress root; never written into the game archive directory.
         #[arg(long)]
         user_data_dir: Option<PathBuf>,
+        /// Development diagnostic: execute the real VM on a muted virtual clock before opening a window.
+        #[arg(long, requires = "mute")]
+        fast_forward_ms: Option<u32>,
     },
     /// Run the current runtime headlessly and export its RGBA frame (development diagnostic).
     Frame {
@@ -55,6 +58,11 @@ enum Command {
     },
     /// Decode all referenced bitmaps and report format coverage.
     CheckImages,
+    /// Validate referenced CRbx menus, indexed hit maps, and optional state images.
+    CheckMenus {
+        #[arg(long)]
+        decode: bool,
+    },
     /// Validate native CRsi movie indexes; optionally decode their frames.
     CheckVideo {
         #[arg(long)]
@@ -120,10 +128,14 @@ fn main() -> Result<()> {
             mute,
             quit_after_ms,
             user_data_dir,
+            fast_forward_ms,
         } => {
             let directory =
                 user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
-            let game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
+            let mut game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
+            if let Some(time) = fast_forward_ms {
+                advance_muted(&mut game, time)?;
+            }
             if let Some(path) = game.user_data_dir() {
                 eprintln!("User data: {}", path.display());
             }
@@ -131,16 +143,7 @@ fn main() -> Result<()> {
         }
         Command::Frame { output, time_ms } => {
             let mut game = rugp_runtime::Game::open(&args.project_dir)?;
-            let mut muted_audio = None;
-            game.step(0)?;
-            rugp_runtime::audio::mute_requests(&mut game, &mut muted_audio)?;
-            let mut elapsed = 0;
-            while elapsed < time_ms {
-                let dt = (time_ms - elapsed).min(16);
-                game.step(dt)?;
-                rugp_runtime::audio::mute_requests(&mut game, &mut muted_audio)?;
-                elapsed += dt;
-            }
+            advance_muted(&mut game, time_ms)?;
             let (width, height) = game.size();
             let file = std::fs::OpenOptions::new()
                 .write(true)
@@ -151,7 +154,7 @@ fn main() -> Result<()> {
             encoder.set_depth(png::BitDepth::Eight);
             encoder.write_header()?.write_image_data(game.frame())?;
             println!(
-                "Rendered {elapsed} ms at PC {:?} to {} (audio requests not played)",
+                "Rendered {time_ms} ms at PC {:?} to {} (audio requests not played)",
                 game.vm.cursor(),
                 output.display()
             );
@@ -261,6 +264,68 @@ fn main() -> Result<()> {
                 output.display()
             );
         }
+        Command::CheckMenus { decode } => {
+            use rugp_assets::menu::{ImageMenu, SelectorMask};
+            use std::sync::Arc;
+            let native = rugp_assets::native_schema::NativeSchema::from_directory(game_root)?;
+            let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let mut images = rugp_runtime::image_manager::ImageManager::new(Arc::new(
+                RioArchive::open(&args.project_dir)?,
+            ));
+            let mut menus = 0;
+            let mut selectors = 0;
+            let mut states = 0;
+            for resource in index.resources.values().filter(|r| r.class.name == "CRbx") {
+                let menu = ImageMenu::parse(
+                    &archive.read_at(resource.offset, resource.size as usize)?,
+                    resource.class.schema,
+                    archive.address_shift,
+                )
+                .with_context(|| format!("menu {:#x}", resource.offset))?;
+                anyhow::ensure!(
+                    menu.base
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "CRip" && c.schema == 1),
+                    "unsupported menu hit-map class"
+                );
+                let mask = SelectorMask::parse(&archive.read_at(
+                    menu.base.offset.context("menu mask offset")?,
+                    menu.base.size.context("menu mask size")? as usize,
+                )?)?;
+                anyhow::ensure!(
+                    (mask.width, mask.height) == (menu.width, menu.height),
+                    "menu/mask dimensions differ"
+                );
+                if decode {
+                    if menu.overlay.offset.is_some() {
+                        images.load(&menu.overlay)?;
+                        states += 1;
+                    }
+                    for selector in &menu.selectors {
+                        for image in &selector.images {
+                            if image.offset.is_some() || image.inline.is_some() {
+                                images.load(image)?;
+                                states += 1;
+                            }
+                        }
+                    }
+                }
+                println!(
+                    "{:#x}: {}x{}, {} selectors, {} trailer bytes",
+                    resource.offset,
+                    menu.width,
+                    menu.height,
+                    menu.selectors.len(),
+                    menu.trailing_data.len()
+                );
+                selectors += menu.selectors.len();
+                menus += 1;
+            }
+            println!(
+                "{menus} menus, {selectors} selectors, {states} state/background images decoded"
+            );
+        }
         Command::CheckVideo { keyframes, decode } => {
             let native = rugp_assets::native_schema::NativeSchema::from_directory(game_root)?;
             let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
@@ -353,7 +418,10 @@ fn main() -> Result<()> {
                 .parent()
                 .context("game root missing")?;
             let native = rugp_assets::native_schema::NativeSchema::from_directory(root)?;
-            let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let mut index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            if !index.resources.contains_key(&offset) {
+                index.expand_menu_sources(&archive)?;
+            }
             let resource = index
                 .resources
                 .get(&offset)
@@ -589,6 +657,20 @@ fn main() -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn advance_muted(game: &mut rugp_runtime::Game, time_ms: u32) -> Result<()> {
+    let mut audio = None;
+    game.step(0)?;
+    rugp_runtime::audio::mute_requests(game, &mut audio)?;
+    let mut elapsed = 0;
+    while elapsed < time_ms {
+        let dt = (time_ms - elapsed).min(16);
+        game.step(dt)?;
+        rugp_runtime::audio::mute_requests(game, &mut audio)?;
+        elapsed += dt;
     }
     Ok(())
 }

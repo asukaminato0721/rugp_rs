@@ -186,17 +186,93 @@ fn startup_movie_uses_real_sync_and_fractional_frame_clock() -> Result<()> {
     game.vm
         .variables
         .insert(213487, rugp_scene_vm::vm::Value::Integer(99));
-    let resumed = game.step(1);
+    game.step(1)?;
     assert!(game.video().unwrap().finished());
     assert_ne!(game.vm.cursor(), movie_pc.as_ref());
     assert_eq!(game.vm.variables[&213487].integer()?, 0);
-    // The next currently unsupported host request is after movie completion;
-    // it must not leave the VM parked on its synchronization instruction.
-    if let Err(error) = resumed {
-        anyhow::ensure!(
-            format!("{error:#}").contains("OM_AllDisableSelecter"),
-            "unexpected post-movie failure: {error:#}"
-        );
+    assert!(game.waiting_for_selection());
+    Ok(())
+}
+
+fn open_title() -> Result<Game> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+    let mut game = Game::open(root.as_ref())?;
+    let mut audio = None;
+    game.step(0)?;
+    for _ in 0..150 {
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        if game.video().is_some() {
+            break;
+        }
+        game.step(100)?;
     }
+    game.step(117034)?;
+    assert!(game.waiting_for_selection());
+    let starting = game.frame().to_vec();
+    game.step(1000)?;
+    assert_ne!(game.frame(), starting);
+    Ok(game)
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn title_menu_real_mask_mouse_keyboard_and_vm_result() -> Result<()> {
+    let mut game = open_title()?;
+    let pc = game.vm.cursor().cloned();
+    assert_eq!(
+        pc.as_ref().map(|p| (p.scene, p.address)),
+        Some((252, 0xfa0))
+    );
+    let normal = game.frame().to_vec();
+    game.step(5000)?;
+    assert_eq!(game.vm.cursor(), pc.as_ref());
+    assert_eq!(game.frame(), normal); // asynchronous title fade cannot erase buttons
+    game.pointer_move(200, 217)?;
+    game.pointer_button(true)?;
+    game.pointer_button(false)?;
+    assert!(game.waiting_for_selection());
+    assert_eq!(game.frame(), normal);
+    game.pointer_move(200, 100)?;
+    assert_ne!(game.frame(), normal);
+    let hover = game.frame().to_vec();
+    game.pointer_button(true)?;
+    assert_ne!(game.frame(), hover);
+    game.pointer_move(-1, -1)?;
+    game.pointer_button(false)?;
+    assert!(game.waiting_for_selection());
+    assert_eq!(game.frame(), normal);
+    game.navigate_selection(1)?;
+    assert_eq!(game.frame(), hover);
+    game.navigate_selection(1)?;
+    game.navigate_selection(1)?; // skip the disabled third item
+    game.navigate_selection(-1)?;
+    game.navigate_selection(-1)?;
+    assert_eq!(game.frame(), hover);
+    game.pointer_move(200, 100)?;
+    game.pointer_button(true)?;
+    game.pointer_button(false)?;
+    assert!(!game.waiting_for_selection());
+    assert_eq!(game.vm.variables[&213487].integer()?, 1);
+    assert_eq!(
+        game.vm.cursor().map(|p| (p.scene, p.address)),
+        Some((252, 0xfbc))
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn title_keyboard_activation_returns_the_numeric_selector_not_the_mask_id() -> Result<()> {
+    let mut game = open_title()?;
+    game.navigate_selection(1)?;
+    game.navigate_selection(1)?;
+    game.navigate_selection(1)?; // disabled ID 3 is skipped, ID 4 is selected
+    game.activate_selection()?;
+    assert!(!game.waiting_for_selection());
+    assert_eq!(game.vm.variables[&213487].integer()?, 4);
+    assert_eq!(
+        game.vm.cursor().map(|p| (p.scene, p.address)),
+        Some((252, 0xfbc))
+    );
     Ok(())
 }

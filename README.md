@@ -43,6 +43,7 @@ cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE resources
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE resources --operations
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE image 0xcf1e89 logo.png
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-images
+cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-menus --decode
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE audio 0xf4800c9 voice.wav
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-audio
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-audio --decode
@@ -79,6 +80,13 @@ corrupt or oversized saved profiles return errors instead of being reset.
 The original game directory is rejected as an output location. Diagnostics and
 `Game::open` remain volatile. This currently persists CStdb key/value writes,
 not complete VM/game save slots or imports of original Windows save files.
+
+The native image title menu accepts mouse hover/press/release and arrow-key
+navigation (Enter/Space activates). Disabled selectors are excluded from input.
+Pointer mapping shares the presentation viewport, including letterboxing and
+resizing. `play --mute --fast-forward-ms 132000` executes the real startup on a
+virtual clock before opening the window, for development testing; the default
+launcher does not fast-forward. Later UI and story operations remain incomplete.
 
 ## Validation
 
@@ -156,9 +164,21 @@ pixels, a large clock jump, and synchronization through the end of the opening.
 Native CStdb text lookup/write and scalar output binding now run after the
 opening. A sentinel regression verifies that the query actually updates its
 destination, and another retail regression writes, closes, reopens, and reads
-an isolated user-data directory. The current subsequent runtime boundary is
-title-selector initialization (`OM_AllDisableSelecter`); unsupported host
-messages are still never skipped.
+an isolated user-data directory. CRbx image-menu selection now blocks the VM
+until an actual choice and writes the numeric selector result back to it.
+The title regression checks disabled items, hover/pressed images, cancelled
+drags, keyboard order, the asynchronous title fade, and mouse result binding.
+
+All five directly referenced CRbx menus parse (137 selectors), and their five
+indexed SIA masks and 250 state/background image references decode. The SIA
+bytes are used directly as hit-test IDs, without substituting button rectangles.
+These state images are indirect resources and are separate from the earlier
+direct-bitmap count. `image OFFSET` also resolves menu image references.
+Other menu styles, object-valued selection results, and text-based choices
+remain incomplete. A desktop Xvfb/XTest smoke test also verifies hover and
+clicking the first title button: the VM enters chapter one and reaches the
+current boundary, `CVmMsg` at scene 483, PC `0x118`. Dialogue rendering and
+advancement are not yet implemented. Unsupported host messages are never skipped.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.

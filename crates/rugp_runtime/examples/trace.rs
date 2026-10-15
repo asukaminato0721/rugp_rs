@@ -9,6 +9,10 @@ fn main() -> Result<()> {
         .nth(2)
         .map_or(Ok(30000), |s| s.parse::<u32>())?;
     let mut game = Game::open(root.as_ref())?;
+    let select_first = std::env::args()
+        .nth(3)
+        .is_some_and(|s| s == "--select-first");
+    let mut selected = false;
     let mut audio = None;
     let mut previous = None;
     let mut elapsed = 0;
@@ -40,6 +44,12 @@ fn main() -> Result<()> {
             break;
         }
         mute_requests(&mut game, &mut audio)?;
+        if select_first && !selected && game.waiting_for_selection() {
+            game.navigate_selection(1)?;
+            game.activate_selection()?;
+            selected = true;
+            println!("t={elapsed:05} first menu selection returned to the VM");
+        }
         elapsed += 100;
     }
     Ok(())

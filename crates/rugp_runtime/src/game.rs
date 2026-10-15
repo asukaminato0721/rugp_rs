@@ -12,6 +12,7 @@ use rugp_scene_vm::{
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
+mod menu;
 mod profile;
 mod video;
 
@@ -42,6 +43,7 @@ pub struct ObjectState {
     pub rect: (i32, i32, u32, u32),
     pub properties: BTreeMap<String, Value>,
     pub camera: Camera,
+    menu: Option<u64>,
     layers: BTreeMap<i32, Layer>,
 }
 impl Default for ObjectState {
@@ -55,6 +57,7 @@ impl Default for ObjectState {
             rect: (0, 0, 1024, 600),
             properties: BTreeMap::new(),
             camera: Camera::default(),
+            menu: None,
             layers: BTreeMap::new(),
         }
     }
@@ -93,6 +96,8 @@ pub struct Game {
     video: Option<(u64, crate::video::VideoPlayer)>,
     video_wait: bool,
     profiles: crate::profile_store::ProfileStore,
+    menus: BTreeMap<u64, crate::menu::MenuState>,
+    selection: Option<menu::SelectionWait>,
     pub navigation: String,
     pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
     ended: bool,
@@ -133,6 +138,8 @@ impl Game {
             video: None,
             video_wait: false,
             profiles: crate::profile_store::ProfileStore::default(),
+            menus: BTreeMap::new(),
+            selection: None,
             navigation: String::new(),
             settings: BTreeMap::new(),
             ended: false,
@@ -260,6 +267,11 @@ impl Game {
             .offset
             .context("message target is not bound to a stored object")?;
         match message.class.as_str() {
+            "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
+                self.configure_menu(&target, &message.class, &fields)?
+            }
+            "OM_LoadImageArea" => self.load_image_area(id, &fields)?,
+            "OM_AskUserSelectEx" => self.ask_selection(id, &fields)?,
             "OM_AccessGetValue" | "OM_AccessWrite" => {
                 self.access_profile(&target, &message.class, &fields)?
             }
@@ -341,6 +353,7 @@ impl Game {
                 let object = self.objects.entry(id).or_default();
                 if style == 0 {
                     object.layers.clear();
+                    object.menu = None;
                     self.buffers.remove(&id);
                 } else {
                     object.layers.remove(&style);
@@ -368,6 +381,7 @@ impl Game {
                 let texture = self.images.load(image)?;
                 let plane = Some(Plane::bitmap(&texture)?);
                 self.buffers.remove(&id);
+                self.objects.entry(id).or_default().menu = None;
                 self.objects
                     .entry(id)
                     .or_default()
@@ -400,7 +414,12 @@ impl Game {
     }
     fn host(&mut self, instruction: &Instruction) -> Result<()> {
         match instruction.class.name.as_str() {
-            "CVmGenericMsg" => self.message(self.vm.message(instruction)?)?,
+            "CVmGenericMsg" => {
+                self.message(self.vm.message(instruction)?)?;
+                if self.selection.is_some() {
+                    return Ok(());
+                }
+            }
             "CVmBlt" => {
                 if self.blit(instruction)? {
                     return Ok(());
@@ -492,7 +511,7 @@ impl Game {
                 self.vm.acknowledge_host()?;
             }
         }
-        if self.video_wait {
+        if self.video_wait || self.selection.is_some() {
             return Ok(RunState::Waiting);
         }
         if self.audio_wait {
@@ -524,7 +543,11 @@ impl Game {
                     self.host(&instruction).with_context(|| {
                         format!("runtime at {}:{:#x}", cursor.scene, cursor.address)
                     })?;
-                    if self.wait_ms.is_some() || self.audio_wait || self.video_wait {
+                    if self.wait_ms.is_some()
+                        || self.audio_wait
+                        || self.video_wait
+                        || self.selection.is_some()
+                    {
                         return Ok(RunState::Waiting);
                     }
                 }

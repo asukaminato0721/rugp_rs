@@ -1,5 +1,6 @@
 //! Desktop presentation host; all game/render state stays in rugp_runtime.
 use anyhow::{Context, Result, bail};
+use rugp_runtime::input::Viewport;
 use rugp_runtime::{Game, RunState};
 use std::{
     num::NonZeroU32,
@@ -9,8 +10,9 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::WindowEvent,
+    event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
 
@@ -26,6 +28,7 @@ pub fn run(game: Game, mute: bool, quit_after_ms: Option<u32>) -> Result<()> {
         mute,
         quit_after_ms,
         muted_audio: None,
+        cursor: None,
         #[cfg(feature = "audio")]
         audio: None,
         #[cfg(feature = "audio")]
@@ -49,12 +52,24 @@ struct App {
     mute: bool,
     quit_after_ms: Option<u32>,
     muted_audio: Option<rugp_runtime::audio::AudioResources>,
+    cursor: Option<(f64, f64)>,
     #[cfg(feature = "audio")]
     audio: Option<rugp_runtime::audio_device::DeviceAudio>,
     #[cfg(feature = "audio")]
     audio_wait: Option<u64>,
 }
 impl App {
+    fn move_pointer(&mut self, x: f64, y: f64) -> Result<()> {
+        let Some(window) = self.window.as_ref() else {
+            return Ok(());
+        };
+        let size = window.inner_size();
+        let (gw, gh) = self.game.size();
+        let (x, y) = Viewport::fit(size.width, size.height, gw, gh)
+            .and_then(|v| v.point(x, y))
+            .unwrap_or((-1, -1));
+        self.game.pointer_move(x, y)
+    }
     fn sounds(&mut self) -> Result<()> {
         if self.mute {
             return rugp_runtime::audio::mute_requests(&mut self.game, &mut self.muted_audio);
@@ -102,12 +117,14 @@ impl App {
             .map_err(|e| anyhow::anyhow!("acquire window buffer: {e}"))?;
         output.fill(0);
         let (gw, gh) = self.game.size();
-        let width = (size.width as u64)
-            .min(size.height as u64 * gw as u64 / gh as u64)
-            .max(1) as usize;
-        let height = (width as u64 * gh as u64 / gw as u64).max(1) as usize;
-        let left = (size.width as usize - width) / 2;
-        let top = (size.height as usize - height) / 2;
+        let viewport = Viewport::fit(size.width, size.height, gw, gh)
+            .context("invalid presentation viewport")?;
+        let (width, height, left, top) = (
+            viewport.width as usize,
+            viewport.height as usize,
+            viewport.left as usize,
+            viewport.top as usize,
+        );
         let frame = self.game.frame();
         for y in 0..height {
             let sy = y * gh as usize / height;
@@ -171,6 +188,52 @@ impl ApplicationHandler for App {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CursorMoved { position, .. } if self.error.is_none() => {
+                self.cursor = Some((position.x, position.y));
+                if let Err(error) = self.move_pointer(position.x, position.y) {
+                    self.fail(error);
+                }
+            }
+            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false)
+                if self.error.is_none() =>
+            {
+                self.cursor = None;
+                if let Err(error) = self
+                    .game
+                    .pointer_move(-1, -1)
+                    .and_then(|()| self.game.pointer_button(false))
+                {
+                    self.fail(error);
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } if self.error.is_none() => {
+                if let Err(error) = self.game.pointer_button(state == ElementState::Pressed) {
+                    self.fail(error);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.error.is_none() && event.state == ElementState::Pressed =>
+            {
+                let result = match event.physical_key {
+                    PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::ArrowRight | KeyCode::Tab) => {
+                        self.game.navigate_selection(1)
+                    }
+                    PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::ArrowLeft) => {
+                        self.game.navigate_selection(-1)
+                    }
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space) => {
+                        self.game.activate_selection()
+                    }
+                    _ => Ok(()),
+                };
+                if let Err(error) = result {
+                    self.fail(error);
+                }
+            }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let dt = now.duration_since(self.last).as_millis().min(100) as u32;
@@ -185,10 +248,18 @@ impl ApplicationHandler for App {
                             self.fail(e);
                         }
                     }
+                    let selecting = self.game.waiting_for_selection();
                     match self.game.step(dt) {
                         Ok(RunState::Ended) => event_loop.exit(),
                         Ok(_) => {}
                         Err(e) => self.fail(e),
+                    }
+                    if !selecting
+                        && self.game.waiting_for_selection()
+                        && let Some((x, y)) = self.cursor
+                        && let Err(error) = self.move_pointer(x, y)
+                    {
+                        self.fail(error);
                     }
                     if let Err(e) = self.sounds() {
                         self.fail(e);
@@ -207,6 +278,12 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Resized(_) => {
+                if self.error.is_none()
+                    && let Some((x, y)) = self.cursor
+                    && let Err(error) = self.move_pointer(x, y)
+                {
+                    self.fail(error);
+                }
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }

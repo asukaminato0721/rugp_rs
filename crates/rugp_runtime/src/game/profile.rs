@@ -57,7 +57,7 @@ impl Game {
 // The native integer setter uses C atoi: ASCII whitespace, optional sign,
 // decimal prefix, and zero if no digits. It does not require the entire string
 // to be numeric and does not interpret a leading zero as an octal prefix.
-fn atoi(text: &str) -> i32 {
+pub(super) fn atoi(text: &str) -> i32 {
     let text = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
     let (negative, digits) = if let Some(s) = text.strip_prefix('-') {
         (true, s)
