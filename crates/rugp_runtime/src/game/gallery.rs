@@ -880,20 +880,16 @@ mod tests {
         let mut entered = false;
         let mut pages = 0;
         let mut confirmations = 0;
+        let mut choices = 0;
         for tick in 0u32..20_000 {
             entered |= game.vm.cursor().is_some_and(|pc| pc.scene == entry);
-            if game.waiting_for_selection() {
-                ensure!(
-                    game.vm.cursor() == replay.as_ref(),
-                    "replay returned to wrong menu: {:?}",
-                    game.vm.cursor()
-                );
+            if game.waiting_for_selection() && game.vm.cursor() == replay.as_ref() {
                 ensure!(
                     entered && pages > 0,
                     "replay returned without playing original scene"
                 );
                 eprintln!(
-                    "earned replay {page}/{selector} returned: ticks={tick}, pages={pages}, confirmations={confirmations}"
+                    "earned replay {page}/{selector} returned: ticks={tick}, pages={pages}, confirmations={confirmations}, choices={choices}"
                 );
                 choose(&mut game, 28)?;
                 wait_selection(&mut game, &mut audio)?;
@@ -904,6 +900,18 @@ mod tests {
                     "replay back did not reach title"
                 );
                 return Ok(());
+            }
+            if game.waiting_for_selection() {
+                // Some original replays retain an in-story text choice. It
+                // is not the replay-page return; use normal enabled input.
+                ensure!(
+                    game.selection_text_target().is_some(),
+                    "replay reached an unexpected image menu at {:?}",
+                    game.vm.cursor()
+                );
+                game.navigate_selection(1)?;
+                game.activate_selection()?;
+                choices += 1;
             }
             if game.dialogue_waits_for_input() {
                 game.activate_selection()?;
