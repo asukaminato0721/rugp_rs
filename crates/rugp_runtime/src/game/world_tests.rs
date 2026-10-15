@@ -19,6 +19,102 @@ fn reference(name: &str, schema: u16, offset: u64, size: u32) -> ObjectRef {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn retail_textured_model_fallback_uses_declared_base_pixels_and_stages_placement() -> Result<()> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+    let mut game = Game::open(root.as_ref())?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let scene = rugp_scene_vm::Scenario::decode_with_schema(
+        &rugp_assets::script::Script::load(&game.archive, 474)?,
+        game.archive.address_shift,
+        Some(&native),
+    )?;
+    let mut models = Vec::new();
+    scene.visit_references(&mut |r| {
+        if r.class
+            .as_ref()
+            .is_some_and(|c| c.name == "CDcAgesModelQsT")
+        {
+            models.push(r.clone());
+        }
+    });
+    assert_eq!(models.len(), 6);
+    let target = reference("CParseBgBox", 15, 212259, 118);
+    game.objects.insert(
+        212259,
+        ObjectState {
+            rect: (0, 0, 1024, 600),
+            ..ObjectState::default()
+        },
+    );
+    let mut drew_pixels = false;
+    for model in models {
+        let base = model
+            .inline
+            .as_ref()
+            .context("inline model missing")?
+            .references
+            .last()
+            .unwrap();
+        let expected = game.images.load_world(base)?;
+        let actual = game.images.load_world(&model)?;
+        assert_eq!(actual.planes.len(), expected.planes.len());
+        for (a, b) in actual.planes.iter().zip(&expected.planes) {
+            // Inline CBg2d bitmaps are decoded afresh rather than interned in
+            // the stored-image cache, so compare pixels, not allocation identity.
+            assert_eq!(
+                (a.texture.width, a.texture.height, a.texture.display_scale),
+                (b.texture.width, b.texture.height, b.texture.display_scale)
+            );
+            assert_eq!(a.texture.rgba, b.texture.rgba);
+            assert_eq!(
+                a.plane.quad(&Camera::default(), (0, 0, 1024, 600))?,
+                b.plane.quad(&Camera::default(), (0, 0, 1024, 600))?
+            );
+        }
+        game.frame = Framebuffer::new(1024, 600)?;
+        let before = game.frame().to_vec();
+        game.message(Message {
+            class: "OM_HumanIn2".into(),
+            target: Value::Reference(target.clone()),
+            fields: BTreeMap::from([
+                ("ベース画像".into(), Value::Reference(model)),
+                ("３ＤＹ".into(), Value::Integer(-1440)),
+                ("３ＤＺ".into(), Value::Integer(10000)),
+                ("スタイル".into(), Value::Integer(0)),
+            ]),
+        })?;
+        assert_eq!(game.frame(), before);
+        let object = &game.objects[&212259];
+        assert_eq!(object.camera, Camera::default());
+        assert!(matches!(
+            object.properties["render.model.３ＤＹ"],
+            Value::Integer(-1440)
+        ));
+        let mut oracle = ObjectState {
+            rect: object.rect,
+            ..ObjectState::default()
+        };
+        oracle.layers.insert(0, Layer::World(expected));
+        let mut pixels = Framebuffer::new(1024, 600)?;
+        oracle.render(&mut pixels)?;
+        game.present_scene()?;
+        assert_eq!(game.frame(), pixels.rgba);
+        drew_pixels |= game
+            .frame()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] != [0; 3]);
+    }
+    assert!(
+        drew_pixels,
+        "the model fallback must draw actual archive pixels"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
 fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
     let mut game = Game::open(root.as_ref())?;

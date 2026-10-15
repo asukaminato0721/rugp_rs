@@ -711,12 +711,6 @@ impl Game {
                 {
                     return self.show_character(id, &fields);
                 }
-                for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
-                    ensure!(
-                        number(&fields, field, 0)? == 0,
-                        "3D placement {field} is not implemented yet"
-                    );
-                }
                 let style = number(&fields, "スタイル", 0)?;
                 if message.class == "OM_HumanIn2"
                     && style & 255 == 32
@@ -736,17 +730,45 @@ impl Game {
                 let Some(Value::Reference(image)) = fields.get("ベース画像") else {
                     bail!("image message has no bound image");
                 };
+                let planar_model = image
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CDcAgesModelQsT");
+                for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
+                    if planar_model {
+                        ensure!(
+                            matches!(fields.get(field), None | Some(Value::Integer(_)))
+                                || matches!(fields.get(field), Some(Value::Real(n)) if n.is_finite()),
+                            "invalid textured-model placement {field}"
+                        );
+                    } else {
+                        ensure!(
+                            number(&fields, field, 0)? == 0,
+                            "3D placement {field} is not implemented yet"
+                        );
+                    }
+                }
                 ensure!(
-                    style == 512 || (message.class == "OM_HumanIn" && style == 0),
+                    style == 512 || ((message.class == "OM_HumanIn" || planar_model) && style == 0),
                     "unimplemented world image style {style:#x}"
                 );
                 ensure!(
                     matches!(fields.get("表情画像"), None | Some(Value::Null)),
                     "expression-image composition is not implemented yet"
                 );
+                let source = image.clone();
                 let image = self.images.load_world(image)?;
                 self.buffers.remove(&id);
                 self.objects.entry(id).or_default().menu = None;
+                if planar_model {
+                    let properties = &mut self.objects.entry(id).or_default().properties;
+                    properties.insert("render.model.source".into(), Value::Reference(source));
+                    for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
+                        if let Some(value) = fields.get(field) {
+                            properties.insert(format!("render.model.{field}"), value.clone());
+                        }
+                    }
+                }
                 self.objects
                     .entry(id)
                     .or_default()

@@ -325,6 +325,11 @@ are retained. A retail-host regression covers timed and instantaneous moments.
 Background `OM_HumanIn2` low style `0x20` clears its staged image/captured surface
 even with a null source, as the native clear branch does before resolving the
 image. It preserves camera preparation and existing waits until presentation.
+Inline `CDcAgesModelQsT#1` resources now use their declared base image/CBg2d
+planes as a planar presentation. Material references stay in their original
+object-reader context; object XYZ is retained as metadata, while mesh geometry
+and its spatial placement are omitted. A retail regression checks all six
+model packets in scene 474 against their actual base-image geometry/pixels.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

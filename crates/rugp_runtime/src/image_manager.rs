@@ -35,6 +35,36 @@ pub struct WorldImage {
 }
 impl ImageManager {
     pub fn load_world(&mut self, reference: &ObjectRef) -> Result<WorldImage> {
+        if reference
+            .class
+            .as_ref()
+            .is_some_and(|c| c.name == "CDcAgesModelQsT")
+        {
+            ensure!(
+                reference.class.as_ref().unwrap().schema == 1,
+                "unsupported textured model schema"
+            );
+            let inline = reference
+                .inline
+                .as_ref()
+                .context("stored textured models are not implemented")?;
+            // The original object reader has already bounded the two geometry
+            // blobs and resolved material references in their shared context.
+            // The final reference is the declared base image, not an arbitrary
+            // material. Use its real texture/planes without the 3D mesh warp.
+            let base = inline
+                .references
+                .last()
+                .context("textured model has no base image")?;
+            ensure!(
+                base.class
+                    .as_ref()
+                    .is_some_and(|c| ["CBg2d", "Cr6Ti", "CRmt", "CRip007", "CRip008"]
+                        .contains(&c.name.as_str())),
+                "unsupported textured-model base image"
+            );
+            return self.load_world(base);
+        }
         if reference.class.as_ref().is_some_and(|c| c.name == "CBg2d") {
             let bytes = self.archive.read_at(
                 reference.offset.context("background offset missing")?,
