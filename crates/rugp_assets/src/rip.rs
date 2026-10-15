@@ -56,37 +56,88 @@ pub fn decode_rip008(data: &[u8], schema: u16, shift: u32) -> Result<Image> {
     decode_rip(data, schema, shift, true)
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RipHeader {
+    pub width: u16,
+    pub height: u16,
+    pub x: u16,
+    pub y: u16,
+    pub crop_width: u16,
+    pub crop_height: u16,
+    pub flags: u32,
+    pub info: [u8; 7],
+    pub data_size: u32,
+    pub modern: bool,
+    pub image_properties: Option<Box<crate::object::ObjectRef>>,
+}
+impl RipHeader {
+    pub fn read(r: &mut ObjectReader<'_>, schema: u16, shift: u32, modern: bool) -> Result<Self> {
+        r.input.u32()?;
+        let width = r.input.u16()?;
+        let height = r.input.u16()?;
+        let x = r.input.u16()?;
+        let y = r.input.u16()?;
+        let crop_width = r.input.u16()?;
+        let crop_height = r.input.u16()?;
+        let flags = r.input.u32()?;
+        ensure!(
+            [2, 3].contains(&(flags & 0xff)),
+            "unsupported RIP bitmap kind {}",
+            flags & 0xff
+        );
+        let info = if modern {
+            let flags = r.input.u8()?;
+            let depths = r.input.bytes(3)?;
+            [0, flags, 0, flags, depths[0], depths[1], depths[2]]
+        } else {
+            r.input.bytes(7)?.try_into()?
+        };
+        let image_properties = if schema >= 2 {
+            Some(Box::new(r.reference(shift)?))
+        } else {
+            None
+        };
+        let data_size = r.input.u32()?;
+        r.input.u32()?;
+        Ok(Self {
+            width,
+            height,
+            x,
+            y,
+            crop_width,
+            crop_height,
+            flags,
+            info,
+            data_size,
+            modern,
+            image_properties,
+        })
+    }
+}
 fn decode_rip(data: &[u8], schema: u16, shift: u32, modern: bool) -> Result<Image> {
     let mut r = ObjectReader::new(data);
     r.input.skip(3)?;
     r.scrambled = true;
     r.pad(3)?;
-    r.input.u32()?;
-    let width = r.input.u16()? as usize;
-    let height = r.input.u16()? as usize;
-    let x = r.input.u16()? as usize;
-    let y = r.input.u16()? as usize;
-    let crop_width = r.input.u16()? as usize;
-    let crop_height = r.input.u16()? as usize;
-    let flags = r.input.u32()?;
-    ensure!(
-        [2, 3].contains(&(flags & 0xff)),
-        "unsupported RIP bitmap kind {}",
-        flags & 0xff
-    );
-    let info = if modern {
-        let flags = r.input.u8()?;
-        let depths = r.input.bytes(3)?;
-        [0, flags, 0, flags, depths[0], depths[1], depths[2]]
-    } else {
-        r.input.bytes(7)?.try_into()?
-    };
-    if schema >= 2 {
-        r.reference(shift)?;
-    }
-    let size = r.input.u32()? as usize;
-    r.input.u32()?;
+    let header = RipHeader::read(&mut r, schema, shift, modern)?;
+    let size = header.data_size as usize;
     let data = r.input.bytes(size)?;
+    decode_rip_pixels(&header, data)
+}
+pub fn decode_rip_pixels(header: &RipHeader, data: &[u8]) -> Result<Image> {
+    ensure!(
+        data.len() == header.data_size as usize,
+        "RIP compressed length mismatch"
+    );
+    let width = header.width as usize;
+    let height = header.height as usize;
+    let x = header.x as usize;
+    let y = header.y as usize;
+    let crop_width = header.crop_width as usize;
+    let crop_height = header.crop_height as usize;
+    let flags = header.flags;
+    let info = header.info;
+    let modern = header.modern;
     ensure!(
         width > 0 && height > 0 && width * height <= 16_777_216,
         "invalid RIP dimensions {width}x{height}"

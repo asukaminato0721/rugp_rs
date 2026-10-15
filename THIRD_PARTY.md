@@ -34,3 +34,15 @@ hardcoded Muv-Luv archive position is not used here.
 provided cross-checks for native descriptor field kinds, typed VM literals,
 Cr6Ti channel order, and CRip008 predictor and surface conventions. Its newer
 Photon archive profiles are not substituted for the 2008 disc's headers.
+
+OOR framing and compact Vorbis header research:
+[tsdko/deoptimizeobs FORMAT](https://github.com/tsdko/deoptimizeobs/blob/master/FORMAT)
+and its Erlang reference implementation (public domain/Unlicense).
+Only the standard setup packet sizes and SHA-1 identifiers are included here;
+packet bytes are recovered from the user's own codec plugin. PCM decoding
+uses [lewton](https://github.com/RustAudio/lewton), distributed under its
+MIT/Apache-2.0 licenses through Cargo.
+
+The 2008 CRmt and CBg2d parent layouts and core VM operation semantics were
+cross-checked against static disassembly of the user's `rvmm.dll` and
+`Vm60.dll`. Those binaries are never executed or redistributed.

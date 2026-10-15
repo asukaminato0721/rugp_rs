@@ -43,6 +43,35 @@ pub struct ObjectRef {
 pub struct InlineObject {
     pub data: Vec<u8>,
     pub references: Vec<ObjectRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitmap: Option<InlineBitmap>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InlineBitmap {
+    pub header: BitmapHeader,
+    pub data_offset: usize,
+}
+#[derive(Debug, Clone, Serialize)]
+pub enum BitmapHeader {
+    R6(crate::image::R6Header),
+    Rip(crate::rip::RipHeader),
+}
+impl InlineObject {
+    pub fn decode_bitmap(&self) -> Result<crate::image::Image> {
+        let bitmap = self
+            .bitmap
+            .as_ref()
+            .context("inline object is not a supported bitmap")?;
+        let compressed = self
+            .data
+            .get(bitmap.data_offset..)
+            .context("inline bitmap offset outside body")?;
+        match &bitmap.header {
+            BitmapHeader::R6(header) => crate::image::decode_r6ti_pixels(header, compressed),
+            BitmapHeader::Rip(header) => crate::rip::decode_rip_pixels(header, compressed),
+        }
+    }
 }
 
 impl ObjectRef {
@@ -182,7 +211,35 @@ impl<'a> ObjectReader<'a> {
     pub fn read_inline(&mut self, class: &ClassId, shift: u32) -> Result<InlineObject> {
         let start = self.input.position;
         let mut references = Vec::new();
+        let mut bitmap = None;
         match (class.name.as_str(), class.schema) {
+            ("Cr6Ti", 3) => {
+                let header = crate::image::R6Header::read(self, shift)?;
+                let data_offset = self.input.position - start;
+                references.push(*header.image_properties.clone());
+                self.input.skip(header.data_size as usize)?;
+                bitmap = Some(InlineBitmap {
+                    header: BitmapHeader::R6(header),
+                    data_offset,
+                });
+            }
+            ("CRip007" | "CRip008", 2 | 3) => {
+                let header = crate::rip::RipHeader::read(
+                    self,
+                    class.schema,
+                    shift,
+                    class.name == "CRip008",
+                )?;
+                let data_offset = self.input.position - start;
+                if let Some(properties) = &header.image_properties {
+                    references.push(*properties.clone());
+                }
+                self.input.skip(header.data_size as usize)?;
+                bitmap = Some(InlineBitmap {
+                    header: BitmapHeader::Rip(header),
+                    data_offset,
+                });
+            }
             ("CDcAgesModelQsT", 1) => {
                 let version = self.input.u8()?;
                 ensure!(version == 1, "unsupported model version {version}");
@@ -379,6 +436,7 @@ impl<'a> ObjectReader<'a> {
         Ok(InlineObject {
             data: self.input.consumed_since(start)?.to_vec(),
             references,
+            bitmap,
         })
     }
     pub fn header(&mut self) -> Result<ClassId> {

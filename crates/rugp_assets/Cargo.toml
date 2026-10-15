@@ -8,3 +8,5 @@ anyhow.workspace = true
 encoding_rs.workspace = true
 serde.workspace = true
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder"] }
+lewton = "0.10"
+sha1 = "0.10"

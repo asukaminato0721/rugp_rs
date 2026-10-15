@@ -14,6 +14,17 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Validate OOR audio framing and setup headers; optionally decode every packet.
+    CheckAudio {
+        #[arg(long)]
+        decode: bool,
+    },
+    /// Decode one referenced OOR stream to 16-bit PCM WAV.
+    Audio {
+        #[arg(value_parser = parse_offset)]
+        offset: u64,
+        output: PathBuf,
+    },
     /// Decode all referenced bitmaps and report format coverage.
     CheckImages,
     /// Decode a referenced bitmap to PNG (offset accepts decimal or 0x-prefixed hex).
@@ -54,7 +65,113 @@ enum Command {
 fn main() -> Result<()> {
     let args = Args::parse();
     let archive = RioArchive::open(&args.project_dir)?;
+    let game_root = archive.volumes[0]
+        .path
+        .parent()
+        .context("game root missing")?;
     match args.command {
+        Command::CheckAudio { decode } => {
+            let native = rugp_assets::native_schema::NativeSchema::from_directory(game_root)?;
+            let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let plugin = std::fs::read(game_root.join("Plugins/riooor.rpo"))?;
+            let headers = rugp_assets::oor::SetupHeaders::from_plugin(&plugin);
+            let mut ok = 0;
+            let mut failures = BTreeMap::new();
+            let mut frames = 0u64;
+            for resource in index
+                .resources
+                .values()
+                .filter(|r| r.class.name == "COptimizedObs")
+            {
+                let result = (|| -> Result<()> {
+                    let bytes = archive.read_at(resource.offset, resource.size as usize)?;
+                    let stream = rugp_assets::oor::Oor::parse(&bytes)?;
+                    let mut decoder = rugp_assets::oor::VorbisDecoder::new(stream, &headers)?;
+                    if decode {
+                        while let Some(samples) = decoder.next_samples()? {
+                            frames += samples.len() as u64 / decoder.info.channels as u64;
+                        }
+                    }
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => ok += 1,
+                    Err(error) => {
+                        eprintln!("Audio {:#x}: {error:#}", resource.offset);
+                        *failures.entry(format!("{error:#}")).or_insert(0usize) += 1;
+                    }
+                }
+                if (ok + failures.values().sum::<usize>()) % 1000 == 0 {
+                    eprintln!(
+                        "Checked {} audio streams",
+                        ok + failures.values().sum::<usize>()
+                    );
+                }
+            }
+            println!(
+                "Validated {ok} audio streams; {} failed; {frames} decoded sample frames",
+                failures.values().sum::<usize>()
+            );
+            for (reason, count) in &failures {
+                println!("{count:8} {reason}");
+            }
+            anyhow::ensure!(failures.is_empty(), "some audio streams failed");
+        }
+        Command::Audio { offset, output } => {
+            use std::io::Write;
+            let native = rugp_assets::native_schema::NativeSchema::from_directory(game_root)?;
+            let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let resource = index
+                .resources
+                .get(&offset)
+                .context("unknown audio resource")?;
+            anyhow::ensure!(
+                resource.class.name == "COptimizedObs",
+                "resource is not OOR audio"
+            );
+            let bytes = index.read(&archive, offset)?;
+            let stream = rugp_assets::oor::Oor::parse(&bytes)?;
+            let headers = rugp_assets::oor::SetupHeaders::from_plugin(&std::fs::read(
+                game_root.join("Plugins/riooor.rpo"),
+            )?);
+            let mut decoder = rugp_assets::oor::VorbisDecoder::new(stream, &headers)?;
+            let mut pcm = Vec::new();
+            while let Some(samples) = decoder.next_samples()? {
+                anyhow::ensure!(
+                    pcm.len() + samples.len() * 2 <= 512 * 1024 * 1024,
+                    "WAV exceeds export memory limit"
+                );
+                pcm.extend(samples.into_iter().flat_map(i16::to_le_bytes));
+            }
+            let mut file = std::io::BufWriter::new(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&output)?,
+            );
+            let rate = decoder.info.sample_rate;
+            let channels = decoder.info.channels as u16;
+            file.write_all(b"RIFF")?;
+            file.write_all(&(36 + pcm.len() as u32).to_le_bytes())?;
+            file.write_all(b"WAVEfmt ")?;
+            file.write_all(&16u32.to_le_bytes())?;
+            file.write_all(&1u16.to_le_bytes())?;
+            file.write_all(&channels.to_le_bytes())?;
+            file.write_all(&rate.to_le_bytes())?;
+            file.write_all(&(rate * channels as u32 * 2).to_le_bytes())?;
+            file.write_all(&(channels * 2).to_le_bytes())?;
+            file.write_all(&16u16.to_le_bytes())?;
+            file.write_all(b"data")?;
+            file.write_all(&(pcm.len() as u32).to_le_bytes())?;
+            file.write_all(&pcm)?;
+            file.flush()?;
+            println!(
+                "Decoded {} Hz, {channels} channels, {:.3} seconds to {}",
+                rate,
+                pcm.len() as f64 / (rate as f64 * channels as f64 * 2.0),
+                output.display()
+            );
+        }
         Command::Image { offset, output } => {
             let root = archive.volumes[0]
                 .path
@@ -93,7 +210,7 @@ fn main() -> Result<()> {
             let mut ok = 0;
             let mut failures = BTreeMap::new();
             for resource in index.resources.values().filter(|r| {
-                ["Cr6Ti", "CRip007", "CRip008", "CRmt"].contains(&r.class.name.as_str())
+                ["Cr6Ti", "CRip007", "CRip008", "CRmt", "CBg2d"].contains(&r.class.name.as_str())
                     && r.size > 3
             }) {
                 let result = if resource.class.name == "CRmt" {
@@ -106,6 +223,25 @@ fn main() -> Result<()> {
                                 level.decode().with_context(|| format!("mip {i}"))?;
                             }
                             Ok(container.levels.len())
+                        })
+                } else if resource.class.name == "CBg2d" {
+                    archive
+                        .read_at(resource.offset, resource.size as usize)
+                        .and_then(|bytes| {
+                            let bg = rugp_assets::background::Background::parse(
+                                &bytes,
+                                resource.class.schema,
+                                archive.address_shift,
+                            )?;
+                            for plane in &bg.planes {
+                                plane
+                                    .image
+                                    .inline
+                                    .as_ref()
+                                    .context("external background image not handled by checker")?
+                                    .decode_bitmap()?;
+                            }
+                            Ok(bg.planes.len())
                         })
                 } else {
                     decode_image(&archive, resource).map(|_| 1)
@@ -308,6 +444,19 @@ fn decode_image(
             .first()
             .context("CRmt has no mipmaps")?
             .decode(),
+        "CBg2d" => rugp_assets::background::Background::parse(
+            &bytes,
+            resource.class.schema,
+            archive.address_shift,
+        )?
+        .planes
+        .first()
+        .context("background has no image planes")?
+        .image
+        .inline
+        .as_ref()
+        .context("background plane is not inline")?
+        .decode_bitmap(),
         other => anyhow::bail!("unsupported bitmap class {other}"),
     }
 }

@@ -11,7 +11,7 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct R6Header {
     pub version: u32,
     pub canvas_width: u16,
@@ -23,6 +23,7 @@ pub struct R6Header {
     pub flags: u32,
     pub depth: u32,
     pub data_size: u32,
+    pub image_properties: Box<crate::object::ObjectRef>,
 }
 
 impl R6Header {
@@ -37,7 +38,7 @@ impl R6Header {
         let flags = r.input.u32()?;
         let depth = r.input.u32()?;
         r.input.skip(3)?;
-        r.reference(shift)?;
+        let image_properties = Box::new(r.reference(shift)?);
         let data_size = r.input.u32()?;
         r.input.skip(8)?;
         ensure!(
@@ -55,6 +56,7 @@ impl R6Header {
             flags,
             depth,
             data_size,
+            image_properties,
         })
     }
 }
@@ -101,6 +103,14 @@ pub fn decode_r6ti(data: &[u8], shift: u32) -> Result<Image> {
     r.pad(3)?;
     let header = R6Header::read(&mut r, shift)?;
     let compressed = r.input.bytes(header.data_size as usize)?;
+    decode_r6ti_pixels(&header, compressed)
+}
+
+pub fn decode_r6ti_pixels(header: &R6Header, compressed: &[u8]) -> Result<Image> {
+    ensure!(
+        compressed.len() == header.data_size as usize,
+        "Cr6Ti compressed length mismatch"
+    );
     let mut bits = Packed(Bits::new(compressed));
     let width = header.width as usize;
     let height = header.height as usize;

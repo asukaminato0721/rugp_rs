@@ -139,3 +139,38 @@ fn crmti_profiles_channel_order_copy_and_bounds() {
         }
     }
 }
+
+#[test]
+fn background_inline_bitmap_preserves_cache_and_tail() {
+    use rugp_assets::background::Background;
+    let mut data = vec![0; 3];
+    data.extend(3u16.to_le_bytes()); // pre-registered Cr6Ti schema
+    data.extend(0u16.to_le_bytes()); // embedded version
+    data.extend(1u16.to_le_bytes());
+    data.extend(1u16.to_le_bytes());
+    data.extend([0; 20]);
+    data.extend(0u32.to_le_bytes());
+    data.extend(1u16.to_le_bytes());
+    data.extend([0; 12]);
+    data.push(0); // ancestor count on first reference
+    data.extend(0x8005u16.to_le_bytes());
+    data.extend(0xc040u16.to_le_bytes());
+    data.extend(&bitmap_header(2)[3..]);
+    data.extend(0x0707070fu32.to_le_bytes());
+    data.extend([0; 3]);
+    data.extend(0u16.to_le_bytes()); // metadata + cached null; no second ancestor count
+    data.extend(1u32.to_le_bytes());
+    data.extend([0; 8]);
+    data.push(8);
+    data.push(0); // no background properties
+    for length in 0..data.len() {
+        assert!(Background::parse(&data[..length], 6, 0).is_err());
+    }
+    data.extend([0xaa, 0xbb]);
+    let bg = Background::parse(&data, 6, 0).unwrap();
+    assert_eq!((bg.width, bg.height), (1, 1));
+    assert_eq!(bg.planes.len(), 1);
+    let inline = bg.planes[0].image.inline.as_ref().unwrap();
+    assert_eq!(inline.decode_bitmap().unwrap().rgba, [0, 0, 2, 255]);
+    assert_eq!(bg.trailing_data, [0xaa, 0xbb]);
+}
