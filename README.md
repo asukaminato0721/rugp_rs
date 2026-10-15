@@ -277,9 +277,9 @@ pixels outside the destination region. Known specialized CFade#12 classes
 transition curve/wait without native displacement/deformation. Their envelope
 layouts share one decoder table, with prefix/tail and truncation regressions.
 Default-bound mode 0 is supported as well as explicit-region mode 0x11.
-Standard `0x2`, `0x6`, and `0x8` text packet variants share the portable layout
-while retaining their explicit text
-control-code waits. Normal-render and raster-suppressed real-host autoplay
+All eight retail even-nibble text/callback families (`0x0` through `0xE`)
+share the portable layout while retaining their explicit text control-code
+waits. Odd-nibble families remain rejected. Normal-render and raster-suppressed real-host autoplay
 probes match through 1842 text confirmations and five story selections,
 including the first character motion and later external posture resources.
 Choosing the alternate first story option follows a different script branch
@@ -336,11 +336,14 @@ Defaults preserve their original reader context and distinct instance identity;
 cached aliases share one instance, writes stay VM-local, and fresh VMs reset to
 the resource defaults. Runtime synchronization can query an initialized but
 unactivated posture without inventing an active motion or skipping the query.
-The `0x22000000` and `0x80000000` dialogue variants use the same portable
-text/voice flow while retaining their modifier words. Explicit text
+The less-common dialogue variants use the same portable text/voice flow while
+retaining their modifier words. Explicit text
 pauses/confirmation still apply; native callback mixing/style differences are
 not reproduced. Retail-packet regressions check actual font pixels, blocking
-input and a single voice callback.
+input and exactly one voice callback (or none for unvoiced packets). The
+metadata-only `message_stats` example accepts `CVmMsg` to audit all output
+modifier counts and one representative call site per family without printing
+retail text.
 `CLayoutTextImg` ending resources are decoded with their font/style fields,
 text, extent, and typed `CSbm` reference arrays. All four retail text-layout
 resources pass the parser regression; this alone does not implement staff-roll

@@ -11,12 +11,15 @@ pub(super) struct DialogueWait {
     voice: Option<ObjectRef>,
 }
 fn supported_text_mode(flags: u32) -> bool {
-    // The 0x2/0x6/0x8 families share the text/callback packet. Vm60 1006f21c
+    // The retail even-nibble families share the text/callback packet.
+    // Vm60 1006f21c
     // forwards the output modifiers to the window/voice callback; they do not
     // replace explicit waits and pauses parsed from the text itself.
     // Portable presentation currently shares its layout for these variants;
-    // native voice callback mixing/style modifiers remain approximate.
-    matches!(flags & 0xf0000000, 0x20000000 | 0x60000000 | 0x80000000)
+    // native voice callback mixing/style modifiers remain approximate:
+    // 10014f89 maps (flags >> 20) & 0xe00 into callback/audio options.
+    // Odd-nibble families are not present in the audited game.
+    flags & 0x10000000 == 0
 }
 impl Game {
     /// An outline font is supplied by the user/system, never extracted from
@@ -216,14 +219,13 @@ mod tests {
     #[test]
     fn output_modifiers_do_not_reject_the_standard_text_packet_family() {
         for flags in [
-            0x20000000, 0x22000131, 0x60000000, 0x60100000, 0x61100000, 0x620001a6, 0x64200000,
-            0x66000000, 0x80000000, 0x80000038,
+            0, 0x02000000, 0x04000000, 0x20000000, 0x22000131, 0x40000000, 0x60000000, 0x60100000,
+            0x61100000, 0x620001a6, 0x64200000, 0x66000000, 0x80000000, 0x80000038, 0xa0000000,
+            0xc0000000, 0xe0000000,
         ] {
             assert!(supported_text_mode(flags));
         }
-        for flags in [
-            0, 0x10000000, 0x30000000, 0x40000000, 0xa0000000, 0xe0000000,
-        ] {
+        for flags in [0x10000000, 0x30000000, 0x50000000, 0x90000000, 0xf0000000] {
             assert!(!supported_text_mode(flags));
         }
     }
@@ -236,6 +238,20 @@ mod tests {
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_eight_family_packet_keeps_text_input_wait_and_one_voice_callback() -> Result<()> {
         check_retail_packet(469, 0x19c8, 0x80000000)
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_remaining_even_families_keep_explicit_waits_and_optional_voice() -> Result<()> {
+        for (scene, address, modifiers) in [
+            (201, 0x2ced4, 0x02000000),
+            (201, 0xdcb0, 0x40000000),
+            (201, 0xe230, 0xa0000000),
+            (302, 0xe50, 0xc0000000),
+            (201, 0xe19c, 0xe0000000),
+        ] {
+            check_retail_packet(scene, address, modifiers)?;
+        }
+        Ok(())
     }
     fn check_retail_packet(scene_id: usize, address: u32, modifiers: u32) -> Result<()> {
         use rugp_assets::{object::ClassId, script::Script};
@@ -255,6 +271,8 @@ mod tests {
             .context("retail text packet missing")?
             .clone();
         assert_eq!(message.flags & !0xfffff, modifiers);
+        let has_voice =
+            matches!(&message.arguments[2], Argument::Reference(r) if r.class.is_some());
         let Argument::Reference(window) = &message.arguments[0] else {
             bail!("dialogue window missing");
         };
@@ -299,7 +317,7 @@ mod tests {
                 .iter()
                 .filter(|s| s.ticket.is_some())
                 .count(),
-            1
+            usize::from(has_voice)
         );
         assert_eq!(game.step(10000)?, RunState::Waiting);
         assert!(game.dialogue_waits_for_input());
@@ -309,7 +327,7 @@ mod tests {
                 .iter()
                 .filter(|s| s.ticket.is_some())
                 .count(),
-            1
+            usize::from(has_voice)
         );
         assert!(
             game.frame()
@@ -320,10 +338,11 @@ mod tests {
         );
         game.activate_selection()?;
         assert!(!game.waiting_for_dialogue());
-        assert!(
+        assert_eq!(
             game.pending_sounds()
                 .iter()
-                .any(|s| s.kind == 3 && s.source.is_some())
+                .any(|s| s.kind == 3 && s.source.is_some()),
+            has_voice
         );
         assert_eq!(game.step(0)?, RunState::Ended);
         Ok(())

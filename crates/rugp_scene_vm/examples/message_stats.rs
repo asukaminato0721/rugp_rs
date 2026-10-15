@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use rugp_assets::{RioArchive, native_schema::NativeSchema};
 use rugp_scene_vm::{Argument, vm::Program};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn describe(argument: &Argument) -> String {
     match argument {
@@ -51,8 +51,31 @@ fn main() -> Result<()> {
     let native = NativeSchema::from_directory(root.as_ref())?;
     let program = Program::load(&archive, &native)?;
     let mut counts = BTreeMap::<_, usize>::new();
+    let mut text_families = BTreeSet::new();
     for scene in program.scenes.values() {
         for instruction in &scene.instructions {
+            if filter.as_deref() == Some("CVmMsg") {
+                if instruction.class.name == "CVmMsg" {
+                    *counts
+                        .entry(format!("{:#010x}", instruction.flags & !0xfffff))
+                        .or_default() += 1;
+                    if text_families.insert(instruction.flags & 0xf0000000) {
+                        println!(
+                            "{}:{:#x} flags {:#010x}: [{}]",
+                            scene.object_id,
+                            instruction.address,
+                            instruction.flags,
+                            instruction
+                                .arguments
+                                .iter()
+                                .map(describe)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
+                }
+                continue;
+            }
             if instruction.class.name != "CVmGenericMsg" {
                 continue;
             }
@@ -85,7 +108,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    if filter.is_none() {
+    if filter.is_none() || filter.as_deref() == Some("CVmMsg") {
         for (name, count) in counts {
             println!("{count:6} {name}");
         }
