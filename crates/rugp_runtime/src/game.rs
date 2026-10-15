@@ -959,12 +959,30 @@ impl Game {
                         .as_ref()
                         .is_some_and(|r| r.class.as_ref().is_some_and(|c| c.name == "CPmEffect"))
                 {
-                    ensure!(flags & 8 == 0, "referenced acoustic motion is unsupported");
-                    let Some(rugp_scene_vm::Argument::Bytes(bytes)) = instruction.arguments.get(6)
-                    else {
-                        bail!("inline acoustic position missing");
-                    };
-                    crate::audio_spatial::StereoGains::from_position(flags, bytes)?
+                    let extra = instruction
+                        .arguments
+                        .get(6)
+                        .context("acoustic placement missing")?;
+                    if flags & 8 != 0 {
+                        let Value::Reference(reference) = self.vm.evaluate(extra)? else {
+                            bail!("acoustic motion is not an object");
+                        };
+                        let class = reference
+                            .class
+                            .as_ref()
+                            .context("acoustic motion class missing")?;
+                        let inline = reference
+                            .inline
+                            .as_ref()
+                            .context("stored acoustic motion is unsupported")?;
+                        let curve = rugp_assets::motion::MotionCurve::from_inline(inline, class)?;
+                        crate::audio_spatial::StereoGains::from_motion(curve)?
+                    } else {
+                        let rugp_scene_vm::Argument::Bytes(bytes) = extra else {
+                            bail!("inline acoustic position missing");
+                        };
+                        crate::audio_spatial::StereoGains::from_position(flags, bytes)?
+                    }
                 } else {
                     Default::default()
                 };

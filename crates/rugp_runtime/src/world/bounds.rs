@@ -51,10 +51,9 @@ impl Plane {
             "invalid signed camera focal length"
         );
         let depth = self.depth.wrapping_sub(camera.position[2]);
-        ensure!(
-            depth > 0,
-            "camera boundary at/behind camera is not implemented yet"
-        );
+        // Native 1004071b..100407ac uses signed MulDiv/fdiv without a
+        // positive-depth guard. At zero, masked x87 invalids reach _ftol's
+        // zero low word; the helper below preserves that conversion.
         let left = self.origin[0]
             .wrapping_neg()
             .wrapping_sub(camera.position[0]);
@@ -246,19 +245,18 @@ mod tests {
             598,
         )?;
         assert_eq!(zero.angles_q4, [0, 0, 9]);
-        assert!(
-            bounds
-                .clamp_camera(
-                    Camera {
-                        position: [0, 0, 5000],
-                        ..camera
-                    },
-                    (0, 0, 1024, 600),
-                    2800,
-                    598
-                )
-                .is_err()
-        );
+        for z in [5000, 5001, 10000] {
+            let candidate = Camera {
+                position: [0, 0, z],
+                ..camera
+            };
+            let adjusted = bounds.clamp_camera(candidate, (0, 0, 1024, 600), 2800, 598)?;
+            assert_eq!(adjusted.position, candidate.position);
+            assert_eq!(adjusted.focal_length, candidate.focal_length);
+            if z == 5000 {
+                assert_eq!(adjusted.angles_q4, [0, 0, 9]);
+            }
+        }
         Ok(())
     }
     #[test]

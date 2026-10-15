@@ -156,10 +156,6 @@ impl Plane {
         } else {
             self.depth.wrapping_sub(camera.position[2])
         };
-        ensure!(
-            depth > 0,
-            "camera at/behind a world plane is not implemented yet"
-        );
         let pan = camera.angles_q4[1]
             .wrapping_add(i32::from(self.pitch_bias))
             .wrapping_mul(depth)
@@ -330,10 +326,6 @@ impl Plane {
             camera.position
         };
         let depth = self.depth.wrapping_sub(position[2]);
-        ensure!(
-            depth > 0,
-            "camera at/behind a world plane is not implemented yet"
-        );
         ensure!(
             camera.focal_length <= 32767,
             "camera focal length exceeds native signed range"
@@ -718,16 +710,24 @@ mod tests {
         let q = plane.quad(&camera, viewport)?;
         assert_eq!(q[0], [-70.1953125, 0.09765625, 50.0]);
         assert_eq!(q[2], [129.8046875, 160.09765625, 50.0]);
+        let at_plane = Camera {
+            position: [0, 0, 100],
+            ..camera
+        };
+        let zero = plane.quad(&at_plane, viewport)?;
+        assert!(zero.iter().all(|v| *v == zero[0] && v[2] == 0.0));
+        assert_eq!(plane.projected_camera_center_y(&at_plane, viewport)?, 39);
+        let behind = plane.quad(
+            &Camera {
+                position: [0, 0, 200],
+                ..camera
+            },
+            viewport,
+        )?;
         assert!(
-            plane
-                .quad(
-                    &Camera {
-                        position: [0, 0, 100],
-                        ..camera
-                    },
-                    viewport
-                )
-                .is_err()
+            behind
+                .iter()
+                .all(|p| p[2] == -100.0 && p.iter().all(|v| v.is_finite()))
         );
         plane.camera_relative = true;
         let q = plane.quad(&camera, viewport)?;

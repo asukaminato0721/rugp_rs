@@ -6,7 +6,7 @@ work, along with Cr6Ti/CRip007/CRip008, CRmt mipmaps, CBg2d image planes,
 and OOR/Vorbis audio decoding. The real startup, title, dialogue, story choices,
 standing portraits and ending credits run in Rust. The default first-choice
 route has returned from new game to the original title with full scene
-rasterization: 24,960 text confirmations, 73 script scenes and 50 selections.
+rasterization: 24,960 text confirmations, 74 sampled script scenes and 50 selections.
 Two additional choice plans have completed headless host-logic runs. This
 does not prove every branch or pixel equivalence to the original. Presentation uses a
 software framebuffer. Playability takes priority over exact effect fidelity:
@@ -113,11 +113,10 @@ title (25,493 confirmations, 73 scenes, 53 selections). These execute real resou
 audio timing and host operations, but omit scene rasterization.
 The default plan has also completed a continuous pixel-rendered run with the
 same counters, including the ending and return to the original title.
-After correcting non-text confirmations, a fresh default host-logic run returned
-to that title at tick 37,201: 24,960 dialogue confirmations, 50 selections,
-1,146 separate non-text confirmations and 74 sampled script scenes. This latest
-run omitted scene rasterization; the historical pixel-rendered run above
-predates that input-wait correction.
+After correcting non-text confirmations, fresh default host-logic and continuous
+pixel-rendered runs both returned to that title at tick 37,201: 24,960 dialogue
+confirmations, 50 selections, 1,146 separate non-text confirmations and 74 sampled
+script scenes.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
@@ -365,8 +364,9 @@ reproduced bit-for-bit. Inline `CAcsPos` acoustic packets now retain real PCM
 playback with a portable static stereo/distance approximation. Signed range and
 XYZ words are checked in the compact 8-byte and full 14-byte layouts; the native
 moving listener, cone and extra motion words are not reproduced. All 44 literal
-compact effect packets are audited. Two referenced-motion packets remain a
-separate unsupported path. Stereo gains belong to each playback instance, not
+compact effect packets are audited. The two inline `CMoveAcsOngen` references
+are validated and sampled at time zero, using a fixed portable 1000-unit distance
+scale; moving audio trajectories remain stationary approximations. Stereo gains belong to each playback instance, not
 the shared PCM cache, and survive gain changes, stop handling and portable
 restoration. Legacy saves default to unity channel gains. Kira mock samples and
 an original spatial-play/sync packet verify channel balance and fresh restored
@@ -582,6 +582,11 @@ scope in scene 208 can be accessed by helper 211 without borrowing caller 482's
 arguments. VM tests cover aliases, persistence across helpers, fresh-VM reset,
 and continued rejection of out-of-scope callable arguments. `control_flow`
 accepts an optional project node ID to report only metadata cross-references.
+Copied helpers can retain their template's parameter owner: original helper 63
+declares helper 58's slot. Matching leading parameter declarations now bind the
+nearest actual call frame, including nested template/copy calls. They do not
+invent zero defaults or borrow arbitrary caller arguments; snapshot restoration
+retains the same binding. A real earned extra-route probe passes these calls.
 Sound operation 6 adjusts an existing instance's gain without replaying it or
 changing its completion deadline. Device output ramps from current gain to the
 target (rather than reproducing the native initial-gain reset); zero duration
@@ -662,6 +667,10 @@ foreground layers do not. An extended retail pixel oracle covers the unchanged
 far plane and independent foreground parallax. Nonpositive relative plane depths
 remain explicitly unsupported.
 Default angular boundary correction follows the native two-stage Q13 algorithm,
+including signed/zero relative depth rather than rejecting a camera crossing a
+background plane. Projection preserves signed MulDiv and its zero-divisor
+sentinel; wholly nonpositive-depth planes are culled without erasing other
+layers. Geometry crossing the near plane still needs explicit clipping.
 including first-image pixel width, quantized sine terms, asymmetric bounds,
 the hardcoded reference height and the previous first-slot projected Y center.
 The projection cache is separate from staged camera targets, survives image

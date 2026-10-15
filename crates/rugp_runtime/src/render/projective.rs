@@ -58,7 +58,8 @@ impl Framebuffer {
     ///
     /// Samples are at pixel centers. `clip` is the object's screen viewport;
     /// it is intersected with the framebuffer before any pixel iteration.
-    /// The caller must first clip geometry crossing the camera's near plane.
+    /// Wholly nonpositive-depth planes are culled. The caller must first clip
+    /// geometry crossing the camera's near plane.
     /// Native world metadata/projection is intentionally not inferred here.
     pub fn blit_projective(
         &mut self,
@@ -73,10 +74,16 @@ impl Framebuffer {
                 p.iter().all(|v| v.is_finite())
                     && p[0].abs() <= i32::MAX as f64
                     && p[1].abs() <= i32::MAX as f64
-                    && p[2] >= 1e-9
-                    && p[2] <= i32::MAX as f64
+                    && (i32::MIN as f64..=i32::MAX as f64).contains(&p[2])
             }),
             "invalid projected plane coordinates/depth; near-plane clipping required"
+        );
+        if quad.iter().all(|p| p[2] < 1e-9) {
+            return Ok(());
+        }
+        ensure!(
+            quad.iter().all(|p| p[2] >= 1e-9),
+            "projected plane crosses the near plane; clipping required"
         );
         let positions = quad.map(|p| [p[0], p[1]]);
         let turns: [f64; 4] = std::array::from_fn(|i| {
@@ -406,6 +413,39 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn whole_planes_at_or_behind_the_near_plane_are_culled_without_erasing_other_layers()
+    -> Result<()> {
+        let texture = grid(2, 2, 255);
+        let mut frame = Framebuffer::new(8, 8)?;
+        frame.clear([10, 20, 30]);
+        let before = frame.rgba.clone();
+        let quad = [
+            [0.0, 0.0, 1.0],
+            [4.0, 0.0, 1.0],
+            [4.0, 4.0, 1.0],
+            [0.0, 4.0, 1.0],
+        ];
+        for depth in [i32::MIN as f64, -100.0, 0.0, 1e-12] {
+            frame.blit_projective(
+                &texture,
+                quad.map(|p| [p[0], p[1], depth]),
+                (0, 0, 8, 8),
+                255,
+            )?;
+            assert_eq!(frame.rgba, before);
+        }
+        let mut malformed = quad.map(|p| [p[0], p[1], -100.0]);
+        malformed[0][0] = f64::NAN;
+        assert!(
+            frame
+                .blit_projective(&texture, malformed, (0, 0, 8, 8), 255)
+                .is_err()
+        );
+        frame.blit_projective(&texture, quad, (0, 0, 8, 8), 255)?;
+        assert_ne!(frame.rgba, before);
+        Ok(())
+    }
     #[test]
     fn validates_geometry_before_drawing_and_handles_edge_on_planes() -> Result<()> {
         let texture = grid(1, 1, 255);

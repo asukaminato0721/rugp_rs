@@ -149,6 +149,14 @@ mod tests {
                     continue;
                 }
                 if flags & 8 != 0 {
+                    let Argument::Reference(motion) = &i.arguments[6] else {
+                        bail!("motion reference missing");
+                    };
+                    let curve = rugp_assets::motion::MotionCurve::from_inline(
+                        motion.inline.as_ref().context("inline motion missing")?,
+                        motion.class.as_ref().context("motion class missing")?,
+                    )?;
+                    crate::audio_spatial::StereoGains::from_motion(curve)?.validate()?;
                     references += 1;
                     continue;
                 }
@@ -165,7 +173,7 @@ mod tests {
             "no original inline spatial packets checked"
         );
         eprintln!(
-            "inline spatial packets {counts:?}; separate referenced-motion packets={references}"
+            "inline spatial packets {counts:?}; sampled referenced-motion packets={references}"
         );
         Ok(())
     }
@@ -177,94 +185,97 @@ mod tests {
         use rugp_assets::{object::ClassId, script::Script};
         use rugp_scene_vm::{Argument, Scenario};
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
-        let mut game = Game::open(root.as_ref())?;
-        let native = NativeSchema::from_directory(root.as_ref())?;
-        let code = Scenario::decode_with_schema(
-            &Script::load(&game.archive, 202)?,
-            game.archive.address_shift,
-            Some(&native),
-        )?;
-        let mut play = code
-            .instructions
-            .iter()
-            .find(|i| i.address == 652)
-            .context("original spatial play missing")?
-            .clone();
-        let Argument::Reference(source) = play.arguments[0].clone() else {
-            bail!("spatial source missing");
-        };
-        play.address = 0;
-        play.next_address = 24;
-        let mut program = Program::default();
-        program.insert(
-            1,
-            Scenario {
-                object_id: 1,
-                memory_size: 72,
-                null_records: vec![],
-                trailing_bytes: 0,
-                instructions: vec![
-                    play,
-                    Instruction {
-                        index: 1,
-                        stream_offset: 0,
-                        class: ClassId {
-                            name: "CVmSync".into(),
-                            schema: 17,
+        for (scene, address) in [(202, 652), (259, 101000), (259, 129076)] {
+            let mut game = Game::open(root.as_ref())?;
+            let native = NativeSchema::from_directory(root.as_ref())?;
+            let code = Scenario::decode_with_schema(
+                &Script::load(&game.archive, scene)?,
+                game.archive.address_shift,
+                Some(&native),
+            )?;
+            let mut play = code
+                .instructions
+                .iter()
+                .find(|i| i.address == address)
+                .context("original spatial play missing")?
+                .clone();
+            let Argument::Reference(source) = play.arguments[0].clone() else {
+                bail!("spatial source missing");
+            };
+            play.address = 0;
+            play.next_address = 24;
+            let mut program = Program::default();
+            program.insert(
+                1,
+                Scenario {
+                    object_id: 1,
+                    memory_size: 72,
+                    null_records: vec![],
+                    trailing_bytes: 0,
+                    instructions: vec![
+                        play,
+                        Instruction {
+                            index: 1,
+                            stream_offset: 0,
+                            class: ClassId {
+                                name: "CVmSync".into(),
+                                schema: 17,
+                            },
+                            address: 24,
+                            next_address: 48,
+                            flags: 0,
+                            arguments: vec![
+                                Argument::Reference(source.clone()),
+                                Argument::Number(16),
+                                Argument::Number(0),
+                            ],
                         },
-                        address: 24,
-                        next_address: 48,
-                        flags: 0,
-                        arguments: vec![
-                            Argument::Reference(source.clone()),
-                            Argument::Number(16),
-                            Argument::Number(0),
-                        ],
-                    },
-                    Instruction {
-                        index: 2,
-                        stream_offset: 0,
-                        class: ClassId {
-                            name: "CVmRet".into(),
-                            schema: 17,
+                        Instruction {
+                            index: 2,
+                            stream_offset: 0,
+                            class: ClassId {
+                                name: "CVmRet".into(),
+                                schema: 17,
+                            },
+                            address: 48,
+                            next_address: u32::MAX,
+                            flags: 0,
+                            arguments: vec![],
                         },
-                        address: 48,
-                        next_address: u32::MAX,
-                        flags: 0,
-                        arguments: vec![],
-                    },
-                ],
-            },
-        )?;
-        game.vm = Vm::new(Arc::new(program), 1)?;
-        assert_eq!(game.step(0)?, RunState::Waiting);
-        assert_eq!(game.vm.cursor().unwrap().address, 24);
-        let request = &game.pending_sounds()[0];
-        assert_eq!(request.flags, 0x14);
-        assert!(request.stereo.left > request.stereo.right && request.stereo.right > 0.0);
-        let stereo = request.stereo;
-        let original = request.ticket.context("spatial ticket missing")?;
-        let mut audio = None;
-        crate::audio::mute_requests(&mut game, &mut audio)?;
-        let saved = game.snapshot()?;
-        let mut wire = Vec::new();
-        saved.write(&mut wire)?;
-        let saved = super::super::snapshot::GameSnapshot::read(wire.as_slice())?;
-        let resumes = game.restore_snapshot(&saved, audio.as_mut().unwrap())?;
-        let restored = game.audio_wait.as_ref().unwrap()[0];
-        assert!(restored > original);
-        assert_eq!(resumes[0].stereo, stereo);
-        game.finish_audio_ticket(original);
-        assert_eq!(game.step(0)?, RunState::Waiting);
-        game.queue_sound(SoundRequest {
-            ticket: None,
-            source: Some(source),
-            kind: 3,
-            flags: 0,
-            stereo: Default::default(),
-            parameters: [0; 3],
-        })?;
-        assert_eq!(game.step(0)?, RunState::Ended);
+                    ],
+                },
+            )?;
+            game.vm = Vm::new(Arc::new(program), 1)?;
+            assert_eq!(game.step(0)?, RunState::Waiting);
+            assert_eq!(game.vm.cursor().unwrap().address, 24);
+            let request = &game.pending_sounds()[0];
+            assert_eq!(request.flags, if scene == 202 { 0x14 } else { 0x0c });
+            assert!(request.stereo.left >= request.stereo.right && request.stereo.right > 0.0);
+            assert_ne!(request.stereo, crate::audio_spatial::StereoGains::UNITY);
+            let stereo = request.stereo;
+            let original = request.ticket.context("spatial ticket missing")?;
+            let mut audio = None;
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+            let saved = game.snapshot()?;
+            let mut wire = Vec::new();
+            saved.write(&mut wire)?;
+            let saved = super::super::snapshot::GameSnapshot::read(wire.as_slice())?;
+            let resumes = game.restore_snapshot(&saved, audio.as_mut().unwrap())?;
+            let restored = game.audio_wait.as_ref().unwrap()[0];
+            assert!(restored > original);
+            assert_eq!(resumes[0].stereo, stereo);
+            game.finish_audio_ticket(original);
+            assert_eq!(game.step(0)?, RunState::Waiting);
+            game.queue_sound(SoundRequest {
+                ticket: None,
+                source: Some(source),
+                kind: 3,
+                flags: 0,
+                stereo: Default::default(),
+                parameters: [0; 3],
+            })?;
+            assert_eq!(game.step(0)?, RunState::Ended);
+        }
         Ok(())
     }
 

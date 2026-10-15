@@ -506,6 +506,112 @@ fn inert_scene_declarations_share_typed_slots_without_borrowing_caller_arguments
 }
 
 #[test]
+fn copied_parameter_declarations_bind_the_nearest_helper_and_survive_snapshot_restore() {
+    use rugp_assets::object::snapshot::ReferenceSnapshotWriter;
+    let Argument::Reference(owner) = reference("CRsa", 300) else {
+        unreachable!()
+    };
+    let Argument::Reference(mut slot) = reference("整数", 700) else {
+        unreachable!()
+    };
+    slot.flags |= 1;
+    slot.owner = Some(Box::new(owner));
+    slot.selector = 0;
+    let parameter = Argument::Reference(slot);
+    let declaration = || {
+        instruction(
+            "CVmFlagOp",
+            0,
+            32,
+            flag(0x43, immediate(0), parameter.clone(), 32),
+        )
+    };
+    let mut program = Program::default();
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![
+                    instruction(
+                        "CVmCall",
+                        0,
+                        32,
+                        vec![reference("CRsa", 300), immediate(17)],
+                    ),
+                    instruction("CVmRet", 32, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    // Copied helper 2 retains helper 3's declaration, not its caller's value.
+    program
+        .insert(
+            200,
+            scene(
+                2,
+                vec![
+                    declaration(),
+                    instruction(
+                        "CVmFlagOp",
+                        32,
+                        64,
+                        flag(0, parameter.clone(), reference("CVmVarInt", 601), 64),
+                    ),
+                    instruction("CVmRet", 64, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    program
+        .insert(
+            300,
+            scene(
+                3,
+                vec![
+                    declaration(),
+                    instruction(
+                        "CVmCall",
+                        32,
+                        64,
+                        vec![reference("CRsa", 200), immediate(99)],
+                    ),
+                    instruction(
+                        "CVmFlagOp",
+                        64,
+                        96,
+                        flag(0, parameter.clone(), reference("CVmVarInt", 600), 96),
+                    ),
+                    instruction("CVmRet", 96, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    let program = Arc::new(program);
+    let mut vm = Vm::new(Arc::clone(&program), 1).unwrap();
+    assert!(vm.evaluate(&parameter).is_err());
+    vm.step().unwrap(); // parent -> prototype(17)
+    assert_eq!(vm.evaluate(&parameter).unwrap().integer().unwrap(), 17);
+    vm.step().unwrap(); // prototype declaration
+    vm.step().unwrap(); // prototype -> copy(99)
+    assert_eq!(vm.evaluate(&parameter).unwrap().integer().unwrap(), 99);
+    vm.step().unwrap(); // copied declaration must not read outer 17
+    let mut references = ReferenceSnapshotWriter::default();
+    let saved = vm.snapshot(&mut references).unwrap();
+    let (mut restored, _) = saved
+        .restore(program, &references.finish().unwrap())
+        .unwrap();
+    assert_eq!(
+        restored.evaluate(&parameter).unwrap().integer().unwrap(),
+        99
+    );
+    while !matches!(restored.step().unwrap(), Step::Halted) {}
+    assert_eq!(restored.variables[&601].integer().unwrap(), 99);
+    assert_eq!(restored.variables[&600].integer().unwrap(), 17);
+    assert!(restored.evaluate(&parameter).is_err());
+}
+
+#[test]
 fn callable_empty_scenes_do_not_turn_function_arguments_into_shared_defaults() {
     let Argument::Reference(owner) = reference("CRsa", 300) else {
         unreachable!()

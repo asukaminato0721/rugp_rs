@@ -42,9 +42,20 @@ impl StereoGains {
             bytes.len() == expected,
             "invalid acoustic position packet size"
         );
-        let word = |i| f32::from(i16::from_le_bytes([bytes[i], bytes[i + 1]]));
-        let radius = word(0);
-        let [x, y, z] = [word(2), word(4), word(6)];
+        let word = |i| i32::from(i16::from_le_bytes([bytes[i], bytes[i + 1]]));
+        Self::from_coordinates(word(0), [word(2), word(4), word(6)])
+    }
+    /// Referenced CMoveAcsOngen curves are validated/sampled by the same motion
+    /// sampler as world postures. For playback-first stereo output, keep that
+    /// initial point with a portable 1000-unit distance scale, not a moving
+    /// native listener or acoustic trajectory.
+    pub fn from_motion(curve: rugp_assets::motion::MotionCurve) -> Result<Self> {
+        let motion = crate::motion::Motion::new(curve)?;
+        Self::from_coordinates(1000, motion.sample(0))
+    }
+    fn from_coordinates(radius: i32, point: [i32; 3]) -> Result<Self> {
+        let radius = f64::from(radius);
+        let [x, y, z] = point.map(f64::from);
         let distance = (x * x + y * y + z * z).sqrt();
         let attenuation = if radius > 0.0 && distance > radius {
             radius / distance
@@ -58,8 +69,8 @@ impl StereoGains {
             0.0
         };
         let gains = Self {
-            left: attenuation * (1.0 - pan.max(0.0)),
-            right: attenuation * (1.0 + pan.min(0.0)),
+            left: (attenuation * (1.0 - pan.max(0.0))) as f32,
+            right: (attenuation * (1.0 + pan.min(0.0))) as f32,
         };
         gains.validate()?;
         Ok(gains)

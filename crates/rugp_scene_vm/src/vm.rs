@@ -85,6 +85,9 @@ pub struct Program {
     initial: BTreeMap<u64, Value>,
     declaration_scenes: BTreeSet<usize>,
     called_scene_offsets: BTreeSet<u64>,
+    /// Leading no-branch parameter declarations can retain the original
+    /// owner in a copied helper (retail 63 uses helper 58's declaration).
+    parameter_declarations: BTreeMap<usize, BTreeSet<u64>>,
 }
 impl Program {
     pub fn insert(&mut self, offset: u64, scene: Scenario) -> Result<()> {
@@ -124,9 +127,45 @@ impl Program {
                 );
             }
         }
+        let mut declarations = BTreeSet::new();
+        for instruction in &scene.instructions {
+            let Some(owner) = Self::parameter_declaration(instruction) else {
+                break;
+            };
+            declarations.insert(owner);
+        }
+        if !declarations.is_empty() {
+            self.parameter_declarations.insert(id, declarations);
+        }
         self.scene_offsets.insert(offset, id);
         self.scenes.insert(id, scene);
         Ok(())
+    }
+    fn parameter_declaration(instruction: &Instruction) -> Option<u64> {
+        let a = &instruction.arguments;
+        if instruction.class.name != "CVmFlagOp"
+            || a.len() != 6
+            || !matches!(&a[0], Argument::Value { descriptor: 2, arguments } if arguments.is_empty())
+            || !matches!(a[3], Argument::Number(0x43))
+            || !matches!(a[4], Argument::Number(1))
+            || !matches!(a[5], Argument::Number(next) if next == instruction.next_address && next != u32::MAX)
+        {
+            return None;
+        }
+        fn reference(argument: &Argument) -> Option<&ObjectRef> {
+            match argument {
+                Argument::Reference(r) => Some(r),
+                Argument::Value { arguments, .. } if arguments.len() == 1 => {
+                    reference(&arguments[0])
+                }
+                _ => None,
+            }
+        }
+        let parameter = reference(&a[1])?;
+        let owner = parameter.owner.as_ref()?;
+        (parameter.flags & 7 == 1 && owner.class.as_ref().is_some_and(|c| c.name == "CRsa"))
+            .then_some(owner.offset)
+            .flatten()
     }
     pub fn load(archive: &RioArchive, native: &NativeSchema) -> Result<Self> {
         let mut program = Self::default();
@@ -322,14 +361,29 @@ impl Vm {
         if owner.class.as_ref().is_none_or(|c| c.name != "CRsa") {
             return Ok(None);
         }
+        let owner_offset = owner.offset.context("parameter owner has no offset")?;
         let scene = *self
             .program
             .scene_offsets
-            .get(&owner.offset.context("parameter owner has no offset")?)
+            .get(&owner_offset)
             .context("parameter owner scene is not loaded")?;
         let depth = std::iter::once(self.frame.as_ref())
             .chain(self.stack.iter().rev().map(Some))
-            .position(|f| f.is_some_and(|f| f.cursor.scene == scene));
+            .position(|f| {
+                f.is_some_and(|f| {
+                    f.cursor.scene == scene
+                        || (self
+                            .program
+                            .parameter_declarations
+                            .get(&scene)
+                            .is_some_and(|p| p.contains(&owner_offset))
+                            && self
+                                .program
+                                .parameter_declarations
+                                .get(&f.cursor.scene)
+                                .is_some_and(|p| p.contains(&owner_offset)))
+                })
+            });
         // Empty, never-called CRsa objects also declare shared typed slots.
         // Retail helper 211 accesses slots owned by inert declaration 208;
         // these are not arguments belonging to its active caller (482).

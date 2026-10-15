@@ -288,8 +288,10 @@ mod tests {
                 .all(|p| *p == [0, 0, 0, 255])
         );
         objects.get_mut(&1).unwrap().camera.position[2] = 720;
-        assert!(Game::render_objects_mode(&objects, (4, 4), false).is_err());
-        assert!(Game::render_objects_mode(&objects, (4, 4), true).is_err());
+        let diagnostic = Game::render_objects_mode(&objects, (4, 4), false)?;
+        let clipped = Game::render_objects_mode(&objects, (4, 4), true)?;
+        assert_eq!(clipped.rgba, diagnostic.rgba);
+        assert_eq!(objects[&1].camera_center_y.get(), 1);
         Ok(())
     }
     #[test]
