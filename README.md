@@ -133,6 +133,14 @@ slots, synchronization status and suspended host operations, with a streaming
 script compatibility fingerprint. Restoring a pending host operation does not
 acknowledge or skip it. Runtime windows, audio, waits and UI still need their
 own coordinated snapshot before playable save slots can be offered.
+Logical dialogue snapshots now retain consumed/remaining controls, displayed
+text, partial glyph/pause delays, and clear-versus-continue confirmation waits;
+restoring does not reveal text or confirm a page. The static audit checks
+round-trip progress for all 100,923 real dialogue bodies, not their window layout.
+Movie snapshots reconstruct pixels from the original archive and exact clock,
+including delta-frame dependencies and fractional/end boundaries. A retail
+opening regression compares restored frames and subsequent advancement directly
+with uninterrupted playback. Full runtime/window/voice coordination remains pending.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.

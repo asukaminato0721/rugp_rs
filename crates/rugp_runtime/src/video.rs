@@ -1,22 +1,59 @@
 //! Archive-backed, clock-driven movie playback; no window or audio dependency.
 use anyhow::{Context, Result, ensure};
+use rugp_assets::object::snapshot::ReferenceSnapshotWriter;
 use rugp_assets::{
     RioArchive,
     crsi::{Crsi, codec::decode_frame},
     image::Image,
     object::ObjectRef,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub struct VideoPlayer {
     archive: Arc<RioArchive>,
     stream: Crsi,
+    source: ObjectRef,
     offset: u64,
     rate: u32,
     elapsed: u64,
     current: Option<usize>,
     image: Option<Image>,
     finished: bool,
+}
+/// Archive-backed reconstruction, not serialized decoded frame buffers. The
+/// enclosing game snapshot must also preserve its VM/window/wait association.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoSnapshot {
+    version: u32,
+    source: u32,
+    rate: u32,
+    elapsed: u64,
+}
+impl VideoSnapshot {
+    pub fn restore(
+        &self,
+        archive: Arc<RioArchive>,
+        references: &[ObjectRef],
+    ) -> Result<VideoPlayer> {
+        ensure!(self.version == 1, "unsupported movie snapshot version");
+        ensure!(
+            (1..=100_000).contains(&self.rate),
+            "invalid movie snapshot frame rate"
+        );
+        let source = references
+            .get(self.source as usize)
+            .context("movie snapshot source root out of range")?;
+        let mut player = VideoPlayer::open(archive, source, self.rate)?;
+        player.elapsed = self.elapsed;
+        player.finished = self.elapsed >= player.duration_ms();
+        let target = clock_frame(self.elapsed, self.rate, player.stream.frames.len());
+        if player.current != Some(target) {
+            player.decode_to(target)?;
+        }
+        Ok(player)
+    }
 }
 impl VideoPlayer {
     pub fn open(archive: Arc<RioArchive>, source: &ObjectRef, rate_override: u32) -> Result<Self> {
@@ -53,6 +90,7 @@ impl VideoPlayer {
         let mut player = Self {
             archive,
             stream,
+            source: source.clone(),
             offset,
             rate,
             elapsed: 0,
@@ -65,6 +103,14 @@ impl VideoPlayer {
     }
     pub fn size(&self) -> (u32, u32) {
         (u32::from(self.stream.width), u32::from(self.stream.height))
+    }
+    pub fn snapshot(&self, references: &mut ReferenceSnapshotWriter) -> Result<VideoSnapshot> {
+        Ok(VideoSnapshot {
+            version: 1,
+            source: references.insert(&self.source)?,
+            rate: self.rate,
+            elapsed: self.elapsed,
+        })
     }
     pub fn frame_index(&self) -> usize {
         self.current.unwrap_or(0)
@@ -143,5 +189,65 @@ mod tests {
         ] {
             assert_eq!(clock_frame(ms, 3000, 3511), index);
         }
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_movie_snapshot_reconstructs_delta_frames_fractional_boundaries_and_exact_finish()
+    -> Result<()> {
+        use rugp_assets::object::{ClassId, snapshot::ReferenceSnapshot};
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let archive = Arc::new(RioArchive::open(root)?);
+        let source = ObjectRef {
+            class: Some(ClassId {
+                name: "CRsi".into(),
+                schema: 1,
+            }),
+            cache_index: None,
+            flags: 0xc108,
+            offset: Some(0xd0ba5f),
+            size: Some(234130539),
+            owner: None,
+            selector: 0,
+            inline: None,
+        };
+        let mut player = VideoPlayer::open(Arc::clone(&archive), &source, 0)?;
+        assert_eq!(player.duration_ms(), 117034);
+        for target in [0, 33, 34, 67, 12034, 117033, 117034] {
+            player.advance((target - player.elapsed) as u32)?;
+            let mut writer = ReferenceSnapshotWriter::default();
+            let snapshot = player.snapshot(&mut writer)?;
+            let wire = serde_json::to_vec(&(snapshot, writer.finish()?))?;
+            let (snapshot, references): (VideoSnapshot, ReferenceSnapshot) =
+                serde_json::from_slice(&wire)?;
+            let roots = references.restore()?;
+            let mut restored = snapshot.restore(Arc::clone(&archive), &roots)?;
+            assert_eq!(restored.elapsed, player.elapsed);
+            assert_eq!(restored.rate, player.rate);
+            assert_eq!(restored.frame_index(), player.frame_index());
+            assert_eq!(restored.finished(), player.finished());
+            assert_eq!(restored.image().rgba, player.image().rgba);
+            assert_eq!(restored.advance(1)?, player.advance(1)?);
+            assert_eq!(restored.frame_index(), player.frame_index());
+            assert_eq!(restored.finished(), player.finished());
+            assert_eq!(restored.image().rgba, player.image().rgba);
+            let invalid = VideoSnapshot {
+                version: 9,
+                ..snapshot
+            };
+            assert!(invalid.restore(Arc::clone(&archive), &roots).is_err());
+        }
+        assert!(player.finished());
+        let final_frame = player.image().rgba.clone();
+        assert!(!player.advance(u32::MAX)?);
+        assert_eq!(player.image().rgba, final_frame);
+        let mut writer = ReferenceSnapshotWriter::default();
+        let mut invalid = player.snapshot(&mut writer)?;
+        let roots = writer.finish()?.restore()?;
+        invalid.rate = 0;
+        assert!(invalid.restore(Arc::clone(&archive), &roots).is_err());
+        invalid.rate = 3000;
+        invalid.source = 999;
+        assert!(invalid.restore(archive, &roots).is_err());
+        Ok(())
     }
 }

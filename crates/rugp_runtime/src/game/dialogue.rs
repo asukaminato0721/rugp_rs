@@ -321,9 +321,28 @@ mod tests {
                     "unsupported callback in {}",
                     location()
                 );
-                // Check actual syntax without logging or embedding original text.
-                // This is a static packet audit, not execution/layout verification.
-                Dialogue::new(text, 0, vec![]).with_context(location)?;
+                // Check actual syntax and logical progress without logging or
+                // embedding original text. This is not VM/window/route execution
+                // or a claim that every dialogue layout has been rendered.
+                let mut stream = Dialogue::new(text, 30, vec![]).with_context(location)?;
+                stream.tick(17).with_context(location)?;
+                let snapshot = stream.snapshot().with_context(location)?;
+                let mut restored = snapshot.restore().with_context(location)?;
+                ensure!(
+                    snapshot == restored.snapshot()?,
+                    "dialogue snapshot state changed in {}",
+                    location()
+                );
+                ensure!(
+                    stream.tick(u32::MAX)? == restored.tick(u32::MAX)?,
+                    "dialogue snapshot advancement changed in {}",
+                    location()
+                );
+                ensure!(
+                    stream.snapshot()? == restored.snapshot()?,
+                    "dialogue snapshot consumed controls differently in {}",
+                    location()
+                );
                 count += 1;
             }
         }

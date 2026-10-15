@@ -4,13 +4,15 @@
 use anyhow::{Result, bail, ensure};
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub mod snapshot;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TextPart {
     Glyph(char),
     Newline,
     Speaker(String),
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Token {
     Text(TextPart),
     Wait { clear: bool },
