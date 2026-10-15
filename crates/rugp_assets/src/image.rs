@@ -34,6 +34,12 @@ pub struct R6Header {
 }
 
 impl R6Header {
+    /// Native rvmm 100701c1..100701e9 reads an even-rounded bitstream
+    /// followed by a two-byte decoder lookahead guard. `data_size` excludes
+    /// both; inline objects must still consume them before the next record.
+    pub fn stored_data_size(&self) -> usize {
+        (self.data_size as usize).div_ceil(2) * 2 + 2
+    }
     pub fn read(r: &mut ObjectReader<'_>, shift: u32) -> Result<Self> {
         let version = r.input.u32()?;
         let canvas_width = r.input.u16()?;

@@ -68,7 +68,12 @@ impl InlineObject {
             .get(bitmap.data_offset..)
             .context("inline bitmap offset outside body")?;
         match &bitmap.header {
-            BitmapHeader::R6(header) => crate::image::decode_r6ti_pixels(header, compressed),
+            BitmapHeader::R6(header) => crate::image::decode_r6ti_pixels(
+                header,
+                compressed
+                    .get(..header.data_size as usize)
+                    .context("truncated inline bitmap")?,
+            ),
             BitmapHeader::Rip(header) => crate::rip::decode_rip_pixels(header, compressed),
         }
     }
@@ -217,7 +222,7 @@ impl<'a> ObjectReader<'a> {
                 let header = crate::image::R6Header::read(self, shift)?;
                 let data_offset = self.input.position - start;
                 references.push(*header.image_properties.clone());
-                self.input.skip(header.data_size as usize)?;
+                self.input.skip(header.stored_data_size())?;
                 bitmap = Some(InlineBitmap {
                     header: BitmapHeader::R6(header),
                     data_offset,

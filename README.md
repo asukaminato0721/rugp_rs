@@ -232,8 +232,16 @@ transition modes remain under investigation. The metadata-only `rugp_assets`
 example `background`
 accepts a game directory, CBg2d offset and extent for this work.
 Its optional `--extension-header` reports the native extension fields and first
-scrambled layer-class record without extracting game pixels or layer names;
-it does not yet decode the linked layer graph.
+scrambled layer-class record. `--layers` strictly parses the linked
+`CBg2dLayerRip007Image#1` graph, sharing the enclosing class/object cache,
+validates its count and end of input, and decodes every layer image. Both
+options report metadata without extracting game pixels or layer names.
+Cr6Ti inline records now consume their native even-aligned bitstream and
+two-byte lookahead guard, keeping subsequent cached layer records aligned.
+Synthetic regressions cover shared classes/images, linked ordering, every
+truncation, non-finite scales, invalid pointers and count/EOF checks. The
+pending chapter background's four layers all parse and decode; runtime
+composition is still pending.
 For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.

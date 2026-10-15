@@ -174,6 +174,7 @@ fn background_inline_bitmap_preserves_cache_and_tail() {
     data.extend(1u32.to_le_bytes());
     data.extend([0; 8]);
     data.push(8);
+    data.extend([0; 3]); // even rounding + two-byte Cr6Ti lookahead guard
     data.push(0); // no background properties
     for length in 0..data.len() {
         assert!(Background::parse(&data[..length], 6, 0).is_err());

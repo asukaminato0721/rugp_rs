@@ -16,7 +16,8 @@ fn main() -> Result<()> {
         .to_str()
         .context("size")?
         .parse()?;
-    let extension_header = args.any(|arg| arg == "--extension-header");
+    let options: Vec<_> = args.collect();
+    let extension_header = options.iter().any(|arg| arg == "--extension-header");
     let data = archive.read_at(offset, size)?;
     let bg = Background::parse(&data, 6, archive.address_shift)?;
     println!(
@@ -29,6 +30,39 @@ fn main() -> Result<()> {
         bg.properties.is_some()
     );
     println!("placement {:?}", bg.placement());
+    if options.iter().any(|arg| arg == "--layers") {
+        let scene =
+            rugp_assets::background::SceneBackground::parse(&data, 6, archive.address_shift)?;
+        println!(
+            "extension color {:#x}, screen {:?}, range {:?}, scale {}, {} layers",
+            scene.color,
+            scene.screen,
+            scene.range,
+            scene.scale,
+            scene.layers.len()
+        );
+        for (i, layer) in scene.layers.iter().enumerate() {
+            let image = layer
+                .image
+                .inline
+                .as_ref()
+                .context("external layer image")?
+                .decode_bitmap()?;
+            println!(
+                "layer {i}: anchor {:?}, position {:?}, extra {:?}, scale {}, id {}, attributes {:?}, parameters {:?}, flags {:#x}, bitmap {}x{}",
+                layer.anchor,
+                layer.position,
+                layer.extra,
+                layer.scale,
+                layer.id,
+                layer.attributes,
+                layer.parameters,
+                layer.flags,
+                image.canvas_width,
+                image.canvas_height
+            );
+        }
+    }
     if extension_header {
         let mut r = rugp_assets::binary::Reader::new(&bg.trailing_data);
         let version = r.u8()?;
