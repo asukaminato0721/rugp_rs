@@ -688,15 +688,98 @@ mod tests {
     #[test]
     #[ignore = "set RUGP_TEST_GAME; original earned replay playback"]
     fn retail_earned_replay_plays_original_scene_and_returns_without_forced_unlock() -> Result<()> {
+        check_earned_replay(200, 478, 0, 1)
+    }
+
+    // Original SC242 database packets and their dispatch targets. Null keys
+    // (seven permanently unavailable entries) are audited separately. Fixed
+    // batches allow independent reruns without silently filtering coverage.
+    const REMAINING_REPLAYS: [(u32, usize, u32, u32); 32] = [
+        (228, 346, 0, 2),
+        (256, 327, 0, 3),
+        (312, 407, 0, 5),
+        (340, 425, 0, 6),
+        (368, 415, 0, 7),
+        (396, 415, 0, 8),
+        (424, 418, 0, 9),
+        (452, 418, 0, 10),
+        (508, 296, 0, 12),
+        (564, 341, 0, 14),
+        (620, 356, 0, 16),
+        (648, 396, 0, 17),
+        (676, 398, 0, 18),
+        (704, 403, 0, 19),
+        (732, 401, 0, 20),
+        (760, 405, 0, 21),
+        (788, 412, 0, 22),
+        (816, 407, 0, 23),
+        (844, 334, 0, 24),
+        (872, 313, 0, 25),
+        (11136, 449, 1, 1),
+        (11192, 453, 1, 3),
+        (11220, 386, 1, 4),
+        (11248, 384, 1, 5),
+        (11304, 269, 1, 7),
+        (11332, 189, 1, 8),
+        (11360, 292, 1, 9),
+        (11388, 290, 1, 10),
+        (11416, 304, 1, 11),
+        (11444, 370, 1, 12),
+        (11472, 231, 1, 13),
+        (11500, 217, 1, 14),
+    ];
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
+    fn retail_earned_replays_page_one_two_through_eight() -> Result<()> {
+        check_earned_replays(&REMAINING_REPLAYS[..6])
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
+    fn retail_earned_replays_page_one_nine_through_eighteen() -> Result<()> {
+        check_earned_replays(&REMAINING_REPLAYS[6..13])
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
+    fn retail_earned_replays_page_one_nineteen_through_twenty_five() -> Result<()> {
+        check_earned_replays(&REMAINING_REPLAYS[13..20])
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
+    fn retail_earned_replays_page_two() -> Result<()> {
+        check_earned_replays(&REMAINING_REPLAYS[20..])
+    }
+
+    fn check_earned_replays(cases: &[(u32, usize, u32, u32)]) -> Result<()> {
+        for &(packet, entry, page, selector) in cases {
+            check_earned_replay(packet, entry, page, selector).with_context(|| {
+                format!("replay page {page}, selector {selector}, story {entry}")
+            })?;
+        }
+        Ok(())
+    }
+
+    fn check_earned_replay(
+        packet_address: u32,
+        entry: usize,
+        page: u32,
+        selector: u32,
+    ) -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let mut game = Game::open(root.as_ref())?;
         game.set_scene_rasterization(false);
         let mut audio = None;
         wait_selection(&mut game, &mut audio)?;
-        // The first replay selector jumps to an original label in scene 478.
-        // Start that story scene normally to earn its actual image use. This
+        // Start the corresponding story scene to earn its actual image use. This
         // isolated scene probe does not claim to have played its story prefix.
-        let binding = game.vm.message(&packet(&game, 242, 200)?)?;
+        let binding = game.vm.message(&packet(&game, 242, packet_address)?)?;
+        ensure!(
+            matches!(&binding.fields["選択肢名"], Value::Text(id) if id == &selector.to_string()),
+            "replay fixture selector does not match native binding"
+        );
+        let Value::Reference(expected_menu) = &binding.target else {
+            bail!("replay menu identity missing");
+        };
         let Value::Reference(database) = &binding.fields["データベース"] else {
             bail!("replay database missing");
         };
@@ -707,13 +790,13 @@ mod tests {
         );
         let native = NativeSchema::from_directory(root.as_ref())?;
         let program = Arc::new(Program::load(&game.archive, &native)?);
-        let mut vm = Vm::new(program, 478)?;
+        let mut vm = Vm::new(program, entry)?;
         vm.variables = std::mem::take(&mut game.vm.variables);
         game.vm = vm;
         game.selection = None;
         let mut pages = 0;
         let mut earned = false;
-        for tick in 0..10_000 {
+        for tick in 0u32..10_000 {
             if game.dialogue_waits_for_input() {
                 game.activate_selection()?;
                 pages += 1;
@@ -727,21 +810,32 @@ mod tests {
             }
             crate::audio::mute_requests(&mut game, &mut audio)?;
             ensure!(
-                game.step(1000)
-                    .with_context(|| format!("earning replay tick {tick}"))?
-                    != RunState::Ended,
+                game.step(1000).with_context(|| format!(
+                    "earning replay {page}/{selector}, tick {tick}, pc {:?}",
+                    game.vm.cursor()
+                ))? != RunState::Ended,
                 "story ended before earning replay"
             );
-            if game.profile_database(database)?.read_string(&key, "0") == "1" {
-                ensure!(pages > 0, "replay earned without original dialogue");
-                eprintln!("original scene earned replay 1: tick={tick}, pages={pages}");
+            // Some original scenes show the bound CG before their first
+            // dialogue. Keep playing until both real image use and dialogue
+            // have occurred, rather than treating that ordering as an error.
+            if pages > 0 && game.profile_database(database)?.read_string(&key, "0") == "1" {
+                eprintln!(
+                    "original scene {entry} earned replay {page}/{selector}: tick={tick}, pages={pages}"
+                );
                 earned = true;
                 break;
+            }
+            if tick.is_multiple_of(1000) {
+                eprintln!(
+                    "earning replay {page}/{selector}: tick={tick}, pages={pages}, pc={:?}",
+                    game.vm.cursor()
+                );
             }
         }
         ensure!(
             earned,
-            "story did not earn first replay at {:?}",
+            "story did not earn replay at {:?}",
             game.vm.cursor()
         );
         let progress = std::mem::take(&mut game.profiles);
@@ -764,17 +858,30 @@ mod tests {
         wait_selection(&mut game, &mut audio)?;
         choose(&mut game, 3)?;
         wait_selection(&mut game, &mut audio)?;
+        if page == 1 {
+            choose(&mut game, 27)?;
+            wait_selection(&mut game, &mut audio)?;
+        }
         let replay = game.vm.cursor().cloned();
         ensure!(
             replay.as_ref().is_some_and(|pc| pc.scene == 242),
             "replay page missing"
         );
-        choose(&mut game, 1)?;
+        let target = game
+            .selection
+            .as_ref()
+            .context("replay selection missing")?
+            .target;
+        ensure!(
+            game.objects[&target].menu == expected_menu.offset,
+            "replay fixture reached the wrong native menu page"
+        );
+        choose(&mut game, selector)?;
         let mut entered = false;
         let mut pages = 0;
         let mut confirmations = 0;
         for tick in 0u32..20_000 {
-            entered |= game.vm.cursor().is_some_and(|pc| pc.scene == 478);
+            entered |= game.vm.cursor().is_some_and(|pc| pc.scene == entry);
             if game.waiting_for_selection() {
                 ensure!(
                     game.vm.cursor() == replay.as_ref(),
@@ -786,7 +893,7 @@ mod tests {
                     "replay returned without playing original scene"
                 );
                 eprintln!(
-                    "earned replay returned: ticks={tick}, pages={pages}, confirmations={confirmations}"
+                    "earned replay {page}/{selector} returned: ticks={tick}, pages={pages}, confirmations={confirmations}"
                 );
                 choose(&mut game, 28)?;
                 wait_selection(&mut game, &mut audio)?;
@@ -816,7 +923,7 @@ mod tests {
             );
             if tick.is_multiple_of(1000) {
                 eprintln!(
-                    "replay 1: tick={tick}, pages={pages}, pc={:?}",
+                    "replay {page}/{selector}: tick={tick}, pages={pages}, pc={:?}",
                     game.vm.cursor()
                 );
             }
