@@ -27,6 +27,16 @@ fn retail_three_true_ending_tails_unlock_bonus_choices_and_cancel_back() -> Resu
 }
 
 #[test]
+#[ignore = "set RUGP_TEST_GAME; long original extra-route playback"]
+fn retail_three_earned_extra_routes_play_original_scripts_and_return() -> Result<()> {
+    for scene in [249, 241, 246] {
+        check_ending_with_extra(scene, 0, false, true)
+            .with_context(|| format!("earned extra route after ending {scene}"))?;
+    }
+    Ok(())
+}
+
+#[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
 fn retail_first_chapter_tail_does_not_unlock_second_chapter_premium() -> Result<()> {
     check_ending(238, 0, false)
@@ -57,6 +67,15 @@ fn retail_alternate_ending_runs_epilogue_roll_and_returns_to_original_title() ->
 }
 
 fn check_ending(scene: usize, variant: i32, rasterize: bool) -> Result<()> {
+    check_ending_with_extra(scene, variant, rasterize, false)
+}
+
+fn check_ending_with_extra(
+    scene: usize,
+    variant: i32,
+    rasterize: bool,
+    play_extra: bool,
+) -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
     let mut game = Game::open(root.as_ref())?;
     game.set_scene_rasterization(rasterize);
@@ -163,6 +182,21 @@ fn check_ending(scene: usize, variant: i32, rasterize: bool) -> Result<()> {
                         game.vm.cursor() == hub.as_ref(),
                         "bonus cancel did not return to original hub"
                     );
+                    if play_extra {
+                        let entry = match scene {
+                            249 => 202,
+                            241 => 264,
+                            246 => 349,
+                            _ => unreachable!(),
+                        };
+                        return check_earned_extra(
+                            &mut game,
+                            &mut audio,
+                            title.as_ref().unwrap(),
+                            hub.as_ref().unwrap(),
+                            entry,
+                        );
+                    }
                 }
                 choose_image(&mut game, 6)?;
                 wait_selection(&mut game, &mut audio)?;
@@ -192,6 +226,84 @@ fn check_ending(scene: usize, variant: i32, rasterize: bool) -> Result<()> {
     }
     bail!(
         "ending probe exceeded tick budget at {:?}",
+        game.vm.cursor()
+    )
+}
+
+fn check_earned_extra(
+    game: &mut Game,
+    audio: &mut Option<crate::audio::AudioResources>,
+    title: &rugp_scene_vm::vm::Cursor,
+    hub: &rugp_scene_vm::vm::Cursor,
+    entry: usize,
+) -> Result<()> {
+    // Re-enter after testing Cancel, select the one legitimately earned route.
+    // No test writes a clear flag or substitutes a VM entry here.
+    choose_image(game, 5)?;
+    wait_selection(game, audio)?;
+    let target = game
+        .selection_text_target()
+        .context("earned route menu missing")?;
+    ensure!(
+        game.text_menus[&target].entries.len() == 2,
+        "earned route list changed"
+    );
+    game.navigate_selection(1)?;
+    game.activate_selection()?;
+    let mut entered = false;
+    let mut pages = 0;
+    let mut confirmations = 0;
+    let mut choices = 0;
+    for tick in 0u32..100_000 {
+        entered |= game.vm.cursor().is_some_and(|pc| pc.scene == entry);
+        if game.waiting_for_selection() {
+            if game.vm.cursor() == Some(title) || game.vm.cursor() == Some(hub) {
+                ensure!(
+                    entered && pages > 0,
+                    "extra returned without playing its original entry"
+                );
+                if game.vm.cursor() == Some(hub) {
+                    choose_image(game, 6)?;
+                    wait_selection(game, audio)?;
+                }
+                ensure!(
+                    game.vm.cursor() == Some(title),
+                    "extra did not return to original title"
+                );
+                eprintln!(
+                    "earned extra {entry} returned: ticks={tick}, pages={pages}, confirmations={confirmations}, choices={choices}"
+                );
+                return Ok(());
+            }
+            game.navigate_selection(1)?;
+            game.activate_selection()?;
+            choices += 1;
+        }
+        if game.dialogue_waits_for_input() {
+            game.activate_selection()?;
+            pages += 1;
+        }
+        if game.waiting_for_input() {
+            game.activate_selection()?;
+            confirmations += 1;
+        }
+        crate::audio::mute_requests(game, audio)?;
+        let state = game
+            .step(1000)
+            .with_context(|| format!("extra {entry}, tick {tick}, pc {:?}", game.vm.cursor()))?;
+        ensure!(
+            state != RunState::Ended,
+            "extra ended instead of returning to a menu"
+        );
+        if tick.is_multiple_of(1000) {
+            eprintln!(
+                "extra {entry}: tick={tick}, pages={pages}, pc={:?}",
+                game.vm.cursor()
+            );
+        }
+    }
+    bail!(
+        "extra {entry} exceeded diagnostic budget at {:?}",
         game.vm.cursor()
     )
 }

@@ -79,13 +79,6 @@ impl Game {
         };
         let source = PostureIdentity::of(media)?;
         ensure!(
-            !self
-                .objects
-                .values()
-                .any(|o| o.postures.iter().any(|p| p.source == source)),
-            "cannot activate an already active posture instance"
-        );
-        ensure!(
             posture.references[0].class.is_none(),
             "serialized posture chains are not implemented yet"
         );
@@ -130,6 +123,13 @@ impl Game {
         if motion.instantaneous() {
             camera = object.prepare_camera(motion.apply_end(camera))?;
         }
+        // A cached native moment has a single owner/list linkage. Restart or
+        // transfer it after validating the replacement, preserving the old
+        // owner's sampled camera instead of snapping or duplicating the event.
+        for previous in self.objects.values_mut() {
+            previous.postures.retain(|p| p.source != source);
+        }
+        let object = self.objects.get_mut(&id).unwrap();
         if prepared {
             object.pending_camera = None;
             object.camera_start = None;
@@ -311,6 +311,46 @@ pub(super) mod tests {
         }
     }
     #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_active_posture_restarts_and_transfers_one_identity_without_snapping_old_owner()
+    -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let source = media(400, 3);
+        let identity = PostureIdentity::of(&source)?;
+        let first = target();
+        let fields = BTreeMap::from([("姿勢運動メディア".into(), Value::Reference(source))]);
+        game.add_posture(&first, &fields)?;
+        game.advance_postures(100)?;
+        let sampled = game.objects[&212259].camera;
+        assert_eq!(game.objects[&212259].postures[0].motion.elapsed_ms(), 100);
+        let mut invalid = fields.clone();
+        invalid.insert("時間スケール".into(), Value::Real(-1.0));
+        assert!(game.add_posture(&first, &invalid).is_err());
+        assert_eq!(game.objects[&212259].camera, sampled);
+        assert_eq!(game.objects[&212259].postures[0].motion.elapsed_ms(), 100);
+        game.add_posture(&first, &fields)?;
+        assert_eq!(game.objects[&212259].camera, sampled);
+        assert_eq!(game.objects[&212259].postures.len(), 1);
+        assert_eq!(game.objects[&212259].postures[0].motion.elapsed_ms(), 0);
+        game.advance_postures(100)?;
+        let held = game.objects[&212259].camera;
+        let mut second = first.clone();
+        second.class.as_mut().unwrap().name = "CCharBox".into();
+        second.offset = Some(1234);
+        game.add_posture(&second, &fields)?;
+        assert!(game.objects[&212259].postures.is_empty());
+        assert_eq!(game.objects[&1234].postures.len(), 1);
+        assert!(game.posture_active(&identity));
+        game.advance_postures(100)?;
+        assert_eq!(game.objects[&212259].camera, held);
+        assert_ne!(game.objects[&1234].camera, Camera::default());
+        game.finish_posture(&identity, false)?;
+        assert!(!game.posture_active(&identity));
+        assert_eq!(game.objects[&212259].camera, held);
+        Ok(())
+    }
+    #[test]
     fn posture_source_keys_preserve_cached_inline_and_stored_instance_identity() -> Result<()> {
         let first = media(400, 1);
         assert!(PostureIdentity::of(&first)? == PostureIdentity::of(&first.clone())?);
@@ -470,7 +510,8 @@ pub(super) mod tests {
         assert_eq!(game.step(100)?, RunState::Waiting);
         assert_eq!(game.objects[&212259].camera.position, [1, 0, 0]);
         assert_eq!(&game.frame()[..4], &[70, 60, 30, 255]);
-        assert!(game.message(add(&first.clone())).is_err());
+        game.message(add(&first.clone()))?;
+        assert_eq!(game.objects[&212259].postures[0].motion.elapsed_ms(), 0);
         assert_eq!(game.objects[&212259].active_posture_count(), 1);
         game.message(add(&second))?;
         game.step(100)?;

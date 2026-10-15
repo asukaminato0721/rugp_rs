@@ -23,14 +23,18 @@ pub struct PostureMotion {
 impl PostureMotion {
     pub fn new(fields: &PostureFields, channels: [Option<Motion>; 3]) -> Result<Self> {
         ensure!(
-            fields.options == 0,
-            "prepared-state posture option {} is not implemented yet",
+            matches!(fields.options, 0 | 1),
+            "unsupported posture option {}",
             fields.options
         );
         ensure!(
             fields.scales.iter().all(|f| f.is_finite()),
             "non-finite posture scale"
         );
+        // Option 1 targets native prepared/backing pose buffers. The portable
+        // full-scene renderer presents it through the same live motion clock,
+        // retaining its real samples/history, looping and synchronization.
+        // It does not fake instant completion or reproduce those extra caches.
         Ok(Self {
             channels,
             scales: fields.scales,
@@ -187,6 +191,32 @@ mod tests {
         }
     }
     #[test]
+    fn prepared_buffer_option_keeps_portable_motion_samples_history_and_clock() -> Result<()> {
+        let mut prepared_fields = fields();
+        prepared_fields.options = 1;
+        let channels = [Some(motion([100, -200, 50], 100)), None, None];
+        let mut prepared = PostureMotion::new(&prepared_fields, channels.clone())?;
+        let mut live = PostureMotion::new(&fields(), channels)?;
+        let mut prepared_camera = Camera::default();
+        let mut live_camera = Camera::default();
+        for dt in [0, 25, 25, 50, 1] {
+            prepared_camera = prepared.advance(prepared_camera, dt);
+            live_camera = live.advance(live_camera, dt);
+            assert_eq!(prepared_camera, live_camera);
+            assert_eq!(prepared.elapsed_ms(), live.elapsed_ms());
+            assert_eq!(prepared.active(), live.active());
+        }
+        let saved = prepared.snapshot()?;
+        let mut restored = saved.restore()?;
+        assert_eq!(
+            restored.advance(prepared_camera, 10),
+            prepared.advance(prepared_camera, 10)
+        );
+        prepared_fields.options = 2;
+        assert!(PostureMotion::new(&prepared_fields, [None, None, None]).is_err());
+        Ok(())
+    }
+    #[test]
     fn extended_offset_rate_and_scales_preserve_fractional_time_and_expiry() -> Result<()> {
         let mut posture =
             PostureMotion::new(&fields(), [Some(motion([100, 0, 0], 100)), None, None])?;
@@ -276,7 +306,7 @@ mod tests {
             )?;
             assert_eq!(posture.advance(camera, 50), camera);
         }
-        f.options = 1;
+        f.options = 2;
         assert!(PostureMotion::new(&f, [None, None, None]).is_err());
         Ok(())
     }

@@ -625,7 +625,17 @@ with offset, positive time scale and channel multipliers. Fractional scaled
 milliseconds are retained between ticks. Portrait placement now uses motion
 position/depth/zoom; native rotations remain approximate. Postures can continue
 while screen transitions redraw, without an exact native backing-cache model.
-Prepared-state option 1 remains unsupported.
+Prepared-state option 1 now uses the same live presentation clock in the
+portable full-scene renderer. It retains actual motion samples, delta history,
+loops and script synchronization; separate native prepared pose/backing buffers
+are a visual approximation, not an invented immediate completion.
+Restarting a cached active posture now validates a fresh motion before removing
+its previous binding. One source identity remains attached to one owner; restart
+resets its motion clock/history without snapping the old sampled camera, and
+transfer leaves the previous owner where it was. Native fixture tests cover
+restart, transfer, failed replacement, source queries and cancellation. A long
+opt-in regression enters the three extra routes through actually earned menus;
+complete extra-route playback coverage is still being checked.
 Standalone posture resources now retain all five references with the RIO object
 cache context; stored offsets identify their playback/wait instances independently
 of inline object identities.
@@ -664,15 +674,14 @@ commands. World planes subtract the camera position before projecting at their
 relative depth. Native slot mode 1 instead ignores XYZ translation while still
 applying angular pan and zoom. The chapter's far layer has that mode; its three
 foreground layers do not. An extended retail pixel oracle covers the unchanged
-far plane and independent foreground parallax. Nonpositive relative plane depths
-remain explicitly unsupported.
+far plane and independent foreground parallax.
 Default angular boundary correction follows the native two-stage Q13 algorithm,
-including signed/zero relative depth rather than rejecting a camera crossing a
+including first-image pixel width, quantized sine terms, asymmetric bounds,
+the hardcoded reference height and the previous first-slot projected Y center.
+Signed/zero relative depth is supported rather than rejecting a camera crossing a
 background plane. Projection preserves signed MulDiv and its zero-divisor
 sentinel; wholly nonpositive-depth planes are culled without erasing other
 layers. Geometry crossing the near plane still needs explicit clipping.
-including first-image pixel width, quantized sine terms, asymmetric bounds,
-the hardcoded reference height and the previous first-slot projected Y center.
 The projection cache is separate from staged camera targets, survives image
 staging, and follows active render snapshots. Correction runs at preparation,
 prepared-target lookup and synchronized sampling, not as a generic rectangle
