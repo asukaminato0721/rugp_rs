@@ -650,6 +650,12 @@ impl Game {
                     .properties
                     .insert("render.image.fit".into(), Value::Integer(1));
             }
+            "OM_BodyScroll"
+                if number(&fields, "モード", 0)? == 1
+                    && number(&fields, "同期属性", 0)? == 0x8000 =>
+            {
+                self.retain_async_body_scroll(&target, fields)?;
+            }
             "OM_BodyScroll" | "OM_BoxScroll" => {
                 scroll::apply(self.objects.entry(id).or_default(), &message.class, fields)?;
             }

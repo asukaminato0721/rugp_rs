@@ -3,12 +3,15 @@
 Native Rust reimplementation of rUGP, targeting the 2008 **君が望む永遠
 ～Latest Edition～** disc. This is an active port: archive and scene decoding
 work, along with Cr6Ti/CRip007/CRip008, CRmt mipmaps, CBg2d image planes,
-and OOR/Vorbis audio decoding. A first vertical slice runs the real startup VM
-through the title menu into chapter-one dialogue and standing portraits in a
+and OOR/Vorbis audio decoding. The real startup, title, dialogue, story choices,
+standing portraits and ending credits run in Rust. The default first-choice
+route has returned from new game to the original title in a headless host-logic
+probe: 24,960 text confirmations, 73 script scenes and 50 selections. This
+does not prove every branch or the complete rendered route. Presentation uses a
 software framebuffer. Playability takes priority over exact effect fidelity:
 static portrait projection and some transitions intentionally approximate rUGP.
-The full game is **not yet playable**: 3D rendering, effects, interactive UI,
-and save/load remain incomplete. An optional Kira audio-device adapter
+The full port is **not complete**: all-route verification, galleries, save/load,
+3D rendering and some effects/UI remain incomplete. An optional Kira audio-device adapter
 handles ordinary sample playback; specialized sound operations remain incomplete.
 
 The workspace follows `../siglus_rs`'s separation between asset formats,
@@ -304,6 +307,10 @@ interpolating their intensity. Explicit script waits still run; non-null
 weather completion handles remain unsupported rather than being abandoned.
 Image-area `OM_BodyScroll` retains the configured origin/time but currently
 shows the full source surface without independent body cropping/panning.
+The ending's mode-1, attribute-`0x8000` pan on `CImgAreaBox` is also retained
+as a visual approximation: native dispatch registers it asynchronously, with
+no script output handle. It introduces no extra wait or changes to unrelated
+camera/media clocks; the original separate script waits still execute.
 Mode-zero `OM_BoxScroll` uses staged absolute endpoint placement, without native
 in-flight movement; the helper's separate blocking blit still retains its clock.
 Background `OM_StopAutoAnim` mode zero stops an unimplemented native animation
