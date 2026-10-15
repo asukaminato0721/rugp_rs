@@ -104,6 +104,11 @@ default to the first entry. Like keyboard navigation, oversized indices wrap.
 instruction, instead of automatically starting another game. This checks one
 choice path only, not all endings or all branches.
 
+Two headless plans have returned to that title: default entries (24,960 text
+confirmations, 73 scenes, 50 selections) and second entries after the title
+(23,034 confirmations, 69 scenes, 52 selections). These execute real resources,
+audio timing and host operations, but omit scene rasterization.
+
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
 `~/.local/share/rugp_rs` on Linux). Use `play --user-data-dir PATH` to choose
@@ -398,10 +403,12 @@ while preserving its image and restoring opacity. A real helper packet tests
 variable writeback, framebuffer blending, query/cancellation and exact cleanup. Concurrent
 fades on the same window, other display/mode combinations and timed blocking waits
 remain unsupported.
-An opt-in integration regression initializes the real title and then enters
-ending-script branch 10, exercising its original roll, image helpers, waits,
-queries and return to the original title selection with no skipped host operations. This isolated ending test
-does not replace a complete story-route/title-return run or visual verification.
+Opt-in integration regressions initialize the real title and enter all eleven
+branches of ending coordinator 244, plus alternate ending 249. Each returns to
+the original title selection with no skipped host operations. Branches 8/9/10
+and ending 249 retain scene rasterization; branches 0..7 use host-logic mode.
+These isolated ending tests do not replace complete story-route runs or pixel
+correctness verification.
 `CVmSync` distinguishes an empty/non-object `CVmVarObj` from literal null.
 The former queries false or completes a wait immediately; the latter queries
 true. Neither query consumes its time word. Native scalar defaults remain
