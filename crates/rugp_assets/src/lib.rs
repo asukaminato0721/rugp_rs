@@ -10,6 +10,7 @@ pub mod ici;
 pub mod image;
 pub mod menu;
 pub mod message;
+pub mod mime;
 pub mod native_schema;
 pub mod object;
 pub mod oor;

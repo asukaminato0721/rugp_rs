@@ -218,6 +218,9 @@ impl<'a> ObjectReader<'a> {
         let mut references = Vec::new();
         let mut bitmap = None;
         match (class.name.as_str(), class.schema) {
+            ("CMimeFlat16LimitOne", 1) => {
+                crate::mime::MimeCurve::read_body(&mut self.input, class)?;
+            }
             ("Cr6Ti", 3) => {
                 let header = crate::image::R6Header::read(self, shift)?;
                 let data_offset = self.input.position - start;

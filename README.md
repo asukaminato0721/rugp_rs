@@ -230,6 +230,14 @@ without attempting to project it. Host tests check stored zoom/Q4 angles,
 unchanged pixels/current camera, and rejection of unsupported fade modes
 without corrupting the stored state. Nonzero camera-transition modes still
 stop explicitly; staged starts are retained for their future implementation.
+The pending draw-ratio curve is a `CMimeFlat16LimitOne#1`, not a CFade:
+seventeen signed samples use a Q16 input, with arithmetic-shift interpolation
+and input clamping. Its strict asset parser, inline-object framing and native
+ascending/descending defaults are now implemented. Synthetic tests cover
+every truncation, exact knots, negative slopes and unclamped signed output;
+a retail test checks every Q16 position against an independent raw-data
+oracle. Connecting these curves to ParseScreen-triggered opacity remains
+pending; unsupported draw-ratio messages still stop instead of being skipped.
 Static native inspection establishes that script camera angles use 4096 units
 per turn (internally shifted left by four for a 65536-unit
 matrix), and fade mode 0 takes the target state directly, not a linear 400ms
