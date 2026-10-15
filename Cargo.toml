@@ -29,6 +29,7 @@ png = "0.18"
 [features]
 default = ["desktop"]
 desktop = ["dep:winit", "dep:softbuffer"]
+audio = ["rugp_runtime/device-audio"]
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 winit = { version = "0.30", optional = true }

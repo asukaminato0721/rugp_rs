@@ -19,9 +19,17 @@ impl Codes {
     }
 }
 fn page(flags: u64, packets: &[&[u8]]) -> Vec<u8> {
+    versioned_page(0, flags, 0, packets)
+}
+fn versioned_page(version: u64, flags: u64, granule: u64, packets: &[&[u8]]) -> Vec<u8> {
     let mut bits = Codes::default();
-    bits.push(0, 2);
+    bits.push(version, 2);
     bits.push(flags, 4);
+    if version == 1 {
+        bits.push(0, 2);
+        bits.push(granule, 64);
+        bits.push(0, 6);
+    }
     bits.push(8, 4);
     bits.push(0, 1);
     bits.push(packets.len() as u64, 8);
@@ -34,6 +42,33 @@ fn page(flags: u64, packets: &[&[u8]]) -> Vec<u8> {
         bytes.extend(*packet);
     }
     bytes
+}
+
+#[test]
+fn oor_version_one_granules_and_extended_identification() {
+    let mut header = Codes::default();
+    header.push(1, 2);
+    header.push(2, 4);
+    header.push(0, 2);
+    header.push(0, 64);
+    header.push(0, 6);
+    let mut data = header.bytes();
+    let mut info = Codes::default();
+    info.push(1, 2);
+    info.push(1, 3);
+    info.push(2, 2);
+    info.push(0x180, 9);
+    info.push(12345, 64);
+    info.push(8, 4);
+    info.push(11, 4);
+    info.push(1, 1);
+    data.extend(info.bytes());
+    data.extend(versioned_page(1, 0, 0, &[&[5], &[]]));
+    data.extend(versioned_page(1, 1, 12345, &[&[2, 4, 6]]));
+    let stream = Oor::parse(&data).unwrap();
+    assert_eq!(stream.info.final_granule, Some(12345));
+    assert_eq!(stream.info.sample_rate, 44100);
+    assert_eq!(stream.packets[0].final_granule, Some(12345));
 }
 fn fixture() -> Vec<u8> {
     // The complete three-byte identification page; these are NOT RIO prefix bytes.
@@ -126,6 +161,17 @@ fn oor_inline_setup_in_second_header_packet() {
     data.extend(page(1, &[&[2, 4, 6]]));
     let stream = Oor::parse(&data).unwrap();
     assert_eq!(stream.setup_id, 0);
+    assert_eq!(stream.inline_setup, [0x22, 0x42, 0x43, 0x56]);
+    assert_eq!(stream.packets.len(), 1);
+    assert_eq!(stream.packets[0].data, [2, 4, 6]);
+}
+
+#[test]
+fn oor_inline_setup_fragments_are_not_audio() {
+    let mut data = vec![0x08, 0x0d, 0x17];
+    data.extend(page(4, &[&[0x40], &[0x22, 0x42]]));
+    data.extend(page(8 | 1, &[&[0x43, 0x56], &[2, 4, 6]]));
+    let stream = Oor::parse(&data).unwrap();
     assert_eq!(stream.inline_setup, [0x22, 0x42, 0x43, 0x56]);
     assert_eq!(stream.packets.len(), 1);
     assert_eq!(stream.packets[0].data, [2, 4, 6]);

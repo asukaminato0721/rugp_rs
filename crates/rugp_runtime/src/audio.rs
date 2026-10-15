@@ -40,6 +40,20 @@ impl AudioResources {
     pub fn load(&mut self, reference: &ObjectRef) -> Result<Arc<SoundData>> {
         self.load_at_depth(reference, 0)
     }
+    pub fn looped(&self, reference: &ObjectRef) -> Result<bool> {
+        if !reference
+            .class
+            .as_ref()
+            .is_some_and(|c| ["CPmBgm", "CPmEffect"].contains(&c.name.as_str()))
+        {
+            return Ok(false);
+        }
+        let bytes = self.archive.read_at(
+            reference.offset.context("sound offset missing")?,
+            reference.size.context("sound size missing")? as usize,
+        )?;
+        Ok(Sample::parse(&bytes, self.archive.address_shift)?.mode & 1 != 0)
+    }
     fn load_at_depth(&mut self, reference: &ObjectRef, depth: usize) -> Result<Arc<SoundData>> {
         ensure!(depth < 8, "cyclic or over-nested sound source");
         let offset = reference
@@ -91,4 +105,35 @@ impl AudioResources {
         self.ages.push_back(offset);
         Ok(sound)
     }
+}
+
+/// Muting removes output, not scripted timing: waiting one-shot sounds still
+/// occupy their decoded duration on the runtime's virtual clock.
+pub fn mute_requests(
+    game: &mut crate::game::Game,
+    resources: &mut Option<AudioResources>,
+) -> Result<()> {
+    for request in game.take_sounds() {
+        if let Some(source) = request.source
+            && [2, 4].contains(&request.kind)
+            && request.flags & 1 != 0
+        {
+            if resources.is_none() {
+                *resources = Some(AudioResources::new(Arc::clone(&game.archive))?);
+            }
+            let resources = resources.as_mut().unwrap();
+            ensure!(
+                !resources.looped(&source)?,
+                "cannot wait for a looping sound"
+            );
+            let data = resources.load(&source)?;
+            let frames = data.pcm.len() as u64 / data.channels as u64;
+            let ms = (frames * 1000).div_ceil(data.sample_rate as u64);
+            game.time_audio_wait(
+                ms.try_into()
+                    .context("audio duration exceeds runtime clock")?,
+            )?;
+        }
+    }
+    Ok(())
 }

@@ -5,8 +5,9 @@ Native Rust reimplementation of rUGP, targeting the 2008 **君が望む永遠
 work, along with Cr6Ti/CRip007/CRip008, CRmt mipmaps, CBg2d image planes,
 and OOR/Vorbis audio decoding. A first vertical slice runs the real startup VM
 through logo loading, timed waits, and crossfades into a software framebuffer.
-The full game is **not yet playable**: 3D rendering, effects, audio-device
-playback, interactive UI, movies, and save/load remain incomplete.
+The full game is **not yet playable**: 3D rendering, effects, interactive UI,
+movies, and save/load remain incomplete. An optional Kira audio-device adapter
+handles ordinary sample playback; specialized sound operations remain incomplete.
 
 The workspace follows `../siglus_rs`'s separation between asset formats,
 scene VM, and application/platform hosts:
@@ -58,11 +59,22 @@ Use `--no-default-features` for the CLI without desktop/window dependencies.
 operations stop at their exact scene/address. `--mute` explicitly disables
 audio playback; PCM export/decoding works independently.
 
+For device audio, enable `--features audio`. On Linux this needs ALSA development
+files. The pinned Nix development shell supplies the audio/window dependencies:
+
+```sh
+nix develop
+cargo run --release --features audio -- --project-dir /run/media/w/KIMINOZO_LE play
+```
+
+Muted/headless runs still honor the duration of scripted waiting one-shot sounds.
+
 ## Validation
 
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+nix develop --command cargo test --workspace --all-features
 RUGP_TEST_GAME=/run/media/w/KIMINOZO_LE cargo test -p rugp_scene_vm --test game -- --ignored --nocapture
 RUGP_TEST_GAME=/run/media/w/KIMINOZO_LE cargo test -p rugp_assets --test game_audio -- --ignored --nocapture
 RUGP_TEST_GAME=/run/media/w/KIMINOZO_LE cargo test -p rugp_runtime --test game -- --ignored --nocapture
@@ -89,10 +101,13 @@ headers, and obtains standard libvorbis setup packets from the user's own
 Two retail voice extents have 31/11 bytes after logical EOS; these tails are
 retained explicitly. WAV export and per-packet PCM decoding use pure-Rust
 `lewton`. V0 audio has no final sample count, so encoder end padding is retained.
-All 30,297 directly scene-referenced audio streams pass framing validation and decode to PCM;
-the two EOS-tail cases also have dedicated retail regression tests.
-`check-audio` additionally follows CPmBgm/CPmEffect source wrappers, including
-inline setup headers and BGM header continuations.
+All 30,297 directly scene-referenced audio streams and 605 additional sources
+inside CPmBgm/CPmEffect wrappers decode to PCM (30,902 total). The two EOS-tail
+cases also have dedicated retail regression tests. `check-audio` follows these
+wrappers and handles inline/fragmented setup payloads. Use
+`check-audio --decode --additional-only` to validate just the additional sources.
+The Kira adapter has a mock-backend regression that checks real nonzero output
+samples and stop commands without requiring or playing audio through a device.
 
 The VM's retail startup regression resolves its entry through the process
 ocean, executes the initial scalar assignments, and follows the jump from

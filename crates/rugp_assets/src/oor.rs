@@ -170,48 +170,13 @@ impl Oor {
         );
         ensure!(id.read(1)? == 1, "missing OOR identification framing bit");
         id.align()?;
-        let setup = Page::read(&mut bits)?;
-        ensure!(
-            setup.flags & 10 == 0,
-            "continued or duplicate OOR setup page"
-        );
-        let first = setup.packets.first().context("OOR setup page is empty")?;
-        let setup_id = first.first().context("OOR setup packet is empty")? & 63;
-        ensure!(
-            setup_id == 0 || first.len() == 1,
-            "external OOR setup packet has unexpected data"
-        );
-        let inline_setup = if setup_id == 0 {
-            ensure!(
-                setup.flags & 4 == 0,
-                "fragmented inline Vorbis setup is unsupported"
-            );
-            first[1..]
-                .iter()
-                .chain(setup.packets.iter().skip(1).flat_map(|p| p.iter()))
-                .copied()
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // Retail v0 setup pages include an empty comment-header placeholder.
-        // It is a header packet, not a zero-length Vorbis audio packet.
-        ensure!(
-            setup_id == 0 || setup.packets.iter().skip(1).all(|p| p.is_empty()),
-            "unexpected data after OOR setup header"
-        );
-        let mut packets = Vec::new();
-        // BGM setup pages can end with an empty partial packet. The first
-        // audio page continues it, even though no bytes were accumulated yet.
-        ensure!(
-            setup.flags & 4 == 0
-                || (setup.packets.len() > 1 && setup.packets.last().is_some_and(|p| p.is_empty())),
-            "fragmented OOR setup header is unsupported"
-        );
+        // Reassemble logical packets before interpreting either header.
+        // Empty external-setup payloads and nonempty inline-setup payloads
+        // can both continue across page boundaries, just like audio packets.
+        let mut logical = Vec::new();
         let mut partial = Vec::new();
-        let mut pending = setup.flags & 4 != 0;
-        let mut setup_tail = pending;
-        let mut eos = setup.flags & 1 != 0;
+        let mut pending = false;
+        let mut eos = false;
         while bits.pos < data.len() * 8 && !eos {
             let page = Page::read(&mut bits)?;
             ensure!(
@@ -232,23 +197,40 @@ impl Oor {
                 ensure!(partial.len() <= 16_777_216, "OOR packet exceeds limit");
                 pending = i + 1 == count && page.flags & 4 != 0;
                 if !pending {
-                    if !(setup_tail && partial.is_empty()) {
-                        packets.push(AudioPacket {
-                            data: std::mem::take(&mut partial),
-                            final_granule: if i + 1 == count && page.flags & 1 != 0 {
-                                page.granule
-                            } else {
-                                None
-                            },
-                        });
-                    }
-                    setup_tail = false;
+                    logical.push(AudioPacket {
+                        data: std::mem::take(&mut partial),
+                        final_granule: if i + 1 == count && page.flags & 1 != 0 {
+                            page.granule
+                        } else {
+                            None
+                        },
+                    });
                 }
             }
             eos = page.flags & 1 != 0;
         }
         ensure!(!pending, "truncated OOR final packet");
         ensure!(version == 0 || eos, "missing OOR v1 EOS page");
+        let mut logical = logical.into_iter();
+        let first = logical
+            .next()
+            .context("missing OOR setup identifier packet")?
+            .data;
+        let payload = logical
+            .next()
+            .context("missing OOR setup payload packet")?
+            .data;
+        let setup_id = first.first().context("empty OOR setup identifier")? & 63;
+        let inline_setup = if setup_id == 0 {
+            first[1..].iter().chain(&payload).copied().collect()
+        } else {
+            ensure!(
+                first.len() == 1 && payload.is_empty(),
+                "unexpected payload for external OOR setup {setup_id}"
+            );
+            Vec::new()
+        };
+        let packets: Vec<_> = logical.collect();
         // Version 0 streams do not always carry an EOS flag or sample count.
         ensure!(!packets.is_empty(), "OOR has no audio packets");
         Ok(Self {

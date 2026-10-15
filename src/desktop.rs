@@ -25,6 +25,11 @@ pub fn run(game: Game, mute: bool, quit_after_ms: Option<u32>) -> Result<()> {
         error: None,
         mute,
         quit_after_ms,
+        muted_audio: None,
+        #[cfg(feature = "audio")]
+        audio: None,
+        #[cfg(feature = "audio")]
+        audio_wait: None,
     };
     event_loop
         .run_app(&mut app)
@@ -43,8 +48,39 @@ struct App {
     error: Option<String>,
     mute: bool,
     quit_after_ms: Option<u32>,
+    muted_audio: Option<rugp_runtime::audio::AudioResources>,
+    #[cfg(feature = "audio")]
+    audio: Option<rugp_runtime::audio_device::DeviceAudio>,
+    #[cfg(feature = "audio")]
+    audio_wait: Option<u64>,
 }
 impl App {
+    fn sounds(&mut self) -> Result<()> {
+        if self.mute {
+            return rugp_runtime::audio::mute_requests(&mut self.game, &mut self.muted_audio);
+        }
+        for request in self.game.take_sounds() {
+            #[cfg(feature = "audio")]
+            {
+                if self.audio.is_none() {
+                    if request.source.is_none() && [254, 255].contains(&request.kind) {
+                        continue;
+                    }
+                    self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
+                        &self.game.archive,
+                    ))?);
+                }
+                if let Some(ticket) = self.audio.as_mut().unwrap().request(request)? {
+                    self.audio_wait = Some(ticket);
+                }
+            }
+            #[cfg(not(feature = "audio"))]
+            if request.source.is_some() {
+                bail!("device audio is not enabled in this build; use --features audio, or --mute");
+            }
+        }
+        Ok(())
+    }
     fn present(&mut self) -> Result<()> {
         let Some(window) = &self.window else {
             return Ok(());
@@ -88,6 +124,11 @@ impl App {
         Ok(())
     }
     fn fail(&mut self, error: anyhow::Error) {
+        #[cfg(feature = "audio")]
+        {
+            self.audio = None;
+            self.audio_wait = None;
+        }
         let message = format!("{error:#}");
         eprintln!("{message}");
         if let Some(window) = &self.window {
@@ -135,16 +176,22 @@ impl ApplicationHandler for App {
                 let dt = now.duration_since(self.last).as_millis().min(100) as u32;
                 self.last = now;
                 if self.error.is_none() {
+                    #[cfg(feature = "audio")]
+                    if let Some(ticket) = self.audio_wait
+                        && self.audio.as_ref().is_some_and(|a| a.finished(ticket))
+                    {
+                        self.audio_wait = None;
+                        if let Err(e) = self.game.finish_audio() {
+                            self.fail(e);
+                        }
+                    }
                     match self.game.step(dt) {
                         Ok(RunState::Ended) => event_loop.exit(),
                         Ok(_) => {}
                         Err(e) => self.fail(e),
                     }
-                    for request in self.game.take_sounds() {
-                        if request.source.is_some() && !self.mute {
-                            self.fail(anyhow::anyhow!("audio playback backend is not implemented yet; --mute explicitly disables audio"));
-                            break;
-                        }
+                    if let Err(e) = self.sounds() {
+                        self.fail(e);
                     }
                 }
                 if let Err(e) = self.present() {

@@ -19,11 +19,10 @@ pub enum RunState {
 #[derive(Debug)]
 pub struct SoundRequest {
     pub source: Option<ObjectRef>,
-    pub channel: u8,
+    pub kind: u8,
     pub flags: u8,
-    pub volume: u16,
-    pub pan: i16,
-    pub fade_ms: u16,
+    /// Native mode-specific words; ordinary play (kind 2) uses source defaults.
+    pub parameters: [u16; 3],
 }
 struct Layer {
     texture: Arc<Texture>,
@@ -66,8 +65,10 @@ pub struct Game {
     frame: Framebuffer,
     transition: Option<Transition>,
     wait_ms: Option<u32>,
+    audio_wait: bool,
     sounds: Vec<SoundRequest>,
     pub navigation: String,
+    pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
     ended: bool,
 }
 fn number(fields: &BTreeMap<String, Value>, name: &str, default: i32) -> Result<i32> {
@@ -92,8 +93,10 @@ impl Game {
             frame: Framebuffer::new(1024, 600)?,
             transition: None,
             wait_ms: None,
+            audio_wait: false,
             sounds: Vec::new(),
             navigation: String::new(),
+            settings: BTreeMap::new(),
             ended: false,
         })
     }
@@ -108,6 +111,17 @@ impl Game {
     }
     pub fn take_sounds(&mut self) -> Vec<SoundRequest> {
         std::mem::take(&mut self.sounds)
+    }
+    pub fn finish_audio(&mut self) -> Result<()> {
+        ensure!(self.audio_wait, "no pending audio wait");
+        self.audio_wait = false;
+        self.vm.acknowledge_host()
+    }
+    pub fn time_audio_wait(&mut self, duration_ms: u32) -> Result<()> {
+        ensure!(self.audio_wait, "no pending audio wait");
+        self.audio_wait = false;
+        self.wait_ms = Some(duration_ms.max(1));
+        Ok(())
     }
     fn scene_frame(&self) -> Result<Framebuffer> {
         let mut frame = Framebuffer::new(self.frame.width, self.frame.height)?;
@@ -139,6 +153,14 @@ impl Game {
                 bail!("invalid navigation text");
             };
             self.navigation = text.clone();
+            return Ok(());
+        }
+        if message.class == "OM_ChangeSetting" {
+            let Some(Value::Text(key)) = fields.get("キー") else {
+                bail!("setting key is not text");
+            };
+            let kind = number(&fields, "タイプ", 0)?;
+            self.settings.insert((key.clone(), kind), fields);
             return Ok(());
         }
         let Value::Reference(target) = message.target else {
@@ -174,7 +196,11 @@ impl Game {
                 object.rect.2 = w as u32;
                 object.rect.3 = h as u32;
             }
-            "OM_SetWorldPlayerHeight" | "OM_SetExclusiveCamera" | "OM_SetWorldSXY" => {
+            "OM_SetWorldPlayerHeight"
+            | "OM_SetExclusiveCamera"
+            | "OM_SetWorldSXY"
+            | "OM_StoreFrameImage"
+            | "OM_SetMsgTextLayout" => {
                 self.objects
                     .entry(id)
                     .or_default()
@@ -275,14 +301,19 @@ impl Game {
                     _ => bail!("invalid sound source"),
                 };
                 let n = |i: usize| self.vm.evaluate(&instruction.arguments[i])?.integer();
+                let flags = n(2)? as u8;
+                let kind = n(1)? as u8;
+                let waiting = source.is_some() && [2, 4].contains(&kind) && flags & 1 != 0;
                 self.sounds.push(SoundRequest {
                     source,
-                    channel: n(1)? as u8,
-                    flags: n(2)? as u8,
-                    volume: n(3)? as u16,
-                    pan: n(4)? as i16,
-                    fade_ms: n(5)? as u16,
+                    kind,
+                    flags,
+                    parameters: [n(3)? as u16, n(4)? as u16, n(5)? as u16],
                 });
+                if waiting {
+                    self.audio_wait = true;
+                    return Ok(());
+                }
             }
             "CVmSync" => {
                 ensure!(
@@ -310,6 +341,9 @@ impl Game {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }
         self.update_frame();
+        if self.audio_wait {
+            return Ok(RunState::Waiting);
+        }
         if let Some(wait) = &mut self.wait_ms {
             *wait = wait.saturating_sub(dt_ms);
             if *wait > 0 {
@@ -336,7 +370,7 @@ impl Game {
                     self.host(&instruction).with_context(|| {
                         format!("runtime at {}:{:#x}", cursor.scene, cursor.address)
                     })?;
-                    if self.wait_ms.is_some() {
+                    if self.wait_ms.is_some() || self.audio_wait {
                         return Ok(RunState::Waiting);
                     }
                 }

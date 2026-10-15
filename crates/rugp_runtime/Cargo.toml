@@ -7,3 +7,7 @@ edition.workspace = true
 anyhow.workspace = true
 rugp_assets = { path = "../rugp_assets" }
 rugp_scene_vm = { path = "../rugp_scene_vm" }
+kira = { version = "0.9", default-features = false, features = ["cpal"], optional = true }
+
+[features]
+device-audio = ["dep:kira"]

@@ -109,11 +109,14 @@ fn main() -> Result<()> {
         )?,
         Command::Frame { output, time_ms } => {
             let mut game = rugp_runtime::Game::open(&args.project_dir)?;
+            let mut muted_audio = None;
             game.step(0)?;
+            rugp_runtime::audio::mute_requests(&mut game, &mut muted_audio)?;
             let mut elapsed = 0;
             while elapsed < time_ms {
                 let dt = (time_ms - elapsed).min(16);
                 game.step(dt)?;
+                rugp_runtime::audio::mute_requests(&mut game, &mut muted_audio)?;
                 elapsed += dt;
             }
             let (width, height) = game.size();
