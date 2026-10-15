@@ -688,7 +688,7 @@ mod tests {
     #[test]
     #[ignore = "set RUGP_TEST_GAME; original earned replay playback"]
     fn retail_earned_replay_plays_original_scene_and_returns_without_forced_unlock() -> Result<()> {
-        check_earned_replay(200, 478, 0, 1, &[])
+        check_earned_replay(200, 478, 0, 1, &[], &[])
     }
 
     // Original SC242 database packets and their dispatch targets. Null keys
@@ -696,17 +696,19 @@ mod tests {
     // tests keep failed fixtures from preventing the other entries from running.
     macro_rules! earned_replay {
         ($name:ident, $packet:expr, $entry:expr, $page:expr, $selector:expr, $choices:expr) => {
+            earned_replay!($name, $packet, $entry, $page, $selector, $choices, &[]);
+        };
+        ($name:ident, $packet:expr, $entry:expr, $page:expr, $selector:expr, $choices:expr, $directed:expr) => {
             #[test]
             #[ignore = "set RUGP_TEST_GAME; original earned replay playback"]
             fn $name() -> Result<()> {
-                check_earned_replay($packet, $entry, $page, $selector, $choices).with_context(
-                    || {
+                check_earned_replay($packet, $entry, $page, $selector, $choices, $directed)
+                    .with_context(|| {
                         format!(
                             "replay page {}, selector {}, story {}",
                             $page, $selector, $entry
                         )
-                    },
-                )
+                    })
             }
         };
     }
@@ -721,7 +723,8 @@ mod tests {
     earned_replay!(retail_earned_replay_p1_s09, 424, 418, 0, 9, &[]);
     earned_replay!(retail_earned_replay_p1_s10, 452, 418, 0, 10, &[]);
     earned_replay!(retail_earned_replay_p1_s12, 508, 296, 0, 12, &[]);
-    earned_replay!(retail_earned_replay_p1_s14, 564, 341, 0, 14, &[]);
+    // SC341:114860's second choice reaches this CG; the earlier choice stays first.
+    earned_replay!(retail_earned_replay_p1_s14, 564, 341, 0, 14, &[0, 1]);
     earned_replay!(retail_earned_replay_p1_s16, 620, 356, 0, 16, &[]);
     earned_replay!(retail_earned_replay_p1_s17, 648, 396, 0, 17, &[]);
     earned_replay!(retail_earned_replay_p1_s18, 676, 398, 0, 18, &[]);
@@ -741,7 +744,17 @@ mod tests {
     // SC189:53920's second choice reaches the CG branch at 61224 instead
     // of the alternate ending. The earlier choice at 47468 stays first.
     earned_replay!(retail_earned_replay_p2_s08, 11332, 189, 1, 8, &[0, 1]);
-    earned_replay!(retail_earned_replay_p2_s09, 11360, 292, 1, 9, &[]);
+    // Follow the original earlier route choices, rather than synthesizing
+    // SC290/292's relationship flags: SC422 -> SC418 -> SC290 -> SC300 -> SC292.
+    earned_replay!(
+        retail_earned_replay_p2_s09,
+        11360,
+        292,
+        1,
+        9,
+        &[],
+        &[(290, 152932, 1), (292, 105248, 1)]
+    );
     earned_replay!(retail_earned_replay_p2_s10, 11388, 290, 1, 10, &[]);
     earned_replay!(retail_earned_replay_p2_s11, 11416, 304, 1, 11, &[]);
     earned_replay!(retail_earned_replay_p2_s12, 11444, 370, 1, 12, &[]);
@@ -754,6 +767,7 @@ mod tests {
         page: u32,
         selector: u32,
         story_choices: &[u8],
+        directed_choices: &[(usize, u32, u8)],
     ) -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let mut game = Game::open(root.as_ref())?;
@@ -880,12 +894,23 @@ mod tests {
                 );
             }
         }
-        let mut vm = Vm::new(program, entry)?;
+        // SC224's normal choice enables SC214's later choice; that choice
+        // sets SC217's branch flag for replay page two / selector 14.
+        // Follow the original inter-scene jumps rather than setting either flag.
+        let story_entry = match (page, selector) {
+            (1, 14) => 224,
+            // SC422 and SC418's actual choices set the two flags needed by
+            // SC290's later choices. SC290 in turn gates SC292's CG scene.
+            (1, 9 | 10) => 422,
+            _ => entry,
+        };
+        let mut vm = Vm::new(program, story_entry)?;
         vm.variables = std::mem::take(&mut game.vm.variables);
         game.vm = vm;
         game.selection = None;
         let mut pages = 0;
         let mut choices = 0;
+        let mut directed_used = std::collections::BTreeSet::new();
         let mut earned = false;
         for tick in 0u32..10_000 {
             if game.dialogue_waits_for_input() {
@@ -901,7 +926,18 @@ mod tests {
                     "story returned to an image menu before earning replay at {:?}",
                     game.vm.cursor()
                 );
-                for _ in 0..=story_choices.get(choices).copied().unwrap_or(0) {
+                let pc = game.vm.cursor().context("story choice cursor missing")?;
+                let directed = directed_choices
+                    .iter()
+                    .find(|&&(scene, address, _)| scene == pc.scene && address == pc.address);
+                let choice = if let Some(&(scene, address, choice)) = directed {
+                    directed_used.insert((scene, address));
+                    choice
+                } else {
+                    story_choices.get(choices).copied().unwrap_or(0)
+                };
+                eprintln!("earning replay {page}/{selector}: choose {choice} at {pc:?}");
+                for _ in 0..=choice {
                     game.navigate_selection(1)?;
                 }
                 game.activate_selection()?;
@@ -936,6 +972,10 @@ mod tests {
             earned,
             "story did not earn replay at {:?}",
             game.vm.cursor()
+        );
+        ensure!(
+            directed_used.len() == directed_choices.len(),
+            "story did not visit every directed choice"
         );
         let progress = std::mem::take(&mut game.profiles);
         drop(game);
