@@ -46,10 +46,10 @@ fn message_window_resource_is_not_a_ui_snapshot() -> Result<()> {
         let message = MessageBox::parse(&b, 15, 0)?;
         assert_eq!(message.rectangles[2], [80, 402, 864, 190]);
         assert_eq!(message.children.len(), usize::from(children));
-        assert_eq!(message.surface_parameters, [2, -1, -1]);
+        assert_eq!(message.selection_state, [2, -1, -1]);
         assert_eq!(message.initial_text, "test");
         assert_eq!(message.content_rect, [0, 0, 0, 24]);
-        assert_eq!(message.spacing, [4, 0]);
+        assert_eq!(message.view_position, [4, 0]);
         assert_eq!(message.layout, 0x311);
         assert!(message.frame.class.is_none());
         for n in 0..b.len() {

@@ -35,12 +35,22 @@ enum Command {
         /// Development diagnostic: execute the real VM on a muted virtual clock before opening a window.
         #[arg(long, requires = "mute")]
         fast_forward_ms: Option<u32>,
+        /// Japanese outline font; no font file is distributed with this port.
+        #[arg(long)]
+        font: Option<PathBuf>,
+        /// Face within a TTF/OTF/TTC collection supplied with --font.
+        #[arg(long, default_value_t = 0, requires = "font")]
+        font_index: u32,
     },
     /// Run the current runtime headlessly and export its RGBA frame (development diagnostic).
     Frame {
         output: PathBuf,
         #[arg(long, default_value_t = 1000)]
         time_ms: u32,
+        #[arg(long)]
+        font: Option<PathBuf>,
+        #[arg(long, default_value_t = 0, requires = "font")]
+        font_index: u32,
     },
     /// Validate OOR audio framing and setup headers; optionally decode every packet.
     CheckAudio {
@@ -129,10 +139,15 @@ fn main() -> Result<()> {
             quit_after_ms,
             user_data_dir,
             fast_forward_ms,
+            font,
+            font_index,
         } => {
             let directory =
                 user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
             let mut game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
+            if let Some(path) = font {
+                game.set_font_file(&path, font_index)?;
+            }
             if let Some(time) = fast_forward_ms {
                 advance_muted(&mut game, time)?;
             }
@@ -141,8 +156,16 @@ fn main() -> Result<()> {
             }
             desktop::run(game, mute, quit_after_ms)?;
         }
-        Command::Frame { output, time_ms } => {
+        Command::Frame {
+            output,
+            time_ms,
+            font,
+            font_index,
+        } => {
             let mut game = rugp_runtime::Game::open(&args.project_dir)?;
+            if let Some(path) = font {
+                game.set_font_file(&path, font_index)?;
+            }
             advance_muted(&mut game, time_ms)?;
             let (width, height) = game.size();
             let file = std::fs::OpenOptions::new()
@@ -719,5 +742,29 @@ fn decode_image(
         .context("background plane is not inline")?
         .decode_bitmap(),
         other => anyhow::bail!("unsupported bitmap class {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn font_face_is_optional_but_an_explicit_index_needs_a_font() {
+        assert!(Args::try_parse_from(["rugp_rs", "frame", "out.png"]).is_ok());
+        assert!(
+            Args::try_parse_from(["rugp_rs", "frame", "out.png", "--font-index", "2"]).is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "rugp_rs",
+                "frame",
+                "out.png",
+                "--font",
+                "example.ttc",
+                "--font-index",
+                "2"
+            ])
+            .is_ok()
+        );
     }
 }

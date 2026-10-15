@@ -216,7 +216,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
-                if self.error.is_none() && event.state == ElementState::Pressed =>
+                if self.error.is_none()
+                    && event.state == ElementState::Pressed
+                    && !event.repeat =>
             {
                 let result = match event.physical_key {
                     PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::ArrowRight | KeyCode::Tab) => {

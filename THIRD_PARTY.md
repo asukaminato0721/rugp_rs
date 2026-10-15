@@ -51,3 +51,8 @@ from the same static serialization/decoder routines; adaptive tables are
 generated from formulas rather than copied from the original binary.
 CStdb/CProfile text lookup, updates, and scalar string setters were checked
 against the user's `UnivUI.dll` and `GMfc.dll`, also by static disassembly only.
+Message control-code waits/clears, CMsgSelBox visibility, border placement and
+non-gradient background blend arithmetic were likewise checked against the
+user's Vm60/rvmm code. Text rasterization uses `ab_glyph` and `fontdb` through
+Cargo under their respective open-source licenses. Fonts are user/system inputs,
+not distributed assets; portable layout is not claimed to match the GDI output.

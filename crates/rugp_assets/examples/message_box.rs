@@ -15,8 +15,8 @@ fn main() -> Result<()> {
     let data = archive.read_node(node.id)?;
     let message = MessageBox::parse(&data, node.class.schema, archive.address_shift)?;
     println!(
-        "rectangles {:?}, content {:?}, spacing {:?}, layout {:#x}",
-        message.rectangles, message.content_rect, message.spacing, message.layout
+        "rectangles {:?}, content {:?}, view position {:?}, layout {:#x}",
+        message.rectangles, message.content_rect, message.view_position, message.layout
     );
     message
         .visit_references(&mut |r| println!("reference {:?} {:?} {:?}", r.class, r.offset, r.size));

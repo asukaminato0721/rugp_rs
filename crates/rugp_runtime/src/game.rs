@@ -12,6 +12,7 @@ use rugp_scene_vm::{
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
+mod dialogue;
 mod menu;
 mod profile;
 mod video;
@@ -44,6 +45,7 @@ pub struct ObjectState {
     pub properties: BTreeMap<String, Value>,
     pub camera: Camera,
     menu: Option<u64>,
+    backdrop: Option<crate::message_window::Backdrop>,
     layers: BTreeMap<i32, Layer>,
 }
 impl Default for ObjectState {
@@ -58,12 +60,16 @@ impl Default for ObjectState {
             properties: BTreeMap::new(),
             camera: Camera::default(),
             menu: None,
+            backdrop: None,
             layers: BTreeMap::new(),
         }
     }
 }
 impl ObjectState {
     fn render(&self, frame: &mut Framebuffer) -> Result<()> {
+        if let Some(backdrop) = self.backdrop {
+            backdrop.paint(frame, self.rect);
+        }
         for layer in self.layers.values() {
             let rect = layer
                 .plane
@@ -98,6 +104,13 @@ pub struct Game {
     profiles: crate::profile_store::ProfileStore,
     menus: BTreeMap<u64, crate::menu::MenuState>,
     selection: Option<menu::SelectionWait>,
+    dialogue: Option<dialogue::DialogueWait>,
+    message_windows: BTreeMap<u64, crate::message_window::MessageWindow>,
+    message_config: Option<crate::message_window::MessageConfig>,
+    font: Option<crate::font::TextFont>,
+    font_file: Option<(std::path::PathBuf, u32)>,
+    pointer_inside: bool,
+    dialogue_pressed: bool,
     pub navigation: String,
     pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
     ended: bool,
@@ -140,6 +153,13 @@ impl Game {
             profiles: crate::profile_store::ProfileStore::default(),
             menus: BTreeMap::new(),
             selection: None,
+            dialogue: None,
+            message_windows: BTreeMap::new(),
+            message_config: None,
+            font: None,
+            font_file: None,
+            pointer_inside: false,
+            dialogue_pressed: false,
             navigation: String::new(),
             settings: BTreeMap::new(),
             ended: false,
@@ -266,6 +286,13 @@ impl Game {
         let id = target
             .offset
             .context("message target is not bound to a stored object")?;
+        if target
+            .class
+            .as_ref()
+            .is_some_and(|c| c.name == "CMsgSelBox")
+        {
+            self.ensure_message_window(&target)?;
+        }
         match message.class.as_str() {
             "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
                 self.configure_menu(&target, &message.class, &fields)?
@@ -306,7 +333,8 @@ impl Game {
             | "OM_SetExclusiveCamera"
             | "OM_SetWorldSXY"
             | "OM_StoreFrameImage"
-            | "OM_SetMsgTextLayout" => {
+            | "OM_SetMsgTextLayout"
+            | "OM_SetMsgOutputSpeed" => {
                 self.objects
                     .entry(id)
                     .or_default()
@@ -414,6 +442,7 @@ impl Game {
     }
     fn host(&mut self, instruction: &Instruction) -> Result<()> {
         match instruction.class.name.as_str() {
+            "CVmMsg" => return self.begin_dialogue(instruction),
             "CVmGenericMsg" => {
                 self.message(self.vm.message(instruction)?)?;
                 if self.selection.is_some() {
@@ -514,6 +543,12 @@ impl Game {
         if self.video_wait || self.selection.is_some() {
             return Ok(RunState::Waiting);
         }
+        if self.dialogue.is_some() {
+            self.tick_dialogue(dt_ms)?;
+            if self.dialogue.is_some() {
+                return Ok(RunState::Waiting);
+            }
+        }
         if self.audio_wait {
             return Ok(RunState::Waiting);
         }
@@ -547,6 +582,7 @@ impl Game {
                         || self.audio_wait
                         || self.video_wait
                         || self.selection.is_some()
+                        || self.dialogue.is_some()
                     {
                         return Ok(RunState::Waiting);
                     }

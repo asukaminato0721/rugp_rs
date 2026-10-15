@@ -276,3 +276,81 @@ fn title_keyboard_activation_returns_the_numeric_selector_not_the_mask_id() -> R
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME; requires an installed Japanese font or RUGP_TEST_FONT"]
+fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
+    let mut game = open_title()?;
+    if let Some(font) = std::env::var_os("RUGP_TEST_FONT") {
+        game.set_font_file(font.as_ref(), 0)?;
+    }
+    game.navigate_selection(1)?;
+    game.activate_selection()?;
+    let mut audio = None;
+    for _ in 0..100 {
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        game.step(100)?;
+        if game.waiting_for_dialogue() {
+            break;
+        }
+    }
+    assert!(game.dialogue_waits_for_input());
+    assert_eq!(
+        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
+        Some((483, 0x118))
+    );
+    assert_eq!(game.objects[&212741].rect, (88, 402, 848, 190)); // script overrides resource defaults
+    game.step(1000)?; // finish any asynchronous scene fade
+    let first = game.frame().to_vec();
+    assert!(game.objects[&212741].visible);
+    assert!(
+        first
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] == [24, 24, 120])
+    ); // native configured backdrop over black
+    assert!(
+        first
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] == [255, 255, 255])
+    ); // actual glyph coverage
+    game.step(10000)?;
+    assert!(game.frame() == first);
+    assert_eq!(game.vm.cursor().map(|pc| pc.address), Some(0x118));
+    // A missing/cancelled press (including focus loss) never advances text.
+    game.pointer_button(false)?;
+    game.pointer_move(300, 500)?;
+    game.pointer_button(true)?;
+    game.pointer_move(-1, -1)?;
+    game.pointer_button(false)?;
+    assert!(game.dialogue_waits_for_input());
+    game.pointer_move(300, 500)?;
+    game.pointer_button(true)?;
+    game.pointer_button(false)?;
+    assert!(!game.waiting_for_dialogue());
+    game.step(0)?;
+    assert_eq!(
+        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
+        Some((483, 0x1c8))
+    );
+    assert!(game.dialogue_waits_for_input());
+    assert!(
+        game.frame() != first,
+        "new dialogue must update presented pixels"
+    );
+    game.activate_selection()?; // keyboard advances the real pending message
+    for _ in 0..100 {
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        match game.step(100)? {
+            RunState::Ended => panic!("chapter ended before next message"),
+            _ if game.waiting_for_dialogue() => break,
+            _ => {}
+        }
+    }
+    assert!(game.dialogue_waits_for_input());
+    assert_ne!(game.vm.cursor().map(|pc| pc.address), Some(0x1c8));
+    Ok(())
+}

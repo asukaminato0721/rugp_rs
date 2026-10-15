@@ -80,11 +80,11 @@ impl Game {
             self.install_menu_texture(target, Arc::clone(&texture))?;
         }
         if present {
-            self.present_menu_scene()?;
+            self.present_scene()?;
         }
         Ok(())
     }
-    fn present_menu_scene(&mut self) -> Result<()> {
+    pub(super) fn present_scene(&mut self) -> Result<()> {
         let next = self.scene_frame()?;
         if let Some(transition) = &mut self.transition {
             transition.to = next.rgba;
@@ -123,7 +123,7 @@ impl Game {
         object.menu = menu;
         self.install_menu_texture(target, texture)?;
         if immediate != 0 {
-            self.present_menu_scene()?;
+            self.present_scene()?;
         }
         Ok(())
     }
@@ -172,6 +172,8 @@ impl Game {
     }
     /// Pointer positions are in the game's logical framebuffer coordinates.
     pub fn pointer_move(&mut self, x: i32, y: i32) -> Result<()> {
+        self.pointer_inside =
+            x >= 0 && y >= 0 && x < self.frame.width as i32 && y < self.frame.height as i32;
         let Some(id) = self.selection_menu() else {
             return Ok(());
         };
@@ -201,6 +203,14 @@ impl Game {
         Ok(())
     }
     pub fn pointer_button(&mut self, pressed: bool) -> Result<()> {
+        if self.dialogue.is_some() {
+            if pressed {
+                self.dialogue_pressed = self.pointer_inside;
+            } else if std::mem::take(&mut self.dialogue_pressed) && self.pointer_inside {
+                self.advance_dialogue()?;
+            }
+            return Ok(());
+        }
         let Some(id) = self.selection_menu() else {
             return Ok(());
         };
@@ -225,6 +235,9 @@ impl Game {
         Ok(())
     }
     pub fn activate_selection(&mut self) -> Result<()> {
+        if self.dialogue.is_some() {
+            return self.advance_dialogue();
+        }
         if let Some(id) = self.selection_menu()
             && let Some(key) = self.menus[&id].hover
         {

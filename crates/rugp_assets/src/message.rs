@@ -15,9 +15,11 @@ pub struct MessageBox {
     pub children: Vec<ObjectRef>,
     pub reserved: [u16; 2],
     pub surface_flags: u32,
-    pub surface_parameters: [i32; 3],
+    /// CViewBox item count, selected item and hit/hover item (+0xbc..0xc7).
+    pub selection_state: [i32; 3],
     pub content_rect: [i16; 4],
-    pub spacing: [i16; 2],
+    /// Saved CViewBox view/scroll position (+0xd0/+0xd2), not glyph spacing.
+    pub view_position: [i16; 2],
     pub surface: ObjectRef,
     pub label_version: u32,
     pub label_flags: u16,
@@ -69,13 +71,13 @@ impl MessageBox {
         }
         let reserved = [r.input.u16()?, r.input.u16()?];
         let surface_flags = r.input.u32()?;
-        let surface_parameters = [
+        let selection_state = [
             r.input.u32()? as i32,
             r.input.u32()? as i32,
             r.input.u32()? as i32,
         ];
         let content_rect = rectangle(&mut r)?;
-        let spacing = [r.input.u16()? as i16, r.input.u16()? as i16];
+        let view_position = [r.input.u16()? as i16, r.input.u16()? as i16];
         let surface = r.reference(shift)?;
         let label_version = r.input.u32()?;
         ensure!(
@@ -101,9 +103,9 @@ impl MessageBox {
             children,
             reserved,
             surface_flags,
-            surface_parameters,
+            selection_state,
             content_rect,
-            spacing,
+            view_position,
             surface,
             label_version,
             label_flags,

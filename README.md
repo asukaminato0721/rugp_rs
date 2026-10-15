@@ -62,6 +62,13 @@ Use `--no-default-features` for the CLI without desktop/window dependencies.
 operations stop at their exact scene/address. `--mute` explicitly disables
 audio playback; PCM export/decoding works independently.
 
+Dialogue uses an installed Japanese outline font, preferring the face specified
+in `Setup.ini`. Use `play --font /path/to/font.ttc --font-index 0` to supply a
+face explicitly (`frame` accepts the same options). No fonts are bundled.
+Fallback fonts and portable rasterization can change glyph metrics/appearance.
+Click or press Enter/Space to reveal/advance dialogue; held-key repeats do not
+advance multiple messages. Exact GDI layout and speaker styling remain incomplete.
+
 For device audio, enable `--features audio`. On Linux this needs ALSA development
 files. The pinned Nix development shell supplies the audio/window dependencies:
 
@@ -176,16 +183,28 @@ These state images are indirect resources and are separate from the earlier
 direct-bitmap count. `image OFFSET` also resolves menu image references.
 Other menu styles, object-valued selection results, and text-based choices
 remain incomplete. A desktop Xvfb/XTest smoke test also verifies hover and
-clicking the first title button: the VM enters chapter one and reaches the
-current boundary, `CVmMsg` at scene 483, PC `0x118`. Dialogue rendering and
-advancement are not yet implemented. Unsupported host messages are never skipped.
+clicking the first title button: the VM enters chapter one. Plain `CVmMsg`
+output now renders Japanese text and blocks on its actual control-code waits.
+A retail regression checks first/second-message pixels, persistent VM waits,
+cancelled input, mouse/keyboard advancement, and the intervening sound wait.
+Unsupported host messages are never skipped; dialogue resource callbacks,
+substitutions and alternate modes still stop with explicit errors.
 
 `rugp_assets::message` reads the native CMsgSelBox resource layout and its
 CFrameImage border-piece references, with truncation/version regressions and a
 retail metadata test. This is separate from UI snapshot/save-state parsing;
 all eight referenced CS5i border pieces now decode as bottom-up BGRA surfaces.
 The image manager and `image OFFSET` can load these indirect border resources.
-Border composition, font selection, and dialogue presentation remain pending.
+Eight-piece border placement and the configured non-gradient backdrop blend
+now compose in Rust, including the original additive/shift blend rather than
+ordinary opacity. Transparent UI layers preserve straight colour and alpha.
+The saved CViewBox selection state and scroll position are not colours or text
+spacing. Font discovery/rasterization is portable Rust, with a bounded glyph
+cache; the original GDI/5RF cache, speaker colours, kinsoku, automatic pagination
+and full layout-flag semantics remain incomplete. Viewport overflow is an error,
+not silently dropped text. Normal tests use synthetic text only; the retail
+dialogue regression requires `RUGP_TEST_GAME` and an installed Japanese font
+(or `RUGP_TEST_FONT`). The `dialogue_stats` example emits only aggregate metadata.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.
