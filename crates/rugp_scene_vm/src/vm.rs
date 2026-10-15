@@ -12,6 +12,7 @@ pub enum Value {
     Real(f64),
     Text(String),
     Reference(ObjectRef),
+    Bytes(Vec<u8>),
 }
 impl Value {
     pub fn integer(&self) -> Result<i32> {
@@ -155,6 +156,15 @@ struct Frame {
     cursor: Cursor,
     arguments: Vec<Value>,
 }
+enum Place {
+    Global(u64),
+    Parameter { depth: usize, index: usize },
+}
+pub struct Message {
+    pub class: String,
+    pub target: Value,
+    pub fields: BTreeMap<String, Value>,
+}
 #[derive(Debug)]
 pub enum Step {
     Advanced,
@@ -198,12 +208,84 @@ impl Vm {
     pub fn call_depth(&self) -> usize {
         self.stack.len()
     }
+    fn parameter_place(&self, r: &ObjectRef) -> Result<Option<Place>> {
+        if r.flags & 7 != 1 {
+            return Ok(None);
+        }
+        let Some(owner) = &r.owner else {
+            return Ok(None);
+        };
+        if owner.class.as_ref().is_none_or(|c| c.name != "CRsa") {
+            return Ok(None);
+        }
+        let scene = *self
+            .program
+            .scene_offsets
+            .get(&owner.offset.context("parameter owner has no offset")?)
+            .context("parameter owner scene is not loaded")?;
+        let depth = std::iter::once(self.frame.as_ref())
+            .chain(self.stack.iter().rev().map(Some))
+            .position(|f| f.is_some_and(|f| f.cursor.scene == scene))
+            .context("parameter owner has no active call frame")?;
+        Ok(Some(Place::Parameter {
+            depth,
+            index: r.selector as usize,
+        }))
+    }
+    fn parameter(&self, depth: usize, index: usize) -> Result<&Value> {
+        let frame = if depth == 0 {
+            self.frame.as_ref().context("no active frame")?
+        } else {
+            self.stack
+                .get(
+                    self.stack
+                        .len()
+                        .checked_sub(depth)
+                        .context("invalid call depth")?,
+                )
+                .context("invalid parameter frame")?
+        };
+        frame
+            .arguments
+            .get(index)
+            .with_context(|| format!("argument {index} missing in scene {}", frame.cursor.scene))
+    }
+    fn assign(&mut self, place: Place, value: Value) -> Result<()> {
+        match place {
+            Place::Global(offset) => {
+                self.variables.insert(offset, value);
+            }
+            Place::Parameter { depth, index } => {
+                let frame = if depth == 0 {
+                    self.frame.as_mut().context("no active frame")?
+                } else {
+                    let position = self
+                        .stack
+                        .len()
+                        .checked_sub(depth)
+                        .context("invalid call depth")?;
+                    self.stack
+                        .get_mut(position)
+                        .context("invalid parameter frame")?
+                };
+                *frame
+                    .arguments
+                    .get_mut(index)
+                    .context("assignment to missing argument")? = value;
+            }
+        }
+        Ok(())
+    }
     pub fn evaluate(&self, arg: &Argument) -> Result<Value> {
         Ok(match arg {
             Argument::Number(n) => Value::Integer(*n as i32),
             Argument::Text(s) => Value::Text(s.clone()),
+            Argument::Bytes(bytes) => Value::Bytes(bytes.clone()),
             Argument::Field { argument, .. } => return self.evaluate(argument),
             Argument::Reference(r) => {
+                if let Some(Place::Parameter { depth, index }) = self.parameter_place(r)? {
+                    return self.parameter(depth, index).cloned();
+                }
                 if let Some(offset) = r.offset {
                     self.variables
                         .get(&offset)
@@ -244,9 +326,21 @@ impl Vm {
             _ => bail!("argument is not an evaluable value"),
         })
     }
-    fn destination(&self, arg: &Argument) -> Result<u64> {
+    fn destination(&self, arg: &Argument) -> Result<Place> {
         match arg {
-            Argument::Reference(r) => r.offset.context("assignment target has no stored identity"),
+            Argument::Reference(r) => {
+                if let Some(place) = self.parameter_place(r)? {
+                    return Ok(place);
+                }
+                ensure!(
+                    r.flags & 7 == 0,
+                    "object member assignment requires host property binding"
+                );
+                Ok(Place::Global(
+                    r.offset
+                        .context("assignment target has no stored identity")?,
+                ))
+            }
             Argument::Value {
                 descriptor,
                 arguments,
@@ -255,6 +349,67 @@ impl Vm {
             }
             _ => bail!("assignment target is not a variable reference"),
         }
+    }
+    /// Resolve native defaults and the VM's named/indexed parameter overrides.
+    pub fn message(&self, ins: &Instruction) -> Result<Message> {
+        ensure!(
+            ins.class.name == "CVmGenericMsg",
+            "instruction is not an object message"
+        );
+        let target = self.evaluate(ins.arguments.first().context("missing message target")?)?;
+        let Some(Argument::Message { class, arguments }) = ins.arguments.get(1) else {
+            bail!("missing message body");
+        };
+        let mut fields = BTreeMap::new();
+        let mut order = Vec::new();
+        for field in arguments {
+            let Argument::Field { name, argument, .. } = field else {
+                bail!("message body lacks native field metadata");
+            };
+            fields.insert(name.clone(), self.evaluate(argument)?);
+            order.push(name.clone());
+        }
+        for parameter in ins.arguments.iter().skip(3) {
+            let Argument::Parameter(args) = parameter else {
+                bail!("invalid message override record");
+            };
+            let name = if let Some(Argument::Text(name)) = args.get(args.len().saturating_sub(2)) {
+                name.strip_prefix('$').unwrap_or(name).to_owned()
+            } else {
+                let index = args
+                    .iter()
+                    .find_map(|a| {
+                        if let Argument::Number(index) = a {
+                            Some(*index as usize)
+                        } else {
+                            None
+                        }
+                    })
+                    .context("message override has no field identifier")?;
+                order
+                    .get(index)
+                    .context("message override index outside field list")?
+                    .clone()
+            };
+            ensure!(
+                fields.contains_key(&name),
+                "message {} has no field {name}",
+                class.name
+            );
+            fields.insert(
+                name,
+                self.evaluate(args.last().context("empty message override")?)?,
+            );
+        }
+        Ok(Message {
+            class: class
+                .name
+                .strip_prefix("&-")
+                .unwrap_or(&class.name)
+                .to_owned(),
+            target,
+            fields,
+        })
     }
     fn advance(&mut self) -> Result<()> {
         let frame = self.frame.as_mut().context("VM is halted")?;
@@ -352,7 +507,7 @@ impl Vm {
                 };
                 if let Some(value) = next {
                     let destination = self.destination(&ins.arguments[1])?;
-                    self.variables.insert(destination, Value::Integer(value));
+                    self.assign(destination, Value::Integer(value))?;
                     self.advance()?;
                 } else {
                     let predicate = match operation {

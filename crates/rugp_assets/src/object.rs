@@ -475,6 +475,12 @@ impl<'a> ObjectReader<'a> {
             .resize(self.cache.len() + count, CacheEntry::Empty);
         Ok(())
     }
+    pub fn cached_class(&self, index: u32) -> Result<&ClassId> {
+        match self.cache.get(index as usize) {
+            Some(CacheEntry::Class(class)) => Ok(class),
+            _ => bail!("cache entry {index} is not a declared class/member name"),
+        }
+    }
     pub fn class(&mut self) -> Result<Option<ClassId>> {
         let tag = self.input.u16()?;
         let tag32 = if tag == 0x7fff {

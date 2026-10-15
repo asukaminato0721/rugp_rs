@@ -15,7 +15,8 @@ scene VM, and application/platform hosts:
   metadata recovery.
 - `crates/rugp_scene_vm`: typed scene records, operation fields, dialogue,
   literals, effects, resource references, and a host-independent VM core with
-  linked addresses, calls/returns, labels, scalar state, and integer branches.
+  linked addresses, scoped call arguments, calls/returns, labels, scalar state,
+  integer branches, and native message-field overrides.
   Display/audio/UI operations yield until a host explicitly handles them.
 - Root `rugp_rs` binary: inspection, extraction, disassembly, and validation.
 
@@ -80,8 +81,9 @@ the two EOS-tail cases also have dedicated retail regression tests.
 
 The VM's retail startup regression resolves its entry through the process
 ocean, executes the initial scalar assignments, and follows the jump from
-scene 21 into scene 252. This test deliberately acknowledges host requests;
-it does not claim game/UI execution. Parameter/property binding and the
+scene 21 into scene 252 and binds the first logo helper's image/camera arguments.
+This test deliberately acknowledges host requests;
+it does not claim game/UI execution. Object-property binding and the
 rendering/application host are still under development.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game

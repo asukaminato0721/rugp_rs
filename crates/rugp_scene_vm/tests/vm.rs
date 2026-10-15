@@ -197,3 +197,96 @@ fn labels_invalid_pc_and_unknown_operations_are_not_skipped() {
     assert!(vm.step().is_err());
     assert_eq!(vm.cursor().unwrap().address, 0);
 }
+
+#[test]
+fn scoped_arguments_and_message_overrides() {
+    let Argument::Reference(owner) = reference("CRsa", 200) else {
+        unreachable!()
+    };
+    let Argument::Reference(mut r) = reference("整数", 700) else {
+        unreachable!()
+    };
+    r.flags |= 1;
+    r.selector = 0;
+    r.owner = Some(Box::new(owner));
+    let param = Argument::Reference(r);
+    let mut program = Program::default();
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![
+                    instruction(
+                        "CVmCall",
+                        0,
+                        16,
+                        vec![reference("CRsa", 200), immediate(41)],
+                    ),
+                    instruction(
+                        "CVmCall",
+                        16,
+                        32,
+                        vec![reference("CRsa", 200), immediate(10)],
+                    ),
+                    instruction("CVmRet", 32, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    program
+        .insert(
+            200,
+            scene(
+                2,
+                vec![
+                    instruction("CVmFlagOp", 0, 32, flag(1, immediate(1), param.clone(), 32)),
+                    instruction(
+                        "CVmGenericMsg",
+                        32,
+                        64,
+                        vec![
+                            reference("CImgBox", 300),
+                            Argument::Message {
+                                class: ClassId {
+                                    name: "&-OM_Test".into(),
+                                    schema: 0,
+                                },
+                                arguments: vec![Argument::Field {
+                                    name: "x".into(),
+                                    offset: 8,
+                                    argument: Box::new(Argument::Number(0)),
+                                }],
+                            },
+                            Argument::Number(0),
+                            Argument::Parameter(vec![
+                                Argument::Text("&-OM_Test".into()),
+                                Argument::Number(65535),
+                                Argument::Text("$x".into()),
+                                param.clone(),
+                            ]),
+                        ],
+                    ),
+                    instruction("CVmRet", 64, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    let mut vm = Vm::new(Arc::new(program), 1).unwrap();
+    assert!(vm.evaluate(&param).is_err()); // no leaked/implicit global argument
+    for expected in [42, 11] {
+        vm.step().unwrap();
+        vm.step().unwrap();
+        let Step::Host { instruction, .. } = vm.step().unwrap() else {
+            panic!("expected message");
+        };
+        let message = vm.message(&instruction).unwrap();
+        assert_eq!(message.class, "OM_Test");
+        assert_eq!(message.fields["x"].integer().unwrap(), expected);
+        vm.acknowledge_host().unwrap();
+        vm.step().unwrap();
+        assert!(vm.arguments().is_empty());
+        assert!(!vm.variables.contains_key(&700));
+    }
+    assert!(matches!(vm.step().unwrap(), Step::Halted));
+}

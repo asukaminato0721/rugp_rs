@@ -363,6 +363,10 @@ impl Decoder<'_> {
                 schema: 0,
             });
             args.push(Argument::Text(text));
+        } else if index & 0x8000 != 0 {
+            args.push(Argument::Text(
+                self.r.cached_class((index & 0x7fff) as u32)?.name.clone(),
+            ));
         }
         args.push(self.value()?);
         Ok(args)

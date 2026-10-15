@@ -64,5 +64,39 @@ fn kiminozo_le_startup_control_flow() -> Result<()> {
             address: 0
         })
     );
+    // Walk the startup scheduling chain into the image helper, still without
+    // pretending to execute host effects in this unit test.
+    for _ in 0..100 {
+        if vm.cursor().is_some_and(|pc| pc.scene == 88) {
+            break;
+        }
+        if matches!(vm.step()?, Step::Host { .. }) {
+            vm.acknowledge_host()?;
+        }
+    }
+    assert_eq!(vm.cursor().map(|pc| pc.scene), Some(88));
+    assert_eq!(vm.arguments()[1].integer()?, 2);
+    assert!(matches!(vm.step()?, Step::Host { .. }));
+    vm.acknowledge_host()?;
+    vm.step()?;
+    assert_eq!(vm.arguments()[1].integer()?, 65538);
+    let Step::Host { instruction, .. } = vm.step()? else {
+        anyhow::bail!("expected camera message");
+    };
+    let message = vm.message(&instruction)?;
+    assert_eq!(message.class, "OM_SetExclusiveCamera");
+    assert_eq!(message.fields["排他指定"].integer()?, 65538);
+    vm.acknowledge_host()?;
+    assert!(matches!(vm.step()?, Step::Host { .. }));
+    vm.acknowledge_host()?;
+    let Step::Host { instruction, .. } = vm.step()? else {
+        anyhow::bail!("expected image message");
+    };
+    let message = vm.message(&instruction)?;
+    assert_eq!(message.class, "OM_HumanIn2");
+    let rugp_scene_vm::vm::Value::Reference(image) = &message.fields["ベース画像"] else {
+        anyhow::bail!("image parameter is not a resource");
+    };
+    assert_eq!(image.offset, Some(0xcdefba));
     Ok(())
 }
