@@ -164,12 +164,23 @@ fn async_sound_query_wait_tail_and_device_completion_identity() -> Result<()> {
         .div_ceil(u64::from(data.sample_rate)) as u32;
     assert!(ms > 3);
     let mut resources = Some(resources);
-    let make_vm = |flags: u32| -> Result<Vm> {
+    let make_vm = |kind: u32, flags: u32, parameters: [u32; 3]| -> Result<Vm> {
         let n = Argument::Number;
         let r = || Argument::Reference(sound.clone());
         let mut instructions = Vec::new();
         for (address, name, arguments) in [
-            (0, "CVmSound", vec![r(), n(2), n(flags), n(0), n(0), n(0)]),
+            (
+                0,
+                "CVmSound",
+                vec![
+                    r(),
+                    n(kind),
+                    n(flags),
+                    n(parameters[0]),
+                    n(parameters[1]),
+                    n(parameters[2]),
+                ],
+            ),
             (24, "CVmSync", vec![r(), n(32), n(0)]),
             (48, "CVmSync", vec![r(), n(16), n(0)]),
             (72, "CVmSync", vec![r(), n(32), n(0)]),
@@ -205,7 +216,7 @@ fn async_sound_query_wait_tail_and_device_completion_identity() -> Result<()> {
         )?;
         Vm::new(Arc::new(program), 1)
     };
-    game.vm = make_vm(0)?;
+    game.vm = make_vm(4, 2, [0, 4096, 100])?;
     assert_eq!(game.step(0)?, RunState::Waiting);
     assert_eq!(game.vm.cursor().map(|pc| pc.address), Some(48));
     assert_eq!(game.vm.synchronization_status, Some(false)); // query, not wait
@@ -219,7 +230,7 @@ fn async_sound_query_wait_tail_and_device_completion_identity() -> Result<()> {
 
     // Start a separate runtime for the play-and-wait flag (not a CVmSync).
     let mut waiting = Game::open(root.as_ref())?;
-    waiting.vm = make_vm(1)?;
+    waiting.vm = make_vm(2, 1, [0; 3])?;
     assert_eq!(waiting.step(0)?, RunState::Waiting);
     assert_eq!(waiting.vm.cursor().map(|pc| pc.address), Some(0));
     rugp_runtime::audio::mute_requests(&mut waiting, &mut resources)?;
@@ -228,7 +239,7 @@ fn async_sound_query_wait_tail_and_device_completion_identity() -> Result<()> {
 
     // A real output backend reports identity completion rather than a duration.
     let mut device = Game::open(root.as_ref())?;
-    device.vm = make_vm(0)?;
+    device.vm = make_vm(4, 1, [4096, 0, 100])?;
     assert_eq!(device.step(0)?, RunState::Waiting);
     let request = device.take_sounds().pop().context("queued sound missing")?;
     device.finish_audio_ticket(request.ticket.context("runtime ticket missing")?);
@@ -475,18 +486,30 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     let boundary = boundary.context("expected next unsupported host operation")?;
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((483, 0x3f8))
+        Some((130, 0x60))
     );
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("unsupported sound operation 4"),
+        format!("{boundary:#}").contains("3D camera ピッチ角"),
         "{boundary:#}"
     );
+    let ramp = game
+        .take_sounds()
+        .into_iter()
+        .find(|r| r.kind == 4)
+        .context("chapter must queue the real ramped playback")?;
+    assert!(ramp.ticket.is_some());
+    assert_eq!(ramp.parameters, [0, 4096, 2500]);
+    assert_eq!(ramp.gain_envelope()?.duration_ms(), 2500);
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
-        assert_eq!(instruction.class.name, "CVmSound");
+        assert_eq!(instruction.class.name, "CVmGenericMsg");
+        let message = game.vm.message(&instruction)?;
+        assert_eq!(message.class, "OM_SetWorldCamera");
+        assert_ne!(message.fields["ピッチ角"].integer()?, 0);
+        eprintln!("Pending camera fields: {:?}", message.fields);
     } else {
         panic!("unsupported synchronization was acknowledged");
     }

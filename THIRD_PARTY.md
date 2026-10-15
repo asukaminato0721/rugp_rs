@@ -59,3 +59,7 @@ not distributed assets; portable layout is not claimed to match the GDI output.
 CVmSync's media-event query (mode 32), process-status write, and separate wait
 branch (mode 16) were checked in Vm60's 0x10072ae0 routine. Those mode values
 are not interchangeable with each other or with CVmSound's play-and-wait flag.
+CVmSound operation 4's gain packet and zero-duration case were checked in
+Vm60 at 0x100737c0, 0x10063920 and 0x1007d202. Its native amplitude-control
+interpolation was checked at 0x1007ed37; the portable backend uses its own
+sample clock rather than copying the original waveOut buffer scheduler.

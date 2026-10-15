@@ -1,17 +1,31 @@
 use super::*;
+use crate::audio_envelope::GainEnvelope;
 use crate::audio_state::Bus;
+
+impl SoundRequest {
+    pub fn gain_envelope(&self) -> Result<GainEnvelope> {
+        // The native execution path does not inspect bit 1. Bit 0 waits for
+        // playback; bit 2 enables a different, extended acoustic packet.
+        ensure!(
+            self.flags & !3 == 0,
+            "unsupported sound play flags {:#x}",
+            self.flags
+        );
+        match self.kind {
+            2 => Ok(GainEnvelope::UNITY),
+            4 => GainEnvelope::from_native(self.parameters),
+            other => bail!("sound operation {other} is not playback"),
+        }
+    }
+}
 
 impl Game {
     pub(super) fn queue_sound(&mut self, mut request: SoundRequest) -> Result<bool> {
         if let Some(source) = &request.source {
             let id = source.offset.context("sound source identity missing")?;
             match request.kind {
-                2 => {
-                    ensure!(
-                        request.flags & !1 == 0,
-                        "unsupported sound play flags {:#x}",
-                        request.flags
-                    );
+                2 | 4 => {
+                    request.gain_envelope()?;
                     let bus = if source.class.as_ref().is_some_and(|c| c.name == "CPmBgm") {
                         Bus::Bgm
                     } else {
@@ -63,6 +77,33 @@ impl Game {
         } else {
             self.audio_wait = Some(tickets);
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_play_modes_validate_envelopes_and_do_not_reinterpret_flags() -> Result<()> {
+        let mut request = SoundRequest {
+            ticket: None,
+            source: None,
+            kind: 4,
+            flags: 2,
+            parameters: [1024, 2048, 1000],
+        };
+        assert_eq!(request.gain_envelope()?.control_at_ms(500), 1536);
+        request.flags = 3; // wait bit + native unused bit
+        assert!(request.gain_envelope().is_ok());
+        request.flags = 4; // extended acoustic packet needs a different path
+        assert!(request.gain_envelope().is_err());
+        request.flags = 0;
+        request.kind = 2;
+        request.parameters = [65535; 3]; // ordinary play ignores the three words
+        assert_eq!(request.gain_envelope()?, GainEnvelope::UNITY);
+        request.kind = 3;
+        assert!(request.gain_envelope().is_err());
         Ok(())
     }
 }

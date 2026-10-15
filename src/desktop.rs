@@ -145,6 +145,9 @@ impl App {
         Ok(())
     }
     fn fail(&mut self, error: anyhow::Error) {
+        // A failing VM tick may already have queued playback. Do not start it
+        // after dropping the output device, or reopen a device on the error UI.
+        self.game.take_sounds();
         #[cfg(feature = "audio")]
         {
             self.audio = None;
@@ -269,7 +272,9 @@ impl ApplicationHandler for App {
                     {
                         self.fail(error);
                     }
-                    if let Err(e) = self.sounds() {
+                    if self.error.is_none()
+                        && let Err(e) = self.sounds()
+                    {
                         self.fail(e);
                     }
                 }

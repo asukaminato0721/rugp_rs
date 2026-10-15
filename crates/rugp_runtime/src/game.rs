@@ -31,7 +31,8 @@ pub struct SoundRequest {
     pub source: Option<ObjectRef>,
     pub kind: u8,
     pub flags: u8,
-    /// Native mode-specific words; ordinary play (kind 2) uses source defaults.
+    /// Kind 4: initial gain, final gain (4096 = unity), transition milliseconds.
+    /// Ordinary play (kind 2) uses source defaults instead.
     pub parameters: [u16; 3],
 }
 struct Layer {

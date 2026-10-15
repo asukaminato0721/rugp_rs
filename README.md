@@ -194,8 +194,14 @@ active playback instance, not a replayed full duration. Muted asynchronous
 one-shots have decoded-duration deadlines, and device output reports completion
 for every playback, including nonblocking effects. Stop/replacement and stale
 completion identities have regressions, as do real PCM timing and Kira mock
-natural completion. Chapter execution now reaches the next boundary: sound
-operation 4 at scene 483, PC `0x3f8`. For X11 isolation, unset
+natural completion. Sound operation 4 now plays with its native initial/target
+gain (4096 = unity) and millisecond transition, interpolated in amplitude rather
+than decibels. Zero duration keeps the initial gain; PCM loops do not restart
+the envelope and fading to silence does not itself stop playback. Kira mock
+tests check actual output samples; native block buffering/quantization are not
+reproduced bit-for-bit. Native extended acoustic packets remain unsupported.
+Chapter execution now reaches a nonzero camera pitch in `OM_SetWorldCamera`
+at scene 130, PC `0x60`. For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.
 Unsupported host messages are never skipped; dialogue resource callbacks,
@@ -216,6 +222,8 @@ and full layout-flag semantics remain incomplete. Viewport overflow is an error,
 not silently dropped text. Normal tests use synthetic text only; the retail
 dialogue regression requires `RUGP_TEST_GAME` and an installed Japanese font
 (or `RUGP_TEST_FONT`). The `dialogue_stats` example emits only aggregate metadata.
+The `sound_stats` example similarly inventories control kinds/flags; add
+`--transitions` to print distinct gain/transition tuples without sound data.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.

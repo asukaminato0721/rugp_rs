@@ -114,18 +114,21 @@ pub fn mute_requests(
     resources: &mut Option<AudioResources>,
 ) -> Result<()> {
     for request in game.take_sounds() {
-        if let Some(source) = request.source
-            && request.kind == 2
+        if let Some(source) = &request.source
+            && [2, 4].contains(&request.kind)
         {
+            // Volume motion does not change PCM duration, even when it reaches
+            // zero. Muting still validates the same playback packet.
+            request.gain_envelope()?;
             if resources.is_none() {
                 *resources = Some(AudioResources::new(Arc::clone(&game.archive))?);
             }
             let resources = resources.as_mut().unwrap();
-            if resources.looped(&source)? {
+            if resources.looped(source)? {
                 ensure!(request.flags & 1 == 0, "cannot wait for a looping sound");
                 continue;
             }
-            let data = resources.load(&source)?;
+            let data = resources.load(source)?;
             let frames = data.pcm.len() as u64 / data.channels as u64;
             let ms = (frames * 1000).div_ceil(data.sample_rate as u64);
             game.time_audio_ticket(

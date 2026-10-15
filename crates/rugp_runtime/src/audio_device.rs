@@ -1,11 +1,12 @@
 //! Kira output adapter, separated from resource decoding and game scheduling.
 use crate::{
     audio::{AudioResources, SoundData},
+    audio_envelope::GainEnvelope,
     game::SoundRequest,
 };
 use anyhow::{Context, Result, ensure};
 use kira::{
-    Frame,
+    Frame, Volume,
     manager::{
         AudioManager, AudioManagerSettings,
         backend::{Backend, DefaultBackend},
@@ -39,6 +40,16 @@ impl<B: Backend> Mixer<B> {
         }
     }
     pub fn play(&mut self, source: u64, bus: Bus, data: &SoundData, looped: bool) -> Result<u64> {
+        self.play_with_envelope(source, bus, data, looped, GainEnvelope::UNITY)
+    }
+    pub fn play_with_envelope(
+        &mut self,
+        source: u64,
+        bus: Bus,
+        data: &SoundData,
+        looped: bool,
+        envelope: GainEnvelope,
+    ) -> Result<u64> {
         ensure!(
             [1, 2].contains(&data.channels)
                 && data.pcm.len().is_multiple_of(data.channels as usize),
@@ -60,16 +71,27 @@ impl<B: Backend> Mixer<B> {
         } else {
             StaticSoundSettings::default()
         };
+        let settings = settings.volume(Volume::Amplitude(envelope.start_amplitude()));
         let sound = StaticSoundData {
             sample_rate: data.sample_rate,
             frames: frames.into(),
             settings,
             slice: None,
         };
-        let handle = self
+        let mut handle = self
             .manager
             .play(sound)
             .map_err(|e| anyhow::anyhow!("queue audio: {e}"))?;
+        if envelope.duration_ms() > 0 {
+            handle.set_volume(
+                Volume::Amplitude(envelope.end_amplitude()),
+                Tween {
+                    duration: std::time::Duration::from_millis(u64::from(envelope.duration_ms())),
+                    easing: kira::tween::Easing::Linear,
+                    ..Tween::default()
+                },
+            );
+        }
         let ticket = self.next;
         self.next = self.next.checked_add(1).context("sound ticket overflow")?;
         self.playing.insert(
@@ -130,6 +152,11 @@ impl DeviceAudio {
         })
     }
     pub fn request(&mut self, request: SoundRequest) -> Result<Option<u64>> {
+        let envelope = if [2, 4].contains(&request.kind) {
+            Some(request.gain_envelope()?)
+        } else {
+            None
+        };
         let Some(source) = request.source else {
             match request.kind {
                 255 => self.mixer.stop_all(),
@@ -144,7 +171,7 @@ impl DeviceAudio {
             return Ok(None);
         }
         ensure!(
-            request.kind == 2 && request.flags & !1 == 0,
+            [2, 4].contains(&request.kind),
             "unimplemented sound mode {} flags {:#x}",
             request.kind,
             request.flags
@@ -171,7 +198,13 @@ impl DeviceAudio {
             "cannot wait for a looping sound"
         );
         let data = self.resources.load(&source)?;
-        let ticket = self.mixer.play(offset, bus, &data, looped)?;
+        let ticket = self.mixer.play_with_envelope(
+            offset,
+            bus,
+            &data,
+            looped,
+            envelope.context("playback envelope missing")?,
+        )?;
         // Every playback needs completion reporting, including asynchronous
         // sounds that a later CVmSync may query. VM waiting is runtime-owned.
         Ok(Some(ticket))
@@ -225,7 +258,13 @@ mod tests {
             channels: 1,
             pcm: vec![8192; 441],
         };
-        let short = mixer.play(7, Bus::Effect, &data, false)?;
+        let short = mixer.play_with_envelope(
+            7,
+            Bus::Effect,
+            &data,
+            false,
+            GainEnvelope::from_native([0, 4096, 1000])?,
+        )?;
         let looping = mixer.play(8, Bus::Effect, &data, true)?;
         mixer.manager.backend_mut().on_start_processing();
         for _ in 0..8192 {
@@ -235,6 +274,50 @@ mod tests {
         assert!(!mixer.finished(looping));
         mixer.stop_source(8);
         assert!(mixer.finished(looping));
+        Ok(())
+    }
+    #[test]
+    fn linear_amplitude_envelopes_survive_pcm_loops_and_zero_duration_uses_start() -> Result<()> {
+        fn render(envelope: GainEnvelope, looped: bool) -> Result<Vec<f32>> {
+            let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {
+                backend_settings: MockBackendSettings { sample_rate: 1000 },
+                ..Default::default()
+            })
+            .map_err(|_| anyhow::anyhow!("mock init"))?;
+            let mut mixer = Mixer::new(manager);
+            let data = SoundData {
+                sample_rate: 1000,
+                channels: 1,
+                pcm: vec![8192; if looped { 32 } else { 1000 }],
+            };
+            let id = mixer.play_with_envelope(1, Bus::Effect, &data, looped, envelope)?;
+            mixer.manager.backend_mut().on_start_processing();
+            let frames = (0..250)
+                .map(|_| mixer.manager.backend_mut().process().left)
+                .collect();
+            assert!(!mixer.finished(id)); // ramp reaching zero does not stop playback
+            Ok(frames)
+        }
+        let unity = render(GainEnvelope::UNITY, true)?;
+        let rising = render(GainEnvelope::from_native([0, 4096, 100])?, true)?;
+        let offset = render(GainEnvelope::from_native([1024, 3072, 100])?, false)?;
+        let zero = render(GainEnvelope::from_native([1024, 4096, 0])?, true)?;
+        let falling = render(GainEnvelope::from_native([4096, 0, 100])?, false)?;
+        for at in [10, 25, 50, 75] {
+            let expected = at as f32 / 100.0;
+            assert!(
+                (rising[at] / unity[at] - expected).abs() < 0.03,
+                "sample {at}: {}",
+                rising[at] / unity[at]
+            );
+            assert!((offset[at] / unity[at] - (0.25 + expected * 0.5)).abs() < 0.03);
+            assert!((falling[at] / unity[at] - (1.0 - expected)).abs() < 0.03);
+        }
+        for at in [110, 150, 200] {
+            assert!((rising[at] / unity[at] - 1.0).abs() < 0.001);
+            assert!((zero[at] / unity[at] - 0.25).abs() < 0.001);
+            assert!(falling[at].abs() < 0.001);
+        }
         Ok(())
     }
 }
