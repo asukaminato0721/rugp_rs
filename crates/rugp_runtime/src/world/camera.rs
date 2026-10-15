@@ -37,14 +37,20 @@ impl TryFrom<CameraTweenFields> for CameraTween {
 impl CameraTween {
     pub(crate) fn validate_snapshot(&self) -> Result<()> {
         ensure!(
-            self.style <= 15 && self.start.focal_length <= 32767,
+            matches!(self.style, 0..=15 | 0x11) && self.start.focal_length <= 32767,
             "invalid camera-tween snapshot"
         );
         self.sample(65536)?;
         Ok(())
     }
     pub fn new(start: Camera, target: Camera, style: u8) -> Result<Self> {
-        ensure!(style <= 15, "unsupported camera interpolation style");
+        // SC130 uses 0x11. Native 10040290 only special-cases 0x400/0x800;
+        // 10046d3a uses bits 0..3 for absolute easing, so 0x11 is linear,
+        // not a relative/additive camera. Preserve the original style in saves.
+        ensure!(
+            matches!(style, 0..=15 | 0x11),
+            "unsupported camera interpolation style"
+        );
         ensure!(
             start.focal_length <= 32767 && target.focal_length <= 32767,
             "camera focal length exceeds native signed range"
@@ -246,6 +252,38 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn retail_style_17_is_absolute_linear_and_survives_snapshot_roundtrip() -> Result<()> {
+        let start = Camera {
+            focal_length: 720,
+            position: [10, -20, 30],
+            angles_q4: [-16, 32, -48],
+        };
+        let target = Camera {
+            focal_length: 1440,
+            position: [-10, 21, -31],
+            angles_q4: [16, -32, 48],
+        };
+        let linear = CameraTween::new(start, target, 1)?;
+        let native = CameraTween::new(start, target, 0x11)?;
+        let json = serde_json::to_value(native)?;
+        assert_eq!(json["style"], 0x11);
+        let restored: CameraTween = serde_json::from_value(json.clone())?;
+        for progress in [0, 16384, 32768, 49152, 65536] {
+            assert_eq!(native.sample(progress)?, linear.sample(progress)?);
+            assert_eq!(restored.sample(progress)?, linear.sample(progress)?);
+        }
+        assert_eq!(native.start(), start);
+        assert_eq!(native.target(), target);
+        for style in [16, 18, 0x20] {
+            assert!(CameraTween::new(start, target, style).is_err());
+            let mut corrupt = json.clone();
+            corrupt["style"] = serde_json::json!(style);
+            assert!(serde_json::from_value::<CameraTween>(corrupt).is_err());
+        }
         Ok(())
     }
 }

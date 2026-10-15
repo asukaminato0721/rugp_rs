@@ -102,7 +102,7 @@ impl Game {
         let style = number(&fields, "スタイル", 0)?;
         let fade = number(&fields, "フェード方式", 0)?;
         ensure!(
-            matches!(style, 0..=15 | 0x800) && matches!(fade, 0 | 4 | 8 | 12),
+            matches!(style, 0..=15 | 0x11 | 0x800) && matches!(fade, 0 | 4 | 8 | 12),
             "camera style/transition is not implemented yet"
         );
         number(&fields, "総処理時間基", 0)?; // synchronized mode uses the ParseScreen clock

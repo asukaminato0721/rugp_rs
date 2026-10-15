@@ -667,11 +667,19 @@ mod tests {
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_camera_parse_clock_zoom_pan_and_opacity_match_inverse_pixel_oracle() -> Result<()> {
         for mode in [4, 8, 12] {
-            camera_parse_clock_pixels(mode)?;
+            camera_parse_clock_pixels(mode, 1)?;
         }
         Ok(())
     }
-    fn camera_parse_clock_pixels(mode: i32) -> Result<()> {
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_style_17_camera_uses_real_parse_clock_pixels_and_capture() -> Result<()> {
+        for mode in [4, 8, 12] {
+            camera_parse_clock_pixels(mode, 0x11)?;
+        }
+        Ok(())
+    }
+    fn camera_parse_clock_pixels(mode: i32, style: i32) -> Result<()> {
         let mut game = waiting_game()?;
         let texture = Arc::new(Texture {
             width: 16,
@@ -757,7 +765,7 @@ mod tests {
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(1440)),
                 ("フェード方式".into(), Value::Integer(mode)),
-                ("スタイル".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(style)),
                 ("総処理時間基".into(), Value::Integer(10000)),
             ]),
         ))?;
@@ -771,7 +779,7 @@ mod tests {
                     "フェード方式".into(),
                     Value::Integer(if mode == 4 { 8 } else { 4 }),
                 ),
-                ("スタイル".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(style)),
             ]),
         ))?;
         // Screen/angle commands combine through their prepared target, but
@@ -839,7 +847,7 @@ mod tests {
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(720)),
                 ("フェード方式".into(), Value::Integer(mode)),
-                ("スタイル".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(style)),
             ]),
         ))?;
         game.message(ratio(212259, 0x100, Value::Null))?;
@@ -873,7 +881,7 @@ mod tests {
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(1000)),
                 ("フェード方式".into(), Value::Integer(mode)),
-                ("スタイル".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(style)),
             ]),
         ))?;
         game.message(call(
@@ -896,7 +904,7 @@ mod tests {
             BTreeMap::from([
                 ("ロール角".into(), Value::Integer(1)),
                 ("フェード方式".into(), Value::Integer(mode)),
-                ("スタイル".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(style)),
             ]),
         ))?;
         assert_eq!(
@@ -926,7 +934,7 @@ mod tests {
                 ("３ＤＹ".into(), Value::Integer(-1)),
                 ("３ＤＺ".into(), Value::Integer(40)),
                 ("フェード方式".into(), Value::Integer(mode)),
-                ("スタイル".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(style)),
             ]),
         ))?;
         game.message(call(
@@ -934,7 +942,7 @@ mod tests {
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(1440)),
                 ("フェード方式".into(), Value::Integer(mode)),
-                ("スタイル".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(style)),
             ]),
         ))?;
         assert_eq!(game.objects[&212259].camera, Camera::default());
