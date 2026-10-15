@@ -389,6 +389,11 @@ An opt-in integration regression initializes the real title and then enters
 ending-script branch 10, exercising its original roll, image helpers, waits,
 queries and return to the original title selection with no skipped host operations. This isolated ending test
 does not replace a complete story-route/title-return run or visual verification.
+`CVmSync` distinguishes an empty/non-object `CVmVarObj` from literal null.
+The former queries false or completes a wait immediately; the latter queries
+true. Neither query consumes its time word. Native scalar defaults remain
+scalar values in the VM; this object-only extraction applies at synchronization,
+not as a general conversion of integers into events or pointers.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

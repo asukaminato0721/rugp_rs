@@ -26,6 +26,8 @@ mod profile;
 mod scroll;
 mod sound;
 mod staffroll;
+#[cfg(test)]
+mod sync_tests;
 mod text_menu;
 mod timer;
 mod var_data;
@@ -894,6 +896,25 @@ impl Game {
             }
             "CVmSync" => {
                 let target = self.vm.evaluate(&instruction.arguments[0])?;
+                let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                let object_variable = matches!(&instruction.arguments[0], rugp_scene_vm::Argument::Reference(r)
+                    if r.class.as_ref().is_some_and(|c| c.name == "CVmVarObj"));
+                if object_variable && !matches!(target, Value::Reference(_)) {
+                    // Vm60 10072b3d..10072b69 extracts only object-valued
+                    // CBasicValue contents (UnivUI 100231c0). Initial scalar
+                    // zero is not an event. Missing variable contents query
+                    // false or return immediately, even with a time word.
+                    return if mode & 0x30 == 0x20 {
+                        self.vm.acknowledge_sync_query(false)
+                    } else {
+                        self.vm.acknowledge_host()
+                    };
+                }
+                if matches!(target, Value::Null) && mode & 0x30 == 0x20 {
+                    // A literal null differs from an empty object variable:
+                    // 10072c75 reports true, without reading the time word.
+                    return self.vm.acknowledge_sync_query(true);
+                }
                 if let Value::Reference(reference) = target {
                     if reference
                         .class
