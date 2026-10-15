@@ -93,6 +93,15 @@ impl MenuState {
             self.pressed = None;
         }
     }
+    /// rvmm 1004dd90: ignored items are neither selectable nor drawn in
+    /// their disabled state. This differs from AllDisableSelecter.
+    pub fn ignore_all(&mut self) {
+        for selector in &mut self.data.selectors {
+            selector.status = (selector.status & !3) | 4;
+        }
+        self.hover = None;
+        self.pressed = None;
+    }
     pub fn navigate(&mut self, delta: i32) {
         let keys: Vec<_> = self
             .data
@@ -229,5 +238,24 @@ mod tests {
         assert_eq!(state.result(4), Some(3));
         state.set_enabled(Some(3), false);
         assert_eq!(state.hover, None);
+        state.hover = Some(2);
+        state.pressed = Some(2);
+        state.ignore_all();
+        assert!(state.data.selectors.iter().all(|s| s.status == 0x104));
+        assert_eq!(state.hover, None);
+        assert_eq!(state.pressed, None);
+        assert_eq!(state.hit(1, 0), None);
+        assert_eq!(state.result(2), None);
+        state.navigate(1);
+        assert_eq!(state.hover, None);
+        // EnableSelecter only clears bit 1 and sets bit 0; it does not erase
+        // the independent ignore flag (native 1004dcf7).
+        state.set_enabled(Some(1), true);
+        assert_eq!(state.data.selectors[1].status, 0x105);
+        assert_eq!(state.hit(1, 0), None);
+        state.set_enabled(None, false);
+        state.set_enabled(Some(1), true);
+        assert_eq!(state.data.selectors[1].status, 0x101);
+        assert_eq!(state.hit(1, 0), Some(2));
     }
 }

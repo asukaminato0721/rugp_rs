@@ -290,6 +290,10 @@ hover/pressed feedback and keyboard/mouse input. Confirmation writes the
 zero-based ordinal into the script's integer destination and consumes the
 selector list. A retail-resource regression covers both return values, real
 framebuffer changes, blocking without input and canceled pointer clicks.
+Image-menu `OM_AllIgnoreSelecter` preserves selector resources while hiding
+their enabled/disabled state images and excluding them from hit testing and
+keyboard navigation. Its native ignore bit remains independent from enable;
+the clear-disable/enable sequence restores ordinary interaction.
 Non-null object-valued selector IDs/results and native selector markup remain
 unsupported. `OM_SetSpecifyCmdLighting` on background boxes retains its settings
 but currently omits the lighting/pulse effect without introducing a host wait.

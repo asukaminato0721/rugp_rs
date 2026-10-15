@@ -3,6 +3,7 @@ pub(super) struct SelectionWait {
     pub(super) target: u64,
     pub(super) result: ObjectRef,
 }
+
 impl Game {
     fn ensure_menu(&mut self, reference: &ObjectRef) -> Result<u64> {
         let id = reference
@@ -34,10 +35,12 @@ impl Game {
         } else {
             None
         };
-        self.menus
-            .get_mut(&id)
-            .unwrap()
-            .set_enabled(selection_id, class != "OM_AllDisableSelecter");
+        let menu = self.menus.get_mut(&id).unwrap();
+        if class == "OM_AllIgnoreSelecter" {
+            menu.ignore_all();
+        } else {
+            menu.set_enabled(selection_id, class != "OM_AllDisableSelecter");
+        }
         self.refresh_menu(id, false)
     }
     fn menu_texture(&mut self, id: u64) -> Result<Arc<Texture>> {
@@ -320,6 +323,75 @@ impl Game {
             .write_object(&destination, Value::Integer(result as i32))?;
         self.vm.acknowledge_host()?;
         self.selection = None;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rugp_assets::script::Script;
+    use rugp_scene_vm::Scenario;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_ignore_all_hides_selector_states_without_discarding_menu_resources() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 239)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let instruction = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x6c)
+            .context("ignore-all packet")?;
+        let message = game.vm.message(instruction)?;
+        let Value::Reference(reference) = &message.target else {
+            bail!("menu target missing");
+        };
+        let id = game.ensure_menu(reference)?;
+        let menu = game.menus.get_mut(&id).unwrap();
+        let original = menu.data.selectors.clone();
+        let first = original
+            .iter()
+            .find(|s| s.id != 0)
+            .context("selector missing")?;
+        menu.hover = Some(first.header);
+        menu.pressed = Some(first.header);
+        let before = game.frame().to_vec();
+        game.message(message)?;
+        assert_eq!(game.frame(), before); // staged, no implicit presentation
+        let menu = &game.menus[&id];
+        assert_eq!(menu.hover, None);
+        assert_eq!(menu.pressed, None);
+        for (old, new) in original.iter().zip(&menu.data.selectors) {
+            assert_eq!(new.status, (old.status & !3) | 4);
+            assert_eq!(new.id, old.id);
+            assert_eq!(new.flags, old.flags);
+            assert!(menu.result(new.header).is_none());
+            for (a, b) in old.images.iter().zip(&new.images) {
+                assert_eq!(a.offset, b.offset);
+                assert_eq!(a.size, b.size);
+            }
+        }
+        let mut expected =
+            Framebuffer::new(u32::from(menu.data.width), u32::from(menu.data.height))?;
+        let source = &menu.data.overlay;
+        if source.offset.is_some() || source.inline.is_some() {
+            let texture = game.images.load(source)?;
+            expected.blit(&texture, (0, 0, expected.width, expected.height), 255)?;
+        }
+        let surface = menu.compose(&mut game.images)?;
+        assert_eq!(surface.rgba, expected.rgba);
+        let menu = game.menus.get_mut(&id).unwrap();
+        menu.set_enabled(None, true);
+        assert!(menu.result(first.header).is_none());
+        menu.set_enabled(None, false);
+        menu.set_enabled(Some(first.id), true);
+        assert_eq!(menu.result(first.header), Some(first.id));
         Ok(())
     }
 }

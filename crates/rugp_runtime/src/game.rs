@@ -581,9 +581,10 @@ impl Game {
                     properties.insert(format!("render.lighting.{key}"), value);
                 }
             }
-            "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
-                self.configure_menu(&target, &message.class, &fields)?
-            }
+            "OM_AllDisableSelecter"
+            | "OM_AllEnableSelecter"
+            | "OM_EnableSelecter"
+            | "OM_AllIgnoreSelecter" => self.configure_menu(&target, &message.class, &fields)?,
             "OM_LoadImageArea" => self.load_image_area(id, &fields)?,
             "OM_ParseImageBuild" => self.build_parse_image(id, &fields)?,
             "OM_VramAgesImageIn" => self.vram_image_in(id, &fields)?,
