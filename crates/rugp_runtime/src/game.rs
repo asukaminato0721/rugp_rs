@@ -16,6 +16,7 @@ mod dialogue;
 mod menu;
 mod profile;
 mod sound;
+mod var_data;
 mod video;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,7 @@ pub struct ObjectState {
     pub rect: (i32, i32, u32, u32),
     pub properties: BTreeMap<String, Value>,
     pub camera: Camera,
+    pub world_layers: crate::world::WorldLayerFlags,
     menu: Option<u64>,
     backdrop: Option<crate::message_window::Backdrop>,
     layers: BTreeMap<i32, Layer>,
@@ -63,6 +65,7 @@ impl Default for ObjectState {
             rect: (0, 0, 1024, 600),
             properties: BTreeMap::new(),
             camera: Camera::default(),
+            world_layers: crate::world::WorldLayerFlags::default(),
             menu: None,
             backdrop: None,
             layers: BTreeMap::new(),
@@ -300,6 +303,7 @@ impl Game {
             self.ensure_message_window(&target)?;
         }
         match message.class.as_str() {
+            "OM_SetVarData" => self.set_var_data(&target, &fields)?,
             "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
                 self.configure_menu(&target, &message.class, &fields)?
             }

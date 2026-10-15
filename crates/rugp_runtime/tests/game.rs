@@ -491,16 +491,21 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         .camera;
     assert_eq!(camera.focal_length, 1752);
     assert_eq!(camera.angles_q4, [0, -32, 0]);
+    let layers = game.objects[&212259].world_layers;
+    assert!(layers.draws_in_sprite_pass(0));
+    for slot in 1..=3 {
+        assert!(!layers.draws_in_sprite_pass(slot));
+    }
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((483, 0x4c4))
+        Some((88, 0x7c))
     );
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("OM_SetVarData"),
+        format!("{boundary:#}").contains("background needs 0-plane/motion rendering"),
         "{boundary:#}"
     );
     let ramp = game
@@ -514,11 +519,14 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_SetVarData");
-        assert_eq!(message.fields["識別値"].integer()?, 128);
-        assert_eq!(message.fields["データ"].integer()?, 1);
+        assert_eq!(message.class, "OM_HumanIn2");
+        let rugp_scene_vm::vm::Value::Reference(image) = &message.fields["ベース画像"] else {
+            panic!("pending background is not a resource reference");
+        };
+        assert_eq!(image.class.as_ref().unwrap().name, "CBg2d");
+        assert_eq!(image.offset, Some(251819850));
     } else {
-        panic!("unsupported variable-data message was acknowledged");
+        panic!("unsupported background composition was acknowledged");
     }
     Ok(())
 }

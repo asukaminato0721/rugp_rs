@@ -14,6 +14,34 @@
 use crate::render::Texture;
 use anyhow::{Context, Result, ensure};
 
+/// Per-slot native 0x10000 flags. This suppresses a cached background plane
+/// in the interleaved world-sprite pass, not in the plain background pass.
+/// Vm60 10048500 handles OM_SetVarData IDs 128 (set) and 129 (clear);
+/// 1003bb94/1003bc7b skip drawing the flagged slot between world sprites.
+/// The fast no-sprite path at 1003bfe7 does not inspect this flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorldLayerFlags {
+    suppressed_in_sprite_pass: u8,
+}
+impl WorldLayerFlags {
+    /// Native layer zero is deliberately not configurable by this message.
+    /// Invalid integer slots are ignored, including negative values.
+    pub fn set_sprite_pass_suppressed(&mut self, slot: i32, suppressed: bool) {
+        if !(1..8).contains(&slot) {
+            return;
+        }
+        let bit = 1u8 << slot;
+        if suppressed {
+            self.suppressed_in_sprite_pass |= bit;
+        } else {
+            self.suppressed_in_sprite_pass &= !bit;
+        }
+    }
+    pub fn draws_in_sprite_pass(&self, slot: u8) -> bool {
+        slot < 8 && self.suppressed_in_sprite_pass & (1 << slot) == 0
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
     pub focal_length: u16,

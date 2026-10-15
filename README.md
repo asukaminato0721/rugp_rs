@@ -213,8 +213,16 @@ than decibels. Zero duration keeps the initial gain; PCM loops do not restart
 the envelope and fading to silence does not itself stop playback. Kira mock
 tests check actual output samples; native block buffering/quantization are not
 reproduced bit-for-bit. Native extended acoustic packets remain unsupported.
-Chapter execution now passes the nonzero camera pitch in `OM_SetWorldCamera`
-at scene 130, PC `0x60`, reaching `OM_SetVarData` at scene 483, PC `0x4c4`.
+Class-specific `OM_SetVarData` IDs 128/129 now set/clear distinct CParseBgBox
+world-slot flags (1–7); non-integer payloads and out-of-range slots have the
+native no-effect behavior. These flags suppress cached planes only in the
+interleaved world-sprite pass, not the fast background pass. Their state is
+preserved; full world-sprite interleaving remains unimplemented. A host
+regression verifies cumulative flags, independent clearing, type behavior,
+unsupported dispatch, and unchanged fast-pass pixels.
+Chapter execution now passes the camera and these layer-control messages,
+reaching `OM_HumanIn2` at scene 88, PC `0x7c`: its CBg2d has no legacy image
+planes and requires extended-layer composition (`CBg2dLayerRip007Image#1`).
 Static native inspection establishes that script camera angles use 4096 units
 per turn (internally shifted left by four for a 65536-unit
 matrix), and fade mode 0 takes the target state directly, not a linear 400ms
@@ -223,6 +231,9 @@ trigonometric matrix. Extended/multiplane background geometry and other camera
 transition modes remain under investigation. The metadata-only `rugp_assets`
 example `background`
 accepts a game directory, CBg2d offset and extent for this work.
+Its optional `--extension-header` reports the native extension fields and first
+scrambled layer-class record without extracting game pixels or layer names;
+it does not yet decode the linked layer graph.
 For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.
