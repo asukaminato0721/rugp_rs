@@ -8,7 +8,7 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 pub enum TimeCurve {
     /// CMN_Time_2G#0: native value 1 eases out; all other values ease in.
     Quadratic(i32),
@@ -44,7 +44,7 @@ impl TimeCurve {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 pub struct MotionSegment {
     /// Native 2 = line, 3 = Bezier with optional control points.
     pub kind: u8,
@@ -55,7 +55,7 @@ pub struct MotionSegment {
     pub time_curve: Option<TimeCurve>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 pub struct MotionCurve {
     pub start: [i32; 3],
     pub segments: Vec<MotionSegment>,

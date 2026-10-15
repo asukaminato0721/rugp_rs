@@ -104,9 +104,10 @@ default to the first entry. Like keyboard navigation, oversized indices wrap.
 instruction, instead of automatically starting another game. This checks one
 choice path only, not all endings or all branches.
 
-Two headless plans have returned to that title: default entries (24,960 text
+Three headless plans have returned to that title: default entries (24,960 text
 confirmations, 73 scenes, 50 selections) and second entries after the title
-(23,034 confirmations, 69 scenes, 52 selections). These execute real resources,
+(23,034 confirmations, 69 scenes, 52 selections), plus third entries after the
+title (25,493 confirmations, 73 scenes, 53 selections). These execute real resources,
 audio timing and host operations, but omit scene rasterization.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
@@ -117,6 +118,13 @@ corrupt or oversized saved profiles return errors instead of being reset.
 The original game directory is rejected as an output location. Diagnostics and
 `Game::open` remain volatile. This currently persists CStdb key/value writes,
 not complete VM/game save slots or imports of original Windows save files.
+The asset layer now provides a versioned reference-graph snapshot foundation:
+inline-instance aliases (including bitmap-header references) survive a round
+trip without saving process addresses or inventing archive offsets. It rejects
+conflicting aliases, malformed graphs, and excessive expanded payloads. This
+also supports checked rebinding to loaded script constants, verified against
+all retail script inline references and initial object-variable values. It is
+not yet connected to VM/game save slots or the original load menu.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.

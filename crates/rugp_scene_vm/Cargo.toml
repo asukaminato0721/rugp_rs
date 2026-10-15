@@ -7,3 +7,6 @@ edition.workspace = true
 rugp_assets = { path = "../rugp_assets" }
 anyhow.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

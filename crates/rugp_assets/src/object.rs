@@ -4,12 +4,14 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use std::sync::Arc;
 
+pub mod snapshot;
+
 pub const ENCRYPTED_SIGNATURE: u32 = 0x1edb927c;
 pub const OBJECT_SIGNATURE: u32 = 0x29f6cba4;
 pub const RIO_SIGNATURE: u32 = 0x596e32cd;
 pub const ICI_SIGNATURE: u32 = 0x673ce92a;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ClassId {
     pub name: String,
     pub schema: u16,
@@ -65,6 +67,11 @@ impl PartialEq for InlineIdentity {
     }
 }
 impl Eq for InlineIdentity {}
+impl std::hash::Hash for InlineIdentity {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&Arc::as_ptr(&self.0), state);
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InlineBitmap {

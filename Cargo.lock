@@ -1789,6 +1789,7 @@ dependencies = [
  "iced-x86",
  "lewton",
  "serde",
+ "serde_json",
  "sha1",
 ]
 
@@ -1827,6 +1828,7 @@ dependencies = [
  "anyhow",
  "rugp_assets",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

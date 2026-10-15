@@ -10,7 +10,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 pub struct PostureFields {
     /// Serialized native +10 state byte; activation is a separate operation.
     pub state: u8,

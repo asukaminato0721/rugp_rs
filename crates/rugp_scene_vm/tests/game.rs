@@ -4,6 +4,82 @@ use rugp_scene_vm::Scenario;
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
+fn retail_snapshot_preserves_all_script_inline_aliases_and_initial_object_variables() -> Result<()>
+{
+    use rugp_assets::object::snapshot::{ReferenceSnapshot, ReferenceSnapshotWriter};
+    use rugp_scene_vm::vm::{Program, Value, Vm};
+    use std::sync::Arc;
+    let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+    let archive = RioArchive::open(&root)?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let program = Arc::new(Program::load(&archive, &native)?);
+    let vm = Vm::new(Arc::clone(&program), program.startup(&archive)?)?;
+    let mut writer = ReferenceSnapshotWriter::default();
+    let mut expected = Vec::new();
+    let mut error = None;
+    for scene in program.scenes.values() {
+        scene.visit_references(&mut |reference| {
+            if error.is_none() && reference.inline.is_some() {
+                match writer.insert(reference) {
+                    Ok(_) => expected.push(reference.clone()),
+                    Err(e) => error = Some(e),
+                }
+            }
+        });
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    let script_instances = expected.len();
+    for value in vm.variables.values() {
+        if let Value::Reference(reference) = value {
+            writer.insert(reference)?;
+            expected.push(reference.clone());
+        }
+    }
+    ensure!(
+        script_instances > 100 && expected.len() > script_instances,
+        "missing retail inline instances/initial object variables"
+    );
+    let encoded = serde_json::to_vec(&writer.finish()?)?;
+    let snapshot: ReferenceSnapshot = serde_json::from_slice(&encoded)?;
+    let restored = snapshot.restore()?;
+    assert_eq!(restored.len(), expected.len());
+    let mut identities = std::collections::HashMap::new();
+    let mut reverse = std::collections::HashMap::new();
+    for (original, restored) in expected.iter().zip(&restored) {
+        // Diagnostic serialization deliberately excludes allocation identities.
+        // Comparing each tree verifies all scalar/native payloads, including
+        // bitmap-header properties and posture/motion fields, without text logs.
+        assert!(serde_json::to_value(original)? == serde_json::to_value(restored)?);
+        if let (Some(original), Some(restored)) = (&original.inline, &restored.inline) {
+            let old = original.identity();
+            let new = restored.identity();
+            assert_ne!(old, new);
+            if let Some(previous) = identities.insert(old.clone(), new.clone()) {
+                assert_eq!(previous, new);
+            }
+            if let Some(previous) = reverse.insert(new, old.clone()) {
+                assert_eq!(previous, old);
+            }
+        }
+    }
+    let bindings = expected
+        .iter()
+        .enumerate()
+        .map(|(index, reference)| (index as u32, reference))
+        .collect::<Vec<_>>();
+    let rebound = snapshot.restore_with_bindings(&bindings)?;
+    for (original, restored) in expected.iter().zip(&rebound) {
+        if let (Some(original), Some(restored)) = (&original.inline, &restored.inline) {
+            assert_eq!(original.identity(), restored.identity());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
 fn variable_objects_load_their_real_inline_initial_values_and_alias_identity() -> Result<()> {
     use rugp_scene_vm::{
         Argument,
