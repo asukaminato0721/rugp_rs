@@ -347,6 +347,8 @@ impl Game {
             return Ok(false);
         }
         let duration = duration as u32;
+        let source_reference = source.clone();
+        let background_reference = background.clone();
         let source = self.surface(&source)?;
         let previous = self.surface(&destination)?;
         let background = if let Some(color) = fade.color {
@@ -368,6 +370,44 @@ impl Game {
             &previous,
             fade.rectangles[2],
         )?;
+        if duration > 0
+            && destination.offset != Some(self.primary_buffer)
+            && source.rgba == previous.rgba
+            && background.rgba == previous.rgba
+        {
+            // With identical placed endpoints every sample of the portable
+            // blend is identical too. Retain the native effect metadata and
+            // exact wait without replacing the image/window's live layers.
+            // Specialized spatial deformation remains approximate, as for
+            // the primary-surface and flags-1 presentation paths.
+            ensure!(
+                destination.class.as_ref().is_some_and(|c| [
+                    "CImgBox",
+                    "CImgAreaBox",
+                    "CParseBgBox"
+                ]
+                .contains(&c.name.as_str())),
+                "unsupported unchanged-surface destination"
+            );
+            let id = destination
+                .offset
+                .context("unchanged-surface identity missing")?;
+            let properties = &mut self.objects.entry(id).or_default().properties;
+            for (key, value) in [
+                ("class", Value::Text(class.name.clone())),
+                ("duration", Value::Integer(duration as i32)),
+                ("source", Value::Reference(source_reference)),
+                ("background", Value::Reference(background_reference)),
+                ("packet", Value::Bytes(data.clone())),
+            ] {
+                properties.insert(format!("render.surface_fade.{key}"), value);
+            }
+            if blocking != 0 {
+                self.wait_ms = Some(duration);
+                return Ok(true);
+            }
+            return Ok(false);
+        }
         if duration == 0 {
             let alpha = u32::from(fade.curve.alpha(0, 0));
             let rgba = source
@@ -412,6 +452,145 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_unchanged_offscreen_fade_keeps_live_surface_and_exact_wait() -> Result<()> {
+        use crate::game::{ObjectState, RunState};
+        use rugp_assets::{native_schema::NativeSchema, object::ClassId, script::Script};
+        use rugp_scene_vm::{
+            Scenario,
+            vm::{Program, Vm},
+        };
+        use std::collections::BTreeMap;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 244)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let mut instruction = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x841c)
+            .context("ending self-surface fade")?
+            .clone();
+        let Argument::Message { arguments, .. } = &instruction.arguments[0] else {
+            bail!("effect missing")
+        };
+        let Argument::Reference(target) = &arguments[3] else {
+            bail!("effect target missing")
+        };
+        let id = target.offset.unwrap();
+        let texture = Arc::new(Texture {
+            width: 4,
+            height: 4,
+            display_scale: 1.0,
+            rgba: [255, 0, 0, 255].repeat(16),
+        });
+        let camera = crate::world::Camera {
+            position: [3, 4, 5],
+            ..crate::world::Camera::default()
+        };
+        let pending = crate::world::CameraTween::new(camera, crate::world::Camera::default(), 0)?;
+        game.frame = Framebuffer::new(4, 4)?;
+        game.objects.insert(
+            id,
+            ObjectState {
+                rect: (0, 0, 4, 4),
+                camera,
+                pending_camera: Some(pending),
+                layers: BTreeMap::from([(0, Layer::Screen(Arc::clone(&texture)))]),
+                ..ObjectState::default()
+            },
+        );
+        game.present_scene()?;
+        let before = game.frame().to_vec();
+        let mut different = instruction.clone();
+        instruction.address = 0;
+        instruction.next_address = 24;
+        let mut program = Program::default();
+        program.insert(
+            0,
+            Scenario {
+                object_id: 1,
+                memory_size: 40,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    instruction,
+                    Instruction {
+                        index: 1,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmRet".into(),
+                            schema: 17,
+                        },
+                        address: 24,
+                        next_address: u32::MAX,
+                        flags: 0,
+                        arguments: vec![],
+                    },
+                ],
+            },
+        )?;
+        game.vm = Vm::new(Arc::new(program), 1)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.wait_ms, Some(3000));
+        assert_eq!(game.step(2999)?, RunState::Waiting);
+        assert_eq!(game.wait_ms, Some(1));
+        assert_eq!(game.step(1)?, RunState::Ended);
+        assert_eq!(game.frame(), before);
+        let object = &game.objects[&id];
+        assert_eq!(object.camera, camera);
+        assert_eq!(object.pending_camera, Some(pending));
+        assert_eq!(object.rect, (0, 0, 4, 4));
+        let Layer::Screen(stored) = &object.layers[&0] else {
+            bail!("surface replaced")
+        };
+        assert!(Arc::ptr_eq(stored, &texture));
+        assert!(matches!(
+            object.properties["render.surface_fade.duration"],
+            Value::Integer(3000)
+        ));
+        assert!(!game.buffers.contains_key(&id));
+        assert!(game.pending_sounds().is_empty());
+        // This identity optimization must not discard a real offscreen change.
+        let Argument::Message { arguments, .. } = &mut different.arguments[0] else {
+            unreachable!()
+        };
+        let Argument::Reference(source) = &mut arguments[1] else {
+            unreachable!()
+        };
+        source.offset = Some(213019);
+        game.objects.insert(
+            213019,
+            ObjectState {
+                rect: (0, 0, 4, 4),
+                layers: BTreeMap::from([(
+                    0,
+                    Layer::Screen(Arc::new(Texture {
+                        width: 4,
+                        height: 4,
+                        display_scale: 1.0,
+                        rgba: [0, 255, 0, 255].repeat(16),
+                    })),
+                )]),
+                ..ObjectState::default()
+            },
+        );
+        assert!(
+            game.blit(&different)
+                .unwrap_err()
+                .to_string()
+                .contains("timed offscreen blit")
+        );
+        assert_eq!(game.frame(), before);
+        assert!(game.wait_ms.is_none());
+        Ok(())
+    }
+
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn window_effect_fallback_preserves_world_layers_and_blocking_clocks() -> Result<()> {

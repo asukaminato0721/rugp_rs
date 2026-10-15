@@ -311,6 +311,8 @@ The ending's mode-1, attribute-`0x8000` pan on `CImgAreaBox` is also retained
 as a visual approximation: native dispatch registers it asynchronously, with
 no script output handle. It introduces no extra wait or changes to unrelated
 camera/media clocks; the original separate script waits still execute.
+Its zero-distance/time mode-1 reset stops that retained pan without clearing
+the image or resetting unrelated clocks.
 Mode-zero `OM_BoxScroll` uses staged absolute endpoint placement, without native
 in-flight movement; the helper's separate blocking blit still retains its clock.
 Background `OM_StopAutoAnim` mode zero stops an unimplemented native animation
@@ -321,6 +323,10 @@ world planes/cameras or drawing native raster distortion. Finite blocking
 requests keep their duration; asynchronous duration -1 is retained without a
 blocking wait. `OM_StopXsFade` modes zero and one clear only this separate effect
 configuration, not ordinary framebuffer transitions or posture motion.
+Timed offscreen blends whose placed source and background both equal the
+existing destination retain their exact wait without rewriting live image
+layers. A real ending self-surface effect verifies its 3,000 ms boundary;
+non-identity timed offscreen blends remain unsupported.
 The title's quit item now handles global `OM_VmmFinishByUser` exit code zero:
 it stops audio, returns `RunState::Ended` and does not execute the following
 title-loop jump. Nonzero exit codes remain explicit errors.

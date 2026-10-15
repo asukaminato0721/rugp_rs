@@ -2,7 +2,7 @@
 use super::*;
 
 impl Game {
-    pub(super) fn retain_async_body_scroll(
+    pub(super) fn retain_mode_one_body_scroll(
         &mut self,
         target: &ObjectRef,
         fields: BTreeMap<String, Value>,
@@ -14,16 +14,15 @@ impl Game {
                 .is_some_and(|c| c.name == "CImgAreaBox" && c.schema == 15),
             "unsupported asynchronous body-scroll window"
         );
+        let attributes = number(&fields, "同期属性", 0)?;
+        let time = number(&fields, "時間基", 0)?;
+        let x = number(&fields, "水平距離", 0)?;
+        let y = number(&fields, "垂直距離", 0)?;
+        let reset = attributes == 0 && time == 0 && x == 0 && y == 0;
         ensure!(
-            number(&fields, "モード", 0)? == 1 && number(&fields, "同期属性", 0)? == 0x8000,
+            number(&fields, "モード", 0)? == 1 && ((attributes == 0x8000 && time > 0) || reset),
             "unsupported asynchronous body-scroll mode/attributes"
         );
-        ensure!(
-            number(&fields, "時間基", 0)? > 0,
-            "invalid asynchronous body-scroll time base"
-        );
-        number(&fields, "水平距離", 0)?;
-        number(&fields, "垂直距離", 0)?;
         let id = target
             .offset
             .context("body-scroll window identity missing")?;
@@ -36,6 +35,12 @@ impl Game {
         // script output handle in this packet. Playback-first presentation
         // keeps the whole image, as for mode 0; preserve the request without
         // moving the window/camera or replacing any script/media wait clock.
+        // Zero-time/distance reset follows 1001394a..100139ca: settle/stop
+        // the old motion rather than starting another independent actor.
+        object.properties.insert(
+            "render.body_scroll.active".into(),
+            Value::Integer(i32::from(!reset)),
+        );
         for (name, value) in fields {
             object
                 .properties
@@ -164,7 +169,7 @@ mod tests {
         }
         let mut invalid = fields;
         invalid.insert("同期属性".into(), Value::Integer(0));
-        assert!(game.retain_async_body_scroll(&target, invalid).is_err());
+        assert!(game.retain_mode_one_body_scroll(&target, invalid).is_err());
         // Host acknowledgement must not turn this async request into a wait.
         instruction.address = 0;
         instruction.next_address = 28;
@@ -197,6 +202,28 @@ mod tests {
         game.wait_ms = None;
         assert_eq!(game.step(0)?, RunState::Ended);
         assert!(game.pending_sounds().is_empty());
+        let reset = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x88ec)
+            .context("ending body-pan reset")?;
+        let reset = game.vm.message(reset)?;
+        game.wait_ms = Some(700);
+        game.message(reset)?;
+        assert_eq!(game.wait_ms, Some(700));
+        let object = &game.objects[&id];
+        assert_eq!(
+            number(&object.properties, "render.body_scroll.active", -1)?,
+            0
+        );
+        assert_eq!(
+            number(&object.properties, "render.body_scroll.時間基", -1)?,
+            0
+        );
+        assert_eq!(object.camera, camera);
+        assert_eq!(object.pending_camera, Some(pending));
+        assert_eq!(object.rect, (1, 1, 2, 2));
+        assert_eq!(game.frame(), before);
         Ok(())
     }
 
