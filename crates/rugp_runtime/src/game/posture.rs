@@ -8,6 +8,11 @@ pub(super) struct PostureInstance {
     source: rugp_assets::object::InlineIdentity,
     motion: PostureMotion,
 }
+pub(super) struct PostureWait {
+    source: rugp_assets::object::InlineIdentity,
+    snap: bool,
+    remaining_ms: Option<u32>,
+}
 
 impl Game {
     pub(super) fn add_posture(
@@ -118,7 +123,7 @@ impl Game {
         // event status (1001dd70) is ACTIVE, unlike a media completion event.
         // 10072f15 sends event 1 for mode 0x21, removing it without snapping.
         ensure!(
-            mode == 33 && timeout == 0,
+            matches!(mode, 16 | 17 | 32 | 33) && timeout >= 0,
             "unsupported posture synchronization mode/timeout {mode}/{timeout}"
         );
         let source = reference
@@ -126,15 +131,66 @@ impl Game {
             .as_ref()
             .context("external posture synchronization is not implemented yet")?
             .identity();
-        let mut active = false;
-        for object in self.objects.values_mut() {
-            object.postures.retain(|p| {
-                let matches = p.source == source;
-                active |= matches;
-                !matches
-            });
+        let active = self.posture_active(&source);
+        if mode & 0x30 == 0x20 {
+            self.finish_posture(&source, mode & 1 == 0)?;
+            return self.vm.acknowledge_sync_query(active);
         }
-        self.vm.acknowledge_sync_query(active)
+        if active {
+            self.posture_wait = Some(PostureWait {
+                source,
+                snap: mode & 1 == 0,
+                remaining_ms: (timeout > 0).then_some(timeout as u32),
+            });
+            Ok(())
+        } else {
+            self.vm.acknowledge_host()
+        }
+    }
+    fn posture_active(&self, source: &rugp_assets::object::InlineIdentity) -> bool {
+        self.objects
+            .values()
+            .any(|o| o.postures.iter().any(|p| p.source == *source))
+    }
+    fn finish_posture(
+        &mut self,
+        source: &rugp_assets::object::InlineIdentity,
+        snap: bool,
+    ) -> Result<()> {
+        let mut changed = false;
+        for object in self.objects.values_mut() {
+            if !object.postures.iter().any(|p| p.source == *source) {
+                continue;
+            }
+            if snap {
+                let mut camera = object.camera;
+                for instance in object.postures.iter_mut().filter(|p| p.source == *source) {
+                    camera = instance.motion.apply_end(camera);
+                }
+                object.camera = object.prepare_camera(camera)?;
+                changed = true;
+            }
+            object.postures.retain(|p| p.source != *source);
+        }
+        if changed {
+            self.present_scene()?;
+        }
+        Ok(())
+    }
+    pub(super) fn advance_posture_wait(&mut self, dt_ms: u32) -> Result<bool> {
+        let Some(mut wait) = self.posture_wait.take() else {
+            return Ok(false);
+        };
+        if let Some(remaining) = &mut wait.remaining_ms {
+            *remaining = remaining.saturating_sub(dt_ms);
+        }
+        if self.posture_active(&wait.source) && wait.remaining_ms != Some(0) {
+            self.posture_wait = Some(wait);
+            return Ok(true);
+        }
+        self.finish_posture(&wait.source, wait.snap)?;
+        self.vm.acknowledge_host()?;
+        Ok(false)
     }
 }
 
@@ -204,6 +260,14 @@ mod tests {
         }
     }
     fn install_sync(game: &mut Game, reference: ObjectRef, mode: i32) -> Result<()> {
+        install_sync_timeout(game, reference, mode, 0)
+    }
+    fn install_sync_timeout(
+        game: &mut Game,
+        reference: ObjectRef,
+        mode: i32,
+        timeout: u32,
+    ) -> Result<()> {
         let null = ObjectReader::new(&[0; 3]).reference(0)?;
         let ins = |address, next_address, args| Instruction {
             index: 0,
@@ -232,7 +296,7 @@ mod tests {
                         vec![
                             Argument::Reference(reference),
                             Argument::Number(mode as u32),
-                            Argument::Number(0),
+                            Argument::Number(timeout),
                         ],
                     ),
                     ins(
@@ -249,6 +313,7 @@ mod tests {
         )?;
         game.vm = Vm::new(Arc::new(program), 1)?;
         game.wait_ms = None;
+        game.posture_wait = None;
         Ok(())
     }
     #[test]
@@ -330,6 +395,31 @@ mod tests {
         game.step(1)?;
         assert_eq!(game.objects[&212259].active_posture_count(), 0);
         assert_eq!(game.objects[&212259].camera.position, [8, 0, 0]);
+        game.message(add(&first))?;
+        install_sync(&mut game, first.clone(), 16)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        game.step(400)?;
+        assert_eq!(game.vm.cursor().unwrap().address, 0); // inclusive endpoint
+        game.step(1)?;
+        assert_eq!(game.vm.cursor().unwrap().address, 32);
+        assert!(game.posture_wait.is_none());
+        assert_eq!(game.objects[&212259].camera.position, [12, 0, 0]);
+        game.message(add(&first))?;
+        install_sync(&mut game, first.clone(), 32)?;
+        game.step(0)?;
+        assert_eq!(game.vm.synchronization_status, Some(true));
+        assert_eq!(game.objects[&212259].active_posture_count(), 0);
+        assert_eq!(game.objects[&212259].camera.position, [16, 0, 0]);
+        let looping = media(400, 3);
+        game.message(add(&looping))?;
+        install_sync_timeout(&mut game, looping, 16, 100)?;
+        game.step(0)?;
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        game.step(100)?;
+        assert_eq!(game.vm.cursor().unwrap().address, 32);
+        assert_eq!(game.objects[&212259].active_posture_count(), 0);
+        assert_eq!(game.objects[&212259].camera.position, [20, 0, 0]);
         Ok(())
     }
 }

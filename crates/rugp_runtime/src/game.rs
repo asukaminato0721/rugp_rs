@@ -157,6 +157,7 @@ pub struct Game {
     parse_wait: bool,
     wait_ms: Option<u32>,
     audio_wait: Option<Vec<u64>>,
+    posture_wait: Option<posture::PostureWait>,
     audio_state: crate::audio_state::PlaybackRegistry,
     sounds: Vec<SoundRequest>,
     video: Option<(u64, crate::video::VideoPlayer)>,
@@ -209,6 +210,7 @@ impl Game {
             parse_wait: false,
             wait_ms: None,
             audio_wait: None,
+            posture_wait: None,
             audio_state: crate::audio_state::PlaybackRegistry::default(),
             sounds: Vec::new(),
             video: None,
@@ -380,6 +382,20 @@ impl Game {
         match message.class.as_str() {
             "OM_QueueFace2Data" => self.queue_character_face(id, &fields)?,
             "OM_SetLayerData2D" => self.set_character_layer(id, &fields)?,
+            "OM_PlayMedia"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CLayerSimpleFlush") =>
+            {
+                // Omit this visual-only layer effect, with an instantaneous
+                // completion event. It must not leave a subsequent sync stuck.
+                self.objects
+                    .entry(id)
+                    .or_default()
+                    .properties
+                    .extend(fields);
+            }
             "OM_AddPostureMomentum" => self.add_posture(&target, &fields)?,
             "OM_SetVarData" => self.set_var_data(&target, &fields)?,
             "OM_SetDrawRatioAsParseWnd" => self.set_draw_ratio(&target, &fields)?,
@@ -419,6 +435,9 @@ impl Game {
                 object.rect.3 = h as u32;
             }
             "OM_SetWorldPlayerHeight"
+            | "OM_SetBBInfoForQueue"
+            | "OM_SetDataCPostureMoment"
+            | "OM_SetRmtInfoScaling"
             | "OM_SetExclusiveCamera"
             | "OM_SetWorldSXY"
             | "OM_StoreFrameImage"
@@ -563,6 +582,22 @@ impl Game {
                     if reference
                         .class
                         .as_ref()
+                        .is_some_and(|c| c.name == "CLayerSimpleFlush")
+                    {
+                        let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                        ensure!(
+                            matches!(mode, 16 | 17 | 32 | 33),
+                            "unsupported visual-effect synchronization mode {mode}"
+                        );
+                        return if mode & 0x30 == 0x20 {
+                            self.vm.acknowledge_sync_query(true)
+                        } else {
+                            self.vm.acknowledge_host()
+                        };
+                    }
+                    if reference
+                        .class
+                        .as_ref()
                         .is_some_and(|c| c.name == "CPostureMoment")
                     {
                         let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
@@ -641,6 +676,9 @@ impl Game {
                 self.vm.acknowledge_host()?;
             }
         }
+        if self.advance_posture_wait(dt_ms)? {
+            return Ok(RunState::Waiting);
+        }
         if self.parse_wait {
             if self.parse_transition.is_some() || self.transition.is_some() {
                 return Ok(RunState::Waiting);
@@ -693,6 +731,7 @@ impl Game {
                     if self.wait_ms.is_some()
                         || self.parse_wait
                         || self.audio_wait.is_some()
+                        || self.posture_wait.is_some()
                         || self.video_wait
                         || self.selection.is_some()
                         || self.dialogue.is_some()

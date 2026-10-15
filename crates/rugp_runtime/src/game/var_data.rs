@@ -11,15 +11,30 @@ impl Game {
             .class
             .as_ref()
             .context("variable-data target class missing")?;
+        let key = fields
+            .get("識別値")
+            .context("variable-data identifier missing")?
+            .integer()?;
+        if (matches!(class.name.as_str(), "CCharBox" | "CCharBox2") && key == 100)
+            || (class.name == "CLayerSimpleFlush" && matches!(key, 0..=5 | 15))
+        {
+            // Preserve opaque sprite/layer rendering parameters. The current
+            // static presentation does not reproduce the native material.
+            let data = fields
+                .get("データ")
+                .context("render variable-data payload missing")?;
+            self.objects
+                .entry(target.offset.context("render object identity missing")?)
+                .or_default()
+                .properties
+                .insert(format!("render.var.{key}"), data.clone());
+            return Ok(());
+        }
         ensure!(
             class.name == "CParseBgBox",
             "variable-data target {} is not implemented yet",
             class.name
         );
-        let key = fields
-            .get("識別値")
-            .context("variable-data identifier missing")?
-            .integer()?;
         ensure!(
             [128, 129].contains(&key),
             "CParseBgBox variable-data identifier {key} is not implemented yet"
@@ -169,6 +184,73 @@ mod tests {
         assert_eq!(game.objects[&212259].world_layers, state);
         game.present_scene()?;
         assert_eq!(game.frame(), pixels); // native fast background pass is unaffected
+        let mut effect = target.clone();
+        effect.class.as_mut().unwrap().name = "CLayerSimpleFlush".into();
+        effect.offset = Some(1014184);
+        for (key, data) in [
+            (0, Value::Reference(target.clone())),
+            (1, Value::Integer(12)),
+            (15, Value::Integer(0)),
+        ] {
+            game.message(Message {
+                class: "OM_SetVarData".into(),
+                target: Value::Reference(effect.clone()),
+                fields: BTreeMap::from([
+                    ("識別値".into(), Value::Integer(key)),
+                    ("データ".into(), data),
+                ]),
+            })?;
+        }
+        assert!(
+            matches!(&game.objects[&1014184].properties["render.var.0"], Value::Reference(r) if r.offset == target.offset)
+        );
+        assert_eq!(
+            game.objects[&1014184].properties["render.var.1"].integer()?,
+            12
+        );
+        game.message(Message {
+            class: "OM_PlayMedia".into(),
+            target: Value::Reference(effect.clone()),
+            fields: BTreeMap::new(),
+        })?;
+        use rugp_scene_vm::{Argument, Scenario};
+        let sync = |address, reference, mode, timeout| Instruction {
+            index: 0,
+            stream_offset: 0,
+            class: ClassId {
+                name: "CVmSync".into(),
+                schema: 17,
+            },
+            address,
+            next_address: address + 24,
+            flags: 0,
+            arguments: vec![
+                Argument::Reference(reference),
+                Argument::Number(mode),
+                Argument::Number(timeout),
+            ],
+        };
+        let null = rugp_assets::object::ObjectReader::new(&[0; 3]).reference(0)?;
+        let mut program = Program::default();
+        program.insert(
+            0,
+            Scenario {
+                object_id: 1,
+                memory_size: 128,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    sync(0, effect.clone(), 32, 0),
+                    sync(24, effect, 16, 0),
+                    sync(48, null, 0, 1000000),
+                ],
+            },
+        )?;
+        game.vm = Vm::new(Arc::new(program), 1)?;
+        game.step(0)?;
+        assert_eq!(game.vm.cursor().unwrap().address, 48);
+        assert_eq!(game.vm.synchronization_status, Some(true));
+        assert_eq!(game.frame(), pixels); // omitted effect has no stray overlay
         Ok(())
     }
 }

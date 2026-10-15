@@ -262,8 +262,12 @@ pixels outside the destination region. `CFadeShock` currently uses its common
 transition curve/wait without the displacement effect. Standard `0x6` text
 packet variants share the portable layout while retaining their explicit text
 control-code waits. The real-host first-choice autoplay probe has advanced
-22 text waits and now reaches `OM_SetBBInfoForQueue` at scene 51, PC `0x60`,
+42 text waits and now reaches `OM_AddPostureMomentumEx` at scene 23, PC `0x0`,
 the next unimplemented boundary; full-game completion is not yet verified.
+Billboard queue parameters, character posture/scaling parameters and character
+material property 100 are retained without exact geometry/deformation. The
+`CLayerSimpleFlush` parameter packets are retained; playback currently completes
+instantly without rendering that layer effect, including wait/query completion.
 Its inline `CPostureMoment#4` resources now retain typed numeric fields and
 all five context-bound references during the original archive-reading pass.
 Inner versions 0–2, conditional vectors/modes, signed vectors and finite channel
@@ -276,8 +280,12 @@ Bezier uses Bernstein sums; timing Bezier uses the native 40-segment crossing
 approximation. Floating-point sampling uses f64 rather than x87 precision.
 Synthetic tests and a host/pixel regression cover elapsed time, distinct identical
 instances, cached identity, stacking, restart, natural completion and mode-33
-query/cancel without snapping to the endpoint. Other synchronization modes,
-prepared-state option 1 and concurrent screen transitions remain unsupported.
+query/cancel without snapping to the endpoint. Modes 16/17 now keep the real VM
+pending until natural completion or a supplied timeout, without replaying the
+motion. Mode 32 queries active status and forces the endpoint; timeout callbacks
+likewise distinguish snap-to-end from cancellation. The host regression covers
+inclusive endpoints, actual VM suspension, identity and a timed-out loop.
+Prepared-state option 1 and concurrent screen transitions remain unsupported.
 `CMoveAcsOngen#3` now retains sequential segment endpoints, X/Z compact vectors,
 Bezier controls, timing modes, flags and embedded quadratic/Bezier time curves.
 Timing instances and class reuse share the original archive cache. Tests cover
