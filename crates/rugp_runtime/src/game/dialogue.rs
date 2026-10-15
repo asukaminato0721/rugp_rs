@@ -11,10 +11,12 @@ pub(super) struct DialogueWait {
     voice: Option<ObjectRef>,
 }
 fn supported_text_mode(flags: u32) -> bool {
-    // The 0x6 family is the same text/callback packet with output modifiers.
+    // The 0x2/0x6 families share the text/callback packet. Vm60 1006f21c
+    // forwards the output modifiers to the window/voice callback; they do not
+    // replace explicit waits and pauses parsed from the text itself.
     // Portable presentation currently shares its layout for these variants;
-    // controls in the text still determine page/input waits.
-    flags & 0xf0000000 == 0x60000000
+    // native voice callback mixing/style modifiers remain approximate.
+    matches!(flags & 0xf0000000, 0x20000000 | 0x60000000)
 }
 impl Game {
     /// An outline font is supplied by the user/system, never extracted from
@@ -136,6 +138,10 @@ impl Game {
             })?;
         }
         let object = self.objects.get_mut(&id).unwrap();
+        object.properties.insert(
+            "render.text.flags".into(),
+            Value::Integer((instruction.flags & !0xfffff) as i32),
+        );
         // CVmMsg execution (Vm60 0x1006ecb5) clears CBox's hidden bit before
         // output. Chapter startup deliberately hides this box until then.
         object.visible = true;
@@ -210,12 +216,108 @@ mod tests {
     #[test]
     fn output_modifiers_do_not_reject_the_standard_text_packet_family() {
         for flags in [
-            0x60000000, 0x60100000, 0x61100000, 0x620001a6, 0x64200000, 0x66000000,
+            0x20000000, 0x22000131, 0x60000000, 0x60100000, 0x61100000, 0x620001a6, 0x64200000,
+            0x66000000,
         ] {
             assert!(supported_text_mode(flags));
         }
-        for flags in [0, 0x20000000, 0x40000000, 0x80000000, 0xe0000000] {
+        for flags in [
+            0, 0x10000000, 0x30000000, 0x40000000, 0x80000000, 0xe0000000,
+        ] {
             assert!(!supported_text_mode(flags));
         }
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_two_family_packet_keeps_text_input_wait_and_one_voice_callback() -> Result<()> {
+        use rugp_assets::{object::ClassId, script::Script};
+        use rugp_scene_vm::{Argument, Scenario};
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 467)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let mut message = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x7588)
+            .context("retail 0x2 text packet missing")?
+            .clone();
+        assert_eq!(message.flags & !0xfffff, 0x22000000);
+        let Argument::Reference(window) = &message.arguments[0] else {
+            bail!("dialogue window missing");
+        };
+        game.message(Message {
+            class: "OM_SetMsgOutputSpeed".into(),
+            target: Value::Reference(window.clone()),
+            fields: BTreeMap::from([("速度".into(), Value::Integer(30))]),
+        })?;
+        message.address = 0;
+        message.next_address = 48;
+        message.arguments[1] = Argument::Text("probe\u{3}line\u{1}".into());
+        let mut program = Program::default();
+        program.insert(
+            0,
+            Scenario {
+                object_id: 1,
+                memory_size: 60,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    message,
+                    Instruction {
+                        index: 1,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmRet".into(),
+                            schema: 17,
+                        },
+                        address: 48,
+                        next_address: u32::MAX,
+                        flags: 0,
+                        arguments: vec![],
+                    },
+                ],
+            },
+        )?;
+        game.vm = Vm::new(Arc::new(program), 1)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert!(!game.dialogue_waits_for_input());
+        assert_eq!(
+            game.pending_sounds()
+                .iter()
+                .filter(|s| s.ticket.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(game.step(10000)?, RunState::Waiting);
+        assert!(game.dialogue_waits_for_input());
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        assert_eq!(
+            game.pending_sounds()
+                .iter()
+                .filter(|s| s.ticket.is_some())
+                .count(),
+            1
+        );
+        assert!(
+            game.frame()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p[..3] != [0; 3])
+        );
+        game.activate_selection()?;
+        assert!(!game.waiting_for_dialogue());
+        assert!(
+            game.pending_sounds()
+                .iter()
+                .any(|s| s.kind == 3 && s.source.is_some())
+        );
+        assert_eq!(game.step(0)?, RunState::Ended);
+        Ok(())
     }
 }

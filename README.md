@@ -277,7 +277,7 @@ pixels outside the destination region. Known specialized CFade#12 classes
 transition curve/wait without native displacement/deformation. Their envelope
 layouts share one decoder table, with prefix/tail and truncation regressions.
 Default-bound mode 0 is supported as well as explicit-region mode 0x11.
-Standard `0x6` text
+Standard `0x2` and `0x6` text
 packet variants share the portable layout while retaining their explicit text
 control-code waits. Normal-render and raster-suppressed real-host autoplay
 probes match through 1842 text confirmations and five story selections,
@@ -336,6 +336,10 @@ Defaults preserve their original reader context and distinct instance identity;
 cached aliases share one instance, writes stay VM-local, and fresh VMs reset to
 the resource defaults. Runtime synchronization can query an initialized but
 unactivated posture without inventing an active motion or skipping the query.
+The `0x22000000` dialogue variant uses the same portable text/voice flow while
+retaining its modifier word. Explicit text pauses/confirmation still apply;
+native callback mixing/style differences are not reproduced. A retail-packet
+regression checks actual font pixels, blocking input and a single voice callback.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
