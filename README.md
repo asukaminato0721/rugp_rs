@@ -14,8 +14,9 @@ scene VM, and application/platform hosts:
   payloads, texture/background/audio decoding, and static native serialization
   metadata recovery.
 - `crates/rugp_scene_vm`: typed scene records, operation fields, dialogue,
-  literals, effects, and resource references. The execution layer will consume
-  this model.
+  literals, effects, resource references, and a host-independent VM core with
+  linked addresses, calls/returns, labels, scalar state, and integer branches.
+  Display/audio/UI operations yield until a host explicitly handles them.
 - Root `rugp_rs` binary: inspection, extraction, disassembly, and validation.
 
 No Windows executable or DLL is loaded or executed. The schema reader reads
@@ -76,6 +77,12 @@ retained explicitly. WAV export and per-packet PCM decoding use pure-Rust
 `lewton`. V0 audio has no final sample count, so encoder end padding is retained.
 All 30,297 referenced audio streams pass framing validation and decode to PCM;
 the two EOS-tail cases also have dedicated retail regression tests.
+
+The VM's retail startup regression resolves its entry through the process
+ocean, executes the initial scalar assignments, and follows the jump from
+scene 21 into scene 252. This test deliberately acknowledges host requests;
+it does not claim game/UI execution. Parameter/property binding and the
+rendering/application host are still under development.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.

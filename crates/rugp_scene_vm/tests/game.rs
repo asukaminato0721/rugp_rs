@@ -31,3 +31,38 @@ fn kiminozo_le_all_project_scenes() -> Result<()> {
     println!("Validated {scenes} scenes and {instructions} instructions");
     Ok(())
 }
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
+fn kiminozo_le_startup_control_flow() -> Result<()> {
+    use rugp_scene_vm::vm::{Cursor, Program, Step, Vm};
+    let root = std::env::var_os("RUGP_TEST_GAME")
+        .ok_or_else(|| anyhow::anyhow!("RUGP_TEST_GAME missing"))?;
+    let archive = RioArchive::open(&root)?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let program = Program::load(&archive, &native)?;
+    let entry = program.startup(&archive)?;
+    assert_eq!(entry, 21);
+    let first_variable = program.scenes[&entry].instructions[2].arguments[1].clone();
+    let second_variable = program.scenes[&entry].instructions[3].arguments[1].clone();
+    let mut vm = Vm::new(std::sync::Arc::new(program), entry)?;
+    // Host effects are deliberately acknowledged only in this scheduling test.
+    // This does not claim audio/UI execution or game playability.
+    for _ in 0..2 {
+        assert!(matches!(vm.step()?, Step::Host { .. }));
+        vm.acknowledge_host()?;
+    }
+    vm.step()?;
+    assert_eq!(vm.evaluate(&first_variable)?.integer()?, 1024);
+    vm.step()?;
+    assert_eq!(vm.evaluate(&second_variable)?.integer()?, 600);
+    vm.step()?;
+    assert_eq!(
+        vm.cursor(),
+        Some(&Cursor {
+            scene: 252,
+            address: 0
+        })
+    );
+    Ok(())
+}

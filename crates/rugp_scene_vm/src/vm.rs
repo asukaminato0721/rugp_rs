@@ -1,0 +1,392 @@
+//! Host-independent instruction scheduling, calls, labels and scalar state.
+//! Rendering/audio/UI instructions yield to a host and are never silently skipped.
+use crate::{Argument, Instruction, Scenario};
+use anyhow::{Context, Result, bail, ensure};
+use rugp_assets::{RioArchive, native_schema::NativeSchema, object::ObjectRef, script::Script};
+use std::{collections::BTreeMap, sync::Arc};
+
+#[derive(Debug, Clone)]
+pub enum Value {
+    Null,
+    Integer(i32),
+    Real(f64),
+    Text(String),
+    Reference(ObjectRef),
+}
+impl Value {
+    pub fn integer(&self) -> Result<i32> {
+        match self {
+            Self::Integer(v) => Ok(*v),
+            _ => bail!("expected integer, got {self:?}"),
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor {
+    pub scene: usize,
+    pub address: u32,
+}
+#[derive(Default)]
+pub struct Program {
+    pub scenes: BTreeMap<usize, Scenario>,
+    addresses: BTreeMap<(usize, u32), usize>,
+    scene_offsets: BTreeMap<u64, usize>,
+    labels: BTreeMap<u64, Cursor>,
+    initial: BTreeMap<u64, Value>,
+}
+impl Program {
+    pub fn insert(&mut self, offset: u64, scene: Scenario) -> Result<()> {
+        let id = scene.object_id;
+        ensure!(
+            !self.scenes.contains_key(&id) && !self.scene_offsets.contains_key(&offset),
+            "duplicate scene identity"
+        );
+        for (index, ins) in scene.instructions.iter().enumerate() {
+            ensure!(
+                self.addresses.insert((id, ins.address), index).is_none(),
+                "duplicate command address"
+            );
+            if ins.class.name == "CVmLabel"
+                && let Some(Argument::Reference(label)) = ins.arguments.first()
+                && let Some(offset) = label.offset
+            {
+                let cursor = Cursor {
+                    scene: id,
+                    address: ins.address,
+                };
+                ensure!(
+                    self.labels
+                        .insert(offset, cursor.clone())
+                        .is_none_or(|v| v == cursor),
+                    "label defined at multiple addresses"
+                );
+            }
+        }
+        self.scene_offsets.insert(offset, id);
+        self.scenes.insert(id, scene);
+        Ok(())
+    }
+    pub fn load(archive: &RioArchive, native: &NativeSchema) -> Result<Self> {
+        let mut program = Self::default();
+        let mut variables = BTreeMap::new();
+        for node in archive.nodes.iter().filter(|n| n.class.name == "CRsa") {
+            let scene = Scenario::decode_with_schema(
+                &Script::load(archive, node.id)?,
+                archive.address_shift,
+                Some(native),
+            )?;
+            scene.visit_references(&mut |r| {
+                if let (Some(offset), Some(size), Some(class)) = (r.offset, r.size, &r.class)
+                    && ["CInt", "CFlag", "CByte", "CShort", "CUShort", "CUInt"]
+                        .contains(&class.name.as_str())
+                {
+                    variables
+                        .entry(offset)
+                        .or_insert((size, class.name.clone()));
+                }
+            });
+            program.insert(node.offset.context("scene extent missing")?, scene)?;
+        }
+        for (offset, (size, class)) in variables {
+            let bytes = archive.read_at(offset, size as usize)?;
+            let payload = bytes.get(3..).context("scalar object prefix missing")?;
+            let value = match (class.as_str(), payload) {
+                ("CInt" | "CUInt", [a, b, c, d]) => i32::from_le_bytes([*a, *b, *c, *d]),
+                ("CShort", [a, b]) => i16::from_le_bytes([*a, *b]) as i32,
+                ("CUShort", [a, b]) => u16::from_le_bytes([*a, *b]) as i32,
+                ("CFlag" | "CByte", [a]) => *a as i32,
+                _ => bail!("unsupported {class} scalar extent at {offset:#x}"),
+            };
+            program.initial.insert(offset, Value::Integer(value));
+        }
+        Ok(program)
+    }
+    fn instruction(&self, cursor: &Cursor) -> Result<&Instruction> {
+        let index = *self
+            .addresses
+            .get(&(cursor.scene, cursor.address))
+            .with_context(|| format!("invalid PC {}:{:#x}", cursor.scene, cursor.address))?;
+        Ok(&self.scenes[&cursor.scene].instructions[index])
+    }
+    pub fn startup(&self, archive: &RioArchive) -> Result<usize> {
+        let process = archive
+            .project
+            .as_ref()
+            .context("game project missing")?
+            .references
+            .get("processes")
+            .context("process ocean missing")?;
+        let data = archive.read_at(
+            process.offset.context("process ocean offset missing")?,
+            process.size.context("process ocean extent missing")? as usize,
+        )?;
+        let process = rugp_assets::process::ProcessOcean::parse(&data, archive.address_shift)?;
+        Ok(self.target(&process.references[1])?.scene)
+    }
+    fn target(&self, reference: &ObjectRef) -> Result<Cursor> {
+        ensure!(
+            reference.selector == 0,
+            "unsupported control-flow selector {}",
+            reference.selector
+        );
+        let offset = reference
+            .offset
+            .context("control-flow target has no stored identity")?;
+        match reference.class.as_ref().map(|c| c.name.as_str()) {
+            Some("CRsa") => Ok(Cursor {
+                scene: *self
+                    .scene_offsets
+                    .get(&offset)
+                    .context("target scene not loaded")?,
+                address: 0,
+            }),
+            Some("CLabel") => self
+                .labels
+                .get(&offset)
+                .cloned()
+                .context("jump label has no definition"),
+            other => bail!("unsupported control-flow target {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Frame {
+    cursor: Cursor,
+    arguments: Vec<Value>,
+}
+#[derive(Debug)]
+pub enum Step {
+    Advanced,
+    Host {
+        cursor: Cursor,
+        instruction: Instruction,
+    },
+    Halted,
+}
+pub struct Vm {
+    program: Arc<Program>,
+    frame: Option<Frame>,
+    stack: Vec<Frame>,
+    pub variables: BTreeMap<u64, Value>,
+    pending_host: bool,
+}
+impl Vm {
+    pub fn new(program: Arc<Program>, entry: usize) -> Result<Self> {
+        let cursor = Cursor {
+            scene: entry,
+            address: 0,
+        };
+        program.instruction(&cursor)?;
+        Ok(Self {
+            variables: program.initial.clone(),
+            program,
+            frame: Some(Frame {
+                cursor,
+                arguments: Vec::new(),
+            }),
+            stack: Vec::new(),
+            pending_host: false,
+        })
+    }
+    pub fn cursor(&self) -> Option<&Cursor> {
+        self.frame.as_ref().map(|f| &f.cursor)
+    }
+    pub fn arguments(&self) -> &[Value] {
+        self.frame.as_ref().map_or(&[], |f| &f.arguments)
+    }
+    pub fn call_depth(&self) -> usize {
+        self.stack.len()
+    }
+    pub fn evaluate(&self, arg: &Argument) -> Result<Value> {
+        Ok(match arg {
+            Argument::Number(n) => Value::Integer(*n as i32),
+            Argument::Text(s) => Value::Text(s.clone()),
+            Argument::Field { argument, .. } => return self.evaluate(argument),
+            Argument::Reference(r) => {
+                if let Some(offset) = r.offset {
+                    self.variables
+                        .get(&offset)
+                        .cloned()
+                        .unwrap_or_else(|| Value::Reference(r.clone()))
+                } else if r.cache_index == Some(0) {
+                    Value::Null
+                } else {
+                    Value::Reference(r.clone())
+                }
+            }
+            Argument::Value {
+                descriptor,
+                arguments,
+            } => match descriptor & 3 {
+                2 => Value::Integer((*descriptor as i32) >> 2),
+                0 | 1 => {
+                    return self
+                        .evaluate(arguments.first().context("empty reference/string value")?);
+                }
+                _ => bail!("unsupported runtime value descriptor {descriptor:#x}"),
+            },
+            Argument::Literal { type_name, data } => match (type_name.as_str(), data.as_slice()) {
+                ("フラグ" | "バイト", [v]) => Value::Integer(*v as i32),
+                ("短整数", [a, b]) => Value::Integer(i16::from_le_bytes([*a, *b]) as i32),
+                ("短正整数", [a, b]) => Value::Integer(u16::from_le_bytes([*a, *b]) as i32),
+                ("整数" | "正整数" | "色", [a, b, c, d]) => {
+                    Value::Integer(i32::from_le_bytes([*a, *b, *c, *d]))
+                }
+                ("低精度実数", [a, b, c, d]) => {
+                    Value::Real(f32::from_le_bytes([*a, *b, *c, *d]) as f64)
+                }
+                ("実数" | "高精度実数", bytes) if bytes.len() == 8 => {
+                    Value::Real(f64::from_le_bytes(bytes.try_into()?))
+                }
+                _ => bail!("unsupported runtime literal {type_name}"),
+            },
+            _ => bail!("argument is not an evaluable value"),
+        })
+    }
+    fn destination(&self, arg: &Argument) -> Result<u64> {
+        match arg {
+            Argument::Reference(r) => r.offset.context("assignment target has no stored identity"),
+            Argument::Value {
+                descriptor,
+                arguments,
+            } if descriptor & 3 == 0 => {
+                self.destination(arguments.first().context("empty assignment target")?)
+            }
+            _ => bail!("assignment target is not a variable reference"),
+        }
+    }
+    fn advance(&mut self) -> Result<()> {
+        let frame = self.frame.as_mut().context("VM is halted")?;
+        let next = self.program.instruction(&frame.cursor)?.next_address;
+        ensure!(next != u32::MAX, "instruction chain ended without return");
+        frame.cursor.address = next;
+        self.program.instruction(&frame.cursor)?;
+        Ok(())
+    }
+    /// A host must acknowledge only operations it actually implemented.
+    pub fn acknowledge_host(&mut self) -> Result<()> {
+        ensure!(self.pending_host, "no pending host instruction");
+        self.advance()?;
+        self.pending_host = false;
+        Ok(())
+    }
+    pub fn step(&mut self) -> Result<Step> {
+        let Some(frame) = &self.frame else {
+            return Ok(Step::Halted);
+        };
+        let cursor = frame.cursor.clone();
+        let ins = self.program.instruction(&cursor)?.clone();
+        if self.pending_host {
+            return Ok(Step::Host {
+                cursor,
+                instruction: ins,
+            });
+        }
+        match ins.class.name.as_str() {
+            "CVmRet" => {
+                self.frame = self.stack.pop();
+                return Ok(if self.frame.is_some() {
+                    Step::Advanced
+                } else {
+                    Step::Halted
+                });
+            }
+            "CVmLabel" => self.advance()?,
+            "CVmJump" | "CVmCall" => {
+                let Some(Argument::Reference(reference)) = ins.arguments.first() else {
+                    bail!("missing jump/call target");
+                };
+                let target = self.program.target(reference)?;
+                self.program.instruction(&target)?;
+                if ins.class.name == "CVmCall" {
+                    ensure!(self.stack.len() < 1024, "VM call stack limit exceeded");
+                    let arguments = ins.arguments[1..]
+                        .iter()
+                        .map(|v| self.evaluate(v))
+                        .collect::<Result<Vec<_>>>()?;
+                    self.advance()?;
+                    self.stack.push(
+                        self.frame
+                            .replace(Frame {
+                                cursor: target,
+                                arguments,
+                            })
+                            .unwrap(),
+                    );
+                } else {
+                    self.frame.as_mut().unwrap().cursor = target;
+                }
+            }
+            "CVmFlagOp" => {
+                ensure!(
+                    ins.arguments.len() == 6,
+                    "invalid flag operation argument count"
+                );
+                let operation = self.evaluate(&ins.arguments[3])?.integer()?;
+                let mode = self.evaluate(&ins.arguments[4])?.integer()?;
+                ensure!(mode == 1, "unsupported flag branch mode {mode}");
+                let source = if operation == 0x40 || operation == 0x41 {
+                    0
+                } else {
+                    self.evaluate(&ins.arguments[0])?.integer()?
+                };
+                let current = self.evaluate(&ins.arguments[1])?.integer()?;
+                let next = match operation {
+                    0 => Some(source),
+                    1 => Some(current.wrapping_add(source)),
+                    2 => Some(current.wrapping_sub(source)),
+                    3 => Some(current.wrapping_mul(source)),
+                    4 => Some(
+                        current
+                            .checked_div(source)
+                            .context("VM division overflow or zero divisor")?,
+                    ),
+                    5 => Some(
+                        current
+                            .checked_rem(source)
+                            .context("VM remainder overflow or zero divisor")?,
+                    ),
+                    0x40..=0x47 => None,
+                    _ => bail!("unsupported flag operation {operation:#x}"),
+                };
+                if let Some(value) = next {
+                    let destination = self.destination(&ins.arguments[1])?;
+                    self.variables.insert(destination, Value::Integer(value));
+                    self.advance()?;
+                } else {
+                    let predicate = match operation {
+                        0x40 => current != 0,
+                        0x41 => current == 0,
+                        0x42 => current == source,
+                        0x43 => current != source,
+                        0x44 => current > source,
+                        0x45 => current >= source,
+                        0x46 => current < source,
+                        0x47 => current <= source,
+                        _ => unreachable!(),
+                    };
+                    if predicate {
+                        self.advance()?;
+                    } else {
+                        let address = self.evaluate(&ins.arguments[5])?.integer()? as u32;
+                        let target = Cursor {
+                            scene: cursor.scene,
+                            address,
+                        };
+                        self.program.instruction(&target)?;
+                        self.frame.as_mut().unwrap().cursor = target;
+                    }
+                }
+            }
+            _ => {
+                self.pending_host = true;
+                return Ok(Step::Host {
+                    cursor,
+                    instruction: ins,
+                });
+            }
+        }
+        Ok(Step::Advanced)
+    }
+}
