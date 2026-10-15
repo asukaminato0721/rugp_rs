@@ -1829,6 +1829,7 @@ dependencies = [
  "rugp_assets",
  "serde",
  "serde_json",
+ "sha1",
 ]
 
 [[package]]

@@ -8,7 +8,9 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Clone)]
+pub mod snapshot;
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum Value {
     Null,
     Integer(i32),
@@ -68,7 +70,8 @@ fn initial_value(argument: &Argument) -> Result<Value> {
         _ => bail!("invalid initial variable value"),
     })
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Cursor {
     pub scene: usize,
     pub address: u32,
@@ -259,6 +262,9 @@ pub enum Step {
 }
 pub struct Vm {
     program: Arc<Program>,
+    /// Only this VM owns the cache: Program's public scene collection may be
+    /// edited once all VMs using it are dropped, so Program cannot cache it.
+    snapshot_program_digest: std::sync::OnceLock<[u8; 20]>,
     frame: Option<Frame>,
     stack: Vec<Frame>,
     pub variables: BTreeMap<u64, Value>,
@@ -277,6 +283,7 @@ impl Vm {
         Ok(Self {
             variables: program.initial.clone(),
             program,
+            snapshot_program_digest: std::sync::OnceLock::new(),
             frame: Some(Frame {
                 cursor,
                 arguments: Vec::new(),

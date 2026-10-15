@@ -4,6 +4,99 @@ use rugp_scene_vm::Scenario;
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
+fn retail_vm_snapshot_restores_real_pending_startup_and_rebinds_fresh_program_constants()
+-> Result<()> {
+    use rugp_assets::object::{
+        ClassId, ObjectRef,
+        snapshot::{ReferenceSnapshot, ReferenceSnapshotWriter},
+    };
+    use rugp_scene_vm::vm::{Program, Step, Value, Vm, snapshot::VmSnapshot};
+    use std::sync::Arc;
+    let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+    let archive = RioArchive::open(&root)?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let program = Arc::new(Program::load(&archive, &native)?);
+    let mut vm = Vm::new(Arc::clone(&program), program.startup(&archive)?)?;
+    let mut pending = None;
+    for _ in 0..10000 {
+        match vm.step()? {
+            Step::Advanced => {}
+            Step::Host {
+                cursor,
+                instruction,
+            } => {
+                pending = Some((cursor, instruction.class));
+                break;
+            }
+            Step::Halted => anyhow::bail!("startup halted before its first host instruction"),
+        }
+    }
+    let (cursor, class) = pending.context("startup did not yield")?;
+    let call_depth = vm.call_depth();
+    let host_actor = ObjectRef::transient(ClassId {
+        name: "CGenericUso".into(),
+        schema: 1,
+    });
+    vm.variables
+        .insert(6471593, Value::Reference(host_actor.clone()));
+    let mut writer = ReferenceSnapshotWriter::default();
+    let state = vm.snapshot(&mut writer)?;
+    let host_root = writer.insert(&host_actor)?;
+    let state: VmSnapshot = serde_json::from_slice(&serde_json::to_vec(&state)?)?;
+    let references: ReferenceSnapshot =
+        serde_json::from_slice(&serde_json::to_vec(&writer.finish()?)?)?;
+    // Loading again creates new inline instances; saved script aliases must
+    // bind to this program, while the runtime actor gets a new shared identity.
+    let fresh_program = Arc::new(Program::load(&archive, &native)?);
+    let fresh = Vm::new(Arc::clone(&fresh_program), fresh_program.startup(&archive)?)?;
+    let (mut restored, roots) = state.restore(fresh_program, &references)?;
+    assert_eq!(restored.cursor(), Some(&cursor));
+    assert_eq!(restored.call_depth(), call_depth);
+    assert_eq!(restored.variables.len(), vm.variables.len());
+    assert_eq!(
+        restored
+            .pending_instruction()
+            .context("pending instruction lost")?
+            .class,
+        class
+    );
+    let Value::Reference(actor) = &restored.variables[&6471593] else {
+        anyhow::bail!("actor lost");
+    };
+    assert_eq!(
+        actor.inline.as_ref().unwrap().identity(),
+        roots[host_root as usize]
+            .inline
+            .as_ref()
+            .unwrap()
+            .identity()
+    );
+    assert_ne!(
+        actor.inline.as_ref().unwrap().identity(),
+        host_actor.inline.as_ref().unwrap().identity()
+    );
+    for offset in [4239623, 4239816] {
+        let (Value::Reference(expected), Value::Reference(actual)) =
+            (&fresh.variables[&offset], &restored.variables[&offset])
+        else {
+            anyhow::bail!("posture lost");
+        };
+        assert_eq!(
+            expected.inline.as_ref().unwrap().identity(),
+            actual.inline.as_ref().unwrap().identity()
+        );
+    }
+    for _ in 0..2 {
+        assert!(
+            matches!(restored.step()?,Step::Host {cursor:at,instruction} if at == cursor && instruction.class == class)
+        );
+    }
+    assert_eq!(restored.cursor(), Some(&cursor));
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
 fn retail_snapshot_preserves_all_script_inline_aliases_and_initial_object_variables() -> Result<()>
 {
     use rugp_assets::object::snapshot::{ReferenceSnapshot, ReferenceSnapshotWriter};

@@ -5,9 +5,10 @@ Native Rust reimplementation of rUGP, targeting the 2008 **君が望む永遠
 work, along with Cr6Ti/CRip007/CRip008, CRmt mipmaps, CBg2d image planes,
 and OOR/Vorbis audio decoding. The real startup, title, dialogue, story choices,
 standing portraits and ending credits run in Rust. The default first-choice
-route has returned from new game to the original title in a headless host-logic
-probe: 24,960 text confirmations, 73 script scenes and 50 selections. This
-does not prove every branch or the complete rendered route. Presentation uses a
+route has returned from new game to the original title with full scene
+rasterization: 24,960 text confirmations, 73 script scenes and 50 selections.
+Two additional choice plans have completed headless host-logic runs. This
+does not prove every branch or pixel equivalence to the original. Presentation uses a
 software framebuffer. Playability takes priority over exact effect fidelity:
 static portrait projection and some transitions intentionally approximate rUGP.
 The full port is **not complete**: all-route verification, galleries, save/load,
@@ -109,6 +110,8 @@ confirmations, 73 scenes, 50 selections) and second entries after the title
 (23,034 confirmations, 69 scenes, 52 selections), plus third entries after the
 title (25,493 confirmations, 73 scenes, 53 selections). These execute real resources,
 audio timing and host operations, but omit scene rasterization.
+The default plan has also completed a continuous pixel-rendered run with the
+same counters, including the ending and return to the original title.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
@@ -125,6 +128,11 @@ conflicting aliases, malformed graphs, and excessive expanded payloads. This
 also supports checked rebinding to loaded script constants, verified against
 all retail script inline references and initial object-variable values. It is
 not yet connected to VM/game save slots or the original load menu.
+The VM snapshot layer preserves call frames/arguments, globals, shared typed
+slots, synchronization status and suspended host operations, with a streaming
+script compatibility fingerprint. Restoring a pending host operation does not
+acknowledge or skip it. Runtime windows, audio, waits and UI still need their
+own coordinated snapshot before playable save slots can be offered.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.
