@@ -63,6 +63,7 @@ fn main() -> Result<()> {
     let mut audio = None;
     let mut scenes = BTreeSet::new();
     let mut dialogue_pages = 0;
+    let mut confirmations = 0;
     let mut choices = 0;
     let mut sounds = 0;
     let mut entry_menu = None;
@@ -70,6 +71,10 @@ fn main() -> Result<()> {
     // should not need a fresh replay merely because their length was unknown.
     let mut tick = 0u64;
     while ticks == 0 || tick < u64::from(ticks) {
+        if game.waiting_for_input() {
+            game.activate_selection()?;
+            confirmations += 1;
+        }
         if game.dialogue_waits_for_input() {
             game.activate_selection()?;
             dialogue_pages += 1;
@@ -83,7 +88,7 @@ fn main() -> Result<()> {
                 && game.vm.cursor() == entry_menu.as_ref()
             {
                 println!(
-                    "returned-to-title tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds}",
+                    "returned-to-title tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds} confirmations={confirmations}",
                     scenes.len()
                 );
                 return Ok(());
@@ -107,7 +112,7 @@ fn main() -> Result<()> {
         }
         if tick.is_multiple_of(100) {
             println!(
-                "tick={tick} pc={:?} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds}",
+                "tick={tick} pc={:?} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds} confirmations={confirmations}",
                 game.vm.cursor(),
                 scenes.len()
             );
@@ -115,7 +120,7 @@ fn main() -> Result<()> {
         match game.step(if tick == 0 { 0 } else { dt }) {
             Ok(RunState::Ended) => {
                 println!(
-                    "ended tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds}",
+                    "ended tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds} confirmations={confirmations}",
                     scenes.len()
                 );
                 return Ok(());

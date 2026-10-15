@@ -18,6 +18,8 @@ pub struct ImageManager {
     ages: VecDeque<u64>,
     bytes: usize,
     budget: usize,
+    /// Scoped host-instruction observation, not a cache/preload unlock hook.
+    observed: Option<Vec<ObjectRef>>,
 }
 #[derive(Clone)]
 pub struct WorldImagePlane {
@@ -129,7 +131,26 @@ impl ImageManager {
             ages: VecDeque::new(),
             bytes: 0,
             budget: 128 * 1024 * 1024,
+            observed: None,
         }
+    }
+    pub(crate) fn begin_observation(&mut self) -> Result<()> {
+        ensure!(self.observed.is_none(), "nested image observation");
+        self.observed = Some(Vec::new());
+        Ok(())
+    }
+    pub(crate) fn end_observation(&mut self) -> Vec<ObjectRef> {
+        self.observed.take().unwrap_or_default()
+    }
+    fn observe(&mut self, reference: &ObjectRef) -> Result<()> {
+        if let Some(observed) = &mut self.observed {
+            ensure!(
+                observed.len() < 4096,
+                "host image observation exceeds limit"
+            );
+            observed.push(reference.clone());
+        }
+        Ok(())
     }
     pub fn load(&mut self, reference: &ObjectRef) -> Result<Arc<Texture>> {
         if let Some(inline) = &reference.inline {
@@ -137,9 +158,11 @@ impl ImageManager {
         }
         let offset = reference.offset.context("image reference has no extent")?;
         if let Some(texture) = self.cache.get(&offset) {
+            let texture = Arc::clone(texture);
             self.ages.retain(|k| *k != offset);
             self.ages.push_back(offset);
-            return Ok(Arc::clone(texture));
+            self.observe(reference)?;
+            return Ok(texture);
         }
         let class = reference
             .class
@@ -194,6 +217,7 @@ impl ImageManager {
         self.bytes += texture.rgba.len();
         self.cache.insert(offset, Arc::clone(&texture));
         self.ages.push_back(offset);
+        self.observe(reference)?;
         Ok(texture)
     }
 }

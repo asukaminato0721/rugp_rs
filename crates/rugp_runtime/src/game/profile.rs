@@ -2,12 +2,7 @@ use super::*;
 use rugp_assets::profile::Profile;
 
 impl Game {
-    pub(super) fn access_profile(
-        &mut self,
-        target: &ObjectRef,
-        class: &str,
-        fields: &BTreeMap<String, Value>,
-    ) -> Result<()> {
+    pub(super) fn profile_database(&mut self, target: &ObjectRef) -> Result<&Profile> {
         ensure!(
             target
                 .class
@@ -16,11 +11,19 @@ impl Game {
             "unsupported profile database class"
         );
         let id = target.offset.context("profile database offset missing")?;
-        let profile = self.profiles.load(id, || {
+        self.profiles.load(id, || {
             let size = target.size.context("profile database extent missing")?;
             ensure!(size <= 16 * 1024 * 1024, "oversized profile database");
             Profile::parse_object(&self.archive.read_at(id, size as usize)?)
-        })?;
+        })
+    }
+    pub(super) fn access_profile(
+        &mut self,
+        target: &ObjectRef,
+        class: &str,
+        fields: &BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let profile = self.profile_database(target)?;
         let text = |name: &str| -> Result<&str> {
             match fields.get(name) {
                 Some(Value::Text(s)) => Ok(s),
@@ -29,7 +32,11 @@ impl Game {
         };
         let key = text("キー")?;
         if class == "OM_AccessWrite" {
-            return self.profiles.write_string(id, key, text("値")?);
+            return self.profiles.write_string(
+                target.offset.context("profile offset missing")?,
+                key,
+                text("値")?,
+            );
         }
         let default = text("初期値")?;
         let value = if key == "$_DbTxC$_" && default == "$GAt" {

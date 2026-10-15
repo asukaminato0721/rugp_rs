@@ -5,7 +5,7 @@ pub(super) struct SelectionWait {
 }
 
 impl Game {
-    fn ensure_menu(&mut self, reference: &ObjectRef) -> Result<u64> {
+    pub(super) fn ensure_menu(&mut self, reference: &ObjectRef) -> Result<u64> {
         let id = reference
             .offset
             .context("menu reference has no stored identity")?;
@@ -70,7 +70,7 @@ impl Game {
             .insert(0, Layer::Screen(texture));
         Ok(())
     }
-    fn refresh_menu(&mut self, id: u64, present: bool) -> Result<()> {
+    pub(super) fn refresh_menu(&mut self, id: u64, present: bool) -> Result<()> {
         let targets: Vec<_> = self
             .objects
             .iter()
@@ -257,6 +257,14 @@ impl Game {
             }
             return Ok(());
         }
+        if self.input_wait.is_some() {
+            if pressed {
+                self.dialogue_pressed = self.pointer_inside;
+            } else if std::mem::take(&mut self.dialogue_pressed) && self.pointer_inside {
+                self.finish_input_wait()?;
+            }
+            return Ok(());
+        }
         if self.dialogue.is_some() {
             if pressed {
                 self.dialogue_pressed = self.pointer_inside;
@@ -310,6 +318,9 @@ impl Game {
         Ok(())
     }
     pub fn activate_selection(&mut self) -> Result<()> {
+        if self.input_wait.is_some() {
+            return self.finish_input_wait();
+        }
         if self.dialogue.is_some() {
             return self.advance_dialogue();
         }
@@ -405,7 +416,7 @@ mod tests {
         assert_eq!(surface.rgba, expected.rgba);
         let menu = game.menus.get_mut(&id).unwrap();
         menu.set_enabled(None, true);
-        assert!(menu.result(first.header).is_none());
+        assert_eq!(menu.result(first.header), Some(first.id));
         menu.set_enabled(None, false);
         menu.set_enabled(Some(first.id), true);
         assert_eq!(menu.result(first.header), Some(first.id));

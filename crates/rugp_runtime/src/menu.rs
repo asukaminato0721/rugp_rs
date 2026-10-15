@@ -70,14 +70,14 @@ impl MenuState {
         self.data
             .selectors
             .iter()
-            .find(|s| s.header == key && s.id != 0 && s.status & 5 == 1)
+            .find(|s| s.header == key && s.id != 0 && s.status & 1 != 0)
             .map(|s| s.header)
     }
     pub fn result(&self, key: u32) -> Option<u32> {
         self.data
             .selectors
             .iter()
-            .find(|s| s.header == key && s.id != 0 && s.status & 5 == 1)
+            .find(|s| s.header == key && s.id != 0 && s.status & 1 != 0)
             .map(|s| s.id)
     }
     pub fn set_enabled(&mut self, id: Option<u32>, enabled: bool) {
@@ -97,8 +97,28 @@ impl MenuState {
             self.pressed = None;
         }
     }
-    /// rvmm 1004dd90: ignored items are neither selectable nor drawn in
-    /// their disabled state. This differs from AllDisableSelecter.
+    /// rvmm 1004e021: clear ignore, enable only atoi(value)==1. Enabling
+    /// preserves the separate disabled-state bit. Bit 0 enables input; bit 2
+    /// suppresses the disabled image only when bit 0 is clear.
+    pub(crate) fn set_database_status(&mut self, id: u32, value: i32) {
+        if let Some(s) = self.data.selectors.iter_mut().find(|s| s.id == id) {
+            s.status &= !4;
+            s.status = if value == 1 {
+                s.status | 1
+            } else {
+                (s.status & !1) | 2
+            };
+        }
+        if self.hover.is_some_and(|key| self.result(key).is_none()) {
+            self.hover = None;
+        }
+        if self.pressed.is_some_and(|key| self.result(key).is_none()) {
+            self.pressed = None;
+        }
+    }
+    /// rvmm 1004dd90 clears enabled state and suppresses the disabled image.
+    /// A later EnableSelecter sets bit 0 without clearing bit 2: that item is
+    /// selectable/drawn again. This differs from AllDisableSelecter.
     pub fn ignore_all(&mut self) {
         for selector in &mut self.data.selectors {
             selector.status = (selector.status & !3) | 4;
@@ -111,7 +131,7 @@ impl MenuState {
             .data
             .selectors
             .iter()
-            .filter(|s| s.id != 0 && s.status & 5 == 1)
+            .filter(|s| s.id != 0 && s.status & 1 != 0)
             .map(|s| s.header)
             .collect();
         if keys.is_empty() {
@@ -190,8 +210,7 @@ mod tests {
             inline: None,
         }
     }
-    #[test]
-    fn masked_ids_disabled_items_and_keyboard_order() {
+    fn state() -> MenuState {
         let data = ImageMenu {
             max_id: 4,
             base: null(),
@@ -213,7 +232,7 @@ mod tests {
             stride: 0,
             trailing_data: vec![0; 4],
         };
-        let mut state = MenuState {
+        MenuState {
             source: None,
             data,
             mask: SelectorMask {
@@ -225,7 +244,45 @@ mod tests {
             },
             hover: None,
             pressed: None,
-        };
+        }
+    }
+    #[test]
+    fn database_status_matches_native_bits_and_exact_one_without_changing_other_items() {
+        let mut menu = state();
+        menu.ignore_all();
+        menu.set_database_status(1, 1);
+        assert_eq!(menu.data.selectors[1].status, 0x101);
+        assert_eq!(menu.data.selectors[2].status, 0x104);
+        for value in [0, -1, 2, i32::MAX] {
+            menu.hover = Some(2);
+            menu.pressed = Some(2);
+            menu.set_database_status(1, value);
+            assert_eq!(menu.data.selectors[1].status, 0x102);
+            assert_eq!((menu.hover, menu.pressed), (None, None));
+            assert_eq!(menu.hit(1, 0), None);
+            menu.set_database_status(1, 1);
+            assert_eq!(menu.data.selectors[1].status, 0x103);
+            assert_eq!(menu.hit(1, 0), Some(2));
+        }
+        let before = menu
+            .data
+            .selectors
+            .iter()
+            .map(|s| s.status)
+            .collect::<Vec<_>>();
+        menu.set_database_status(9999, 1);
+        assert_eq!(
+            before,
+            menu.data
+                .selectors
+                .iter()
+                .map(|s| s.status)
+                .collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn masked_ids_disabled_items_and_keyboard_order() {
+        let mut state = state();
         assert_eq!(state.hit(0, 0), None);
         state.set_enabled(None, false);
         state.set_enabled(Some(1), true);
@@ -254,10 +311,11 @@ mod tests {
         state.navigate(1);
         assert_eq!(state.hover, None);
         // EnableSelecter only clears bit 1 and sets bit 0; it does not erase
-        // the independent ignore flag (native 1004dcf7).
+        // the disabled-image suppression bit (native 1004dcf7). Enabled input
+        // still takes precedence: gallery navigation relies on this sequence.
         state.set_enabled(Some(1), true);
         assert_eq!(state.data.selectors[1].status, 0x105);
-        assert_eq!(state.hit(1, 0), None);
+        assert_eq!(state.hit(1, 0), Some(2));
         state.set_enabled(None, false);
         state.set_enabled(Some(1), true);
         assert_eq!(state.data.selectors[1].status, 0x101);

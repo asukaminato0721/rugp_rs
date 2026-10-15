@@ -20,6 +20,8 @@ mod character;
 mod dialogue;
 #[cfg(test)]
 mod ending_tests;
+mod gallery;
+mod input_wait;
 mod menu;
 mod parse_screen;
 mod posture;
@@ -206,10 +208,13 @@ pub struct Game {
     async_images: Vec<async_image::ImageFade>,
     image_wait: Option<rugp_assets::object::InlineIdentity>,
     profiles: crate::profile_store::ProfileStore,
+    /// Immutable original-program gallery bindings, not rewindable save state.
+    gallery: gallery::Gallery,
     menus: BTreeMap<u64, crate::menu::MenuState>,
     selection: Option<menu::SelectionWait>,
     text_menus: BTreeMap<u64, text_menu::TextMenu>,
     dialogue: Option<dialogue::DialogueWait>,
+    input_wait: Option<input_wait::InputWait>,
     message_windows: BTreeMap<u64, crate::message_window::MessageWindow>,
     message_config: Option<crate::message_window::MessageConfig>,
     font: Option<crate::font::TextFont>,
@@ -236,6 +241,7 @@ impl Game {
             .context("game directory missing")?;
         let native = NativeSchema::from_directory(directory)?;
         let program = Program::load(&archive, &native)?;
+        let gallery = gallery::Gallery::from_program(&program)?;
         let entry = program.startup(&archive)?;
         let vm = Vm::new(Arc::new(program), entry)?;
         let buffers: Vec<_> = archive
@@ -271,10 +277,12 @@ impl Game {
             async_images: Vec::new(),
             image_wait: None,
             profiles: crate::profile_store::ProfileStore::default(),
+            gallery,
             menus: BTreeMap::new(),
             selection: None,
             text_menus: BTreeMap::new(),
             dialogue: None,
+            input_wait: None,
             message_windows: BTreeMap::new(),
             message_config: None,
             font: None,
@@ -638,6 +646,7 @@ impl Game {
             | "OM_AllEnableSelecter"
             | "OM_EnableSelecter"
             | "OM_AllIgnoreSelecter" => self.configure_menu(&target, &message.class, &fields)?,
+            "OM_SetSelecterByDatabase" => self.configure_gallery_selector(&target, &fields)?,
             "OM_LoadImageArea" => self.load_image_area(id, &fields)?,
             "OM_ParseImageBuild" => self.build_parse_image(id, &fields)?,
             "OM_VramAgesImageIn" => self.vram_image_in(id, &fields)?,
@@ -897,6 +906,13 @@ impl Game {
         Ok(())
     }
     fn host(&mut self, instruction: &Instruction) -> Result<()> {
+        self.images.begin_observation()?;
+        let result = self.host_inner(instruction);
+        let images = self.images.end_observation();
+        result?;
+        self.record_gallery_images(&images)
+    }
+    fn host_inner(&mut self, instruction: &Instruction) -> Result<()> {
         match instruction.class.name.as_str() {
             "CVmImage" => self.load_vm_image(instruction)?,
             "CVmMsg" => return self.begin_dialogue(instruction),
@@ -1056,12 +1072,17 @@ impl Game {
                     matches!(target, Value::Null),
                     "invalid synchronization target"
                 );
-                let duration = self
-                    .vm
-                    .evaluate(&instruction.arguments[2])?
-                    .integer()?
-                    .max(0) as u32;
-                self.wait_ms = Some(duration.max(1));
+                let duration = self.vm.evaluate(&instruction.arguments[2])?.integer()? as u32;
+                if mode & 0x30 == 0x10 {
+                    // Vm60 10072cc2..10072d56: input pump flags 0x1c.
+                    // Literal-null, mode 16, time zero is an INDEFINITE user
+                    // confirmation, not a one-millisecond generic delay.
+                    self.input_wait = Some(input_wait::InputWait::new(duration));
+                } else if duration != 0 {
+                    self.wait_ms = Some(duration);
+                } else {
+                    return self.vm.acknowledge_host();
+                }
                 return Ok(());
             }
             other => bail!("unimplemented runtime instruction {other}"),
@@ -1104,6 +1125,9 @@ impl Game {
             }
             self.parse_wait = false;
             self.vm.acknowledge_host()?;
+        }
+        if self.advance_input_wait(dt_ms)? {
+            return Ok(RunState::Waiting);
         }
         if self.video_wait
             || self.staffroll_wait
@@ -1165,6 +1189,7 @@ impl Game {
                         || self.image_wait.is_some()
                         || self.selection.is_some()
                         || self.dialogue.is_some()
+                        || self.input_wait.is_some()
                         || self.load_requested
                     {
                         return Ok(RunState::Waiting);

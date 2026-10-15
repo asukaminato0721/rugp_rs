@@ -24,6 +24,8 @@ pub struct UiSnapshot {
     text_menus: Vec<(u64, text_menu::TextMenu)>,
     selection: Option<SavedSelection>,
     dialogue: Option<SavedDialogue>,
+    #[serde(default)]
+    input_wait: Option<input_wait::InputWait>,
     config: Option<MessageConfig>,
     settings: Vec<(String, i32, Properties)>,
     navigation: String,
@@ -168,6 +170,7 @@ impl Game {
                 .collect(),
             selection,
             dialogue,
+            input_wait: self.input_wait.clone(),
             config: self.message_config.clone(),
             settings,
             navigation: self.navigation.clone(),
@@ -184,7 +187,9 @@ impl UiSnapshot {
         self.ended
     }
     pub(crate) fn wait_count(&self) -> usize {
-        usize::from(self.selection.is_some()) + usize::from(self.dialogue.is_some())
+        usize::from(self.selection.is_some())
+            + usize::from(self.dialogue.is_some())
+            + usize::from(self.input_wait.is_some())
     }
     fn validate_vm(&self, vm: &Vm) -> Result<()> {
         if self.wait_count() == 0 {
@@ -203,12 +208,23 @@ impl UiSnapshot {
                 pending.class.name == "CVmGenericMsg",
                 "selection snapshot has a different pending VM instruction"
             );
+        } else if self.input_wait.is_some() {
+            ensure!(
+                pending.class.name == "CVmSync",
+                "input snapshot has a different pending VM instruction"
+            );
         }
         Ok(())
     }
     fn validate(&self) -> Result<()> {
         ensure!(self.version == 1, "unsupported UI snapshot version");
         ensure!(self.wait_count() <= 1, "overlapping UI snapshot waits");
+        ensure!(
+            self.input_wait
+                .as_ref()
+                .is_none_or(|w| w.remaining_ms != Some(0)),
+            "expired UI snapshot input wait"
+        );
         ensure!(
             self.menus.len() <= 4096
                 && self.windows.len() <= 4096
@@ -477,6 +493,7 @@ impl UiSnapshot {
                 .collect(),
             selection,
             dialogue,
+            input_wait: self.input_wait.clone(),
             font,
             config: self.config.clone(),
             settings,
@@ -493,6 +510,7 @@ pub struct RestoredUi {
     text_menus: BTreeMap<u64, text_menu::TextMenu>,
     selection: Option<menu::SelectionWait>,
     dialogue: Option<dialogue::DialogueWait>,
+    input_wait: Option<input_wait::InputWait>,
     font: Option<TextFont>,
     config: Option<MessageConfig>,
     settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
@@ -515,6 +533,7 @@ impl RestoredUi {
         game.text_menus = self.text_menus;
         game.selection = self.selection;
         game.dialogue = self.dialogue;
+        game.input_wait = self.input_wait;
         game.font = self.font;
         game.message_config = self.config;
         game.settings = self.settings;
@@ -603,6 +622,7 @@ mod tests {
             text_menus: vec![],
             selection: None,
             dialogue: None,
+            input_wait: None,
             config: None,
             settings: vec![],
             navigation: String::new(),
@@ -640,6 +660,15 @@ mod tests {
     }
     #[test]
     fn invalid_ui_versions_tables_variants_configurations_and_text_hit_state_fail() -> Result<()> {
+        let mut bad = bare();
+        bad.input_wait = Some(input_wait::InputWait {
+            remaining_ms: Some(0),
+        });
+        assert!(bad.validate().is_err());
+        let mut legacy = serde_json::to_value(bare())?;
+        legacy.as_object_mut().unwrap().remove("input_wait");
+        let legacy: UiSnapshot = serde_json::from_value(legacy)?;
+        assert!(legacy.input_wait.is_none());
         let mut bad = bare();
         bad.version = 9;
         assert!(bad.validate().is_err());

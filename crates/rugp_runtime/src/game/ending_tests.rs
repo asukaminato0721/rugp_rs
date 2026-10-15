@@ -59,7 +59,7 @@ fn check_ending(scene: usize, variant: i32, rasterize: bool) -> Result<()> {
     game.selection = None;
     let mut confirmations = 0;
     for tick in 0..2000 {
-        if game.dialogue_waits_for_input() {
+        if game.dialogue_waits_for_input() || game.waiting_for_input() {
             game.activate_selection()?;
             confirmations += 1;
         }

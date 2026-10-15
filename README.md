@@ -11,8 +11,9 @@ Two additional choice plans have completed headless host-logic runs. This
 does not prove every branch or pixel equivalence to the original. Presentation uses a
 software framebuffer. Playability takes priority over exact effect fidelity:
 static portrait projection and some transitions intentionally approximate rUGP.
-The full port is **not complete**: all-route verification, galleries, original-save imports,
-3D rendering and some effects/UI remain incomplete. An optional Kira audio-device adapter
+The full port is **not complete**: all-route verification, complete premium-menu
+coverage, original-save imports, 3D rendering and some effects/UI remain incomplete.
+An optional Kira audio-device adapter
 handles ordinary sample playback; specialized sound operations remain incomplete.
 
 The workspace follows `../siglus_rs`'s separation between asset formats,
@@ -191,6 +192,38 @@ epoch on return. Input used to close/load the chooser cannot confirm a restored
 page. Invalid/incompatible saves report a nonfatal error in the chooser and
 leave the current game intact. These are Rust-port saves, not Windows UUC files.
 
+Gallery database selectors now honor the native per-item rule: decimal-prefix
+conversion must equal exactly 1 to enable an item; other values disable it.
+Ignored-state flags are preserved correctly: `AllIgnoreSelecter` clears enabled
+state, but a subsequent `EnableSelecter` makes navigation/back buttons usable
+even though the disabled-image suppression bit remains set. The original CG
+hub, twelve-page navigation and return path are exercised without changing
+ending-clear flags or force-unlocking images. All 263 database-selector packets
+are audited, including seven deliberately null/unavailable entries.
+The music selector issues its original playback request and returns to the hub;
+both fresh-profile replay pages stay locked and can navigate back. The locked
+bonus explanation also returns after normal dialogue confirmations, without
+writing unlock flags. This is isolated menu coverage, not an earned title unlock.
+
+The Rust-port progress database uses versioned, stable stored-resource keys,
+not Windows' private reference-stream text encoding. Bindings come from the
+original selector instructions. Successful host image use (including cache hits)
+records only bound CG resources; standalone decoding/preloading, failed host
+operations and snapshot restoration do not unlock them. This progress persists
+globally and is not rewound by game slots. A real new-game probe reaches its
+first earned CG after 75 dialogue confirmations, then checks that earned state
+against the original gallery. This is not Windows-profile interoperability or
+a claim that every premium/replay entry has been played.
+
+Literal-null `CVmSync` mode 16 now waits for an actual Enter/Space or left-click
+confirmation, indefinitely when its time word is zero (also Windows INFINITE).
+Positive timeouts remain cancellable and retain their remaining deadline across
+saves. Clock-only mode 0 is separate and cannot be click-skipped. A load-button
+release, a pre-load held mouse button, or an out-of-window release cannot confirm
+the restored wait. This corrects a former one-millisecond automatic advance in
+CG viewing. The autoplay diagnostic explicitly supplies these non-text
+confirmations and reports their count separately from dialogue pages.
+
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.
 Pointer mapping shares the presentation viewport, including letterboxing and
@@ -297,8 +330,9 @@ indexed SIA masks and 250 state/background image references decode. The SIA
 bytes are used directly as hit-test IDs, without substituting button rectangles.
 These state images are indirect resources and are separate from the earlier
 direct-bitmap count. `image OFFSET` also resolves menu image references.
-Other menu styles, object-valued selection results, and text-based choices
-remain incomplete. A desktop Xvfb/XTest smoke test also verifies hover and
+Other menu styles and object-valued selection results remain incomplete.
+Text-based story choices now have their own implemented ordinal selection path.
+A desktop Xvfb/XTest smoke test also verifies hover and
 clicking the first title button: the VM enters chapter one. Plain `CVmMsg`
 output now renders Japanese text and blocks on its actual control-code waits.
 A retail regression checks first/second-message pixels, persistent VM waits,
