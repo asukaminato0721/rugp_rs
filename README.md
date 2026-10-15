@@ -236,12 +236,15 @@ The unchanged replay script completes 378 dialogue and nine non-text
 confirmations, returns to its replay page, then navigates back to the title.
 It does not fabricate ending permission or replay flags; remaining earned
 replay entries still need individual playback coverage.
-The remaining 32 non-null replay selectors now have four independent opt-in
-playback batches (`retail_earned_replays_`), split by original page/selector
-ranges. They use actual story image use, check the original menu identity and
+The remaining 32 non-null replay selectors now have independent opt-in
+playback tests (`retail_earned_replay_p1_` and `retail_earned_replay_p2_`), named
+by original page/selector. They use actual story image use, check the original menu identity and
 enabled selector, and drive the unchanged replay back to its page and title.
 These long regressions are still being run; merely having a fixture in the
-table does not establish that its playback has passed.
+table does not establish that its playback has passed. Original story choice
+plans earn the appropriate branch's image. One sequence also needs the native
+encounter counter: its fixture actually plays two preceding SC425 sequences,
+letting the original script increment it, rather than writing the counter.
 
 Literal-null `CVmSync` mode 16 now waits for an actual Enter/Space or left-click
 confirmation, indefinitely when its time word is zero (also Windows INFINITE).

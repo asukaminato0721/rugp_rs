@@ -688,82 +688,72 @@ mod tests {
     #[test]
     #[ignore = "set RUGP_TEST_GAME; original earned replay playback"]
     fn retail_earned_replay_plays_original_scene_and_returns_without_forced_unlock() -> Result<()> {
-        check_earned_replay(200, 478, 0, 1)
+        check_earned_replay(200, 478, 0, 1, &[])
     }
 
     // Original SC242 database packets and their dispatch targets. Null keys
-    // (seven permanently unavailable entries) are audited separately. Fixed
-    // batches allow independent reruns without silently filtering coverage.
-    const REMAINING_REPLAYS: [(u32, usize, u32, u32); 32] = [
-        (228, 346, 0, 2),
-        (256, 327, 0, 3),
-        (312, 407, 0, 5),
-        (340, 425, 0, 6),
-        (368, 415, 0, 7),
-        (396, 415, 0, 8),
-        (424, 418, 0, 9),
-        (452, 418, 0, 10),
-        (508, 296, 0, 12),
-        (564, 341, 0, 14),
-        (620, 356, 0, 16),
-        (648, 396, 0, 17),
-        (676, 398, 0, 18),
-        (704, 403, 0, 19),
-        (732, 401, 0, 20),
-        (760, 405, 0, 21),
-        (788, 412, 0, 22),
-        (816, 407, 0, 23),
-        (844, 334, 0, 24),
-        (872, 313, 0, 25),
-        (11136, 449, 1, 1),
-        (11192, 453, 1, 3),
-        (11220, 386, 1, 4),
-        (11248, 384, 1, 5),
-        (11304, 269, 1, 7),
-        (11332, 189, 1, 8),
-        (11360, 292, 1, 9),
-        (11388, 290, 1, 10),
-        (11416, 304, 1, 11),
-        (11444, 370, 1, 12),
-        (11472, 231, 1, 13),
-        (11500, 217, 1, 14),
-    ];
-
-    #[test]
-    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
-    fn retail_earned_replays_page_one_two_through_eight() -> Result<()> {
-        check_earned_replays(&REMAINING_REPLAYS[..6])
+    // (seven permanently unavailable entries) are audited separately. Separate
+    // tests keep failed fixtures from preventing the other entries from running.
+    macro_rules! earned_replay {
+        ($name:ident, $packet:expr, $entry:expr, $page:expr, $selector:expr, $choices:expr) => {
+            #[test]
+            #[ignore = "set RUGP_TEST_GAME; original earned replay playback"]
+            fn $name() -> Result<()> {
+                check_earned_replay($packet, $entry, $page, $selector, $choices).with_context(
+                    || {
+                        format!(
+                            "replay page {}, selector {}, story {}",
+                            $page, $selector, $entry
+                        )
+                    },
+                )
+            }
+        };
     }
-    #[test]
-    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
-    fn retail_earned_replays_page_one_nine_through_eighteen() -> Result<()> {
-        check_earned_replays(&REMAINING_REPLAYS[6..13])
-    }
-    #[test]
-    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
-    fn retail_earned_replays_page_one_nineteen_through_twenty_five() -> Result<()> {
-        check_earned_replays(&REMAINING_REPLAYS[13..20])
-    }
-    #[test]
-    #[ignore = "set RUGP_TEST_GAME; long original earned replay playback"]
-    fn retail_earned_replays_page_two() -> Result<()> {
-        check_earned_replays(&REMAINING_REPLAYS[20..])
-    }
-
-    fn check_earned_replays(cases: &[(u32, usize, u32, u32)]) -> Result<()> {
-        for &(packet, entry, page, selector) in cases {
-            check_earned_replay(packet, entry, page, selector).with_context(|| {
-                format!("replay page {page}, selector {selector}, story {entry}")
-            })?;
-        }
-        Ok(())
-    }
+    earned_replay!(retail_earned_replay_p1_s02, 228, 346, 0, 2, &[]);
+    earned_replay!(retail_earned_replay_p1_s03, 256, 327, 0, 3, &[]);
+    earned_replay!(retail_earned_replay_p1_s05, 312, 407, 0, 5, &[]);
+    earned_replay!(retail_earned_replay_p1_s06, 340, 425, 0, 6, &[]);
+    earned_replay!(retail_earned_replay_p1_s07, 368, 415, 0, 7, &[]);
+    // SC415:61248's second choice leaves its native branch flag clear, so
+    // 153840 enters the second CG sequence instead of the first one.
+    earned_replay!(retail_earned_replay_p1_s08, 396, 415, 0, 8, &[1]);
+    earned_replay!(retail_earned_replay_p1_s09, 424, 418, 0, 9, &[]);
+    earned_replay!(retail_earned_replay_p1_s10, 452, 418, 0, 10, &[]);
+    earned_replay!(retail_earned_replay_p1_s12, 508, 296, 0, 12, &[]);
+    earned_replay!(retail_earned_replay_p1_s14, 564, 341, 0, 14, &[]);
+    earned_replay!(retail_earned_replay_p1_s16, 620, 356, 0, 16, &[]);
+    earned_replay!(retail_earned_replay_p1_s17, 648, 396, 0, 17, &[]);
+    earned_replay!(retail_earned_replay_p1_s18, 676, 398, 0, 18, &[]);
+    earned_replay!(retail_earned_replay_p1_s19, 704, 403, 0, 19, &[]);
+    earned_replay!(retail_earned_replay_p1_s20, 732, 401, 0, 20, &[]);
+    earned_replay!(retail_earned_replay_p1_s21, 760, 405, 0, 21, &[]);
+    // SC412:13772's second choice reaches the CG branch at 34732.
+    earned_replay!(retail_earned_replay_p1_s22, 788, 412, 0, 22, &[1]);
+    earned_replay!(retail_earned_replay_p1_s23, 816, 407, 0, 23, &[]);
+    earned_replay!(retail_earned_replay_p1_s24, 844, 334, 0, 24, &[]);
+    earned_replay!(retail_earned_replay_p1_s25, 872, 313, 0, 25, &[]);
+    earned_replay!(retail_earned_replay_p2_s01, 11136, 449, 1, 1, &[]);
+    earned_replay!(retail_earned_replay_p2_s03, 11192, 453, 1, 3, &[]);
+    earned_replay!(retail_earned_replay_p2_s04, 11220, 386, 1, 4, &[]);
+    earned_replay!(retail_earned_replay_p2_s05, 11248, 384, 1, 5, &[]);
+    earned_replay!(retail_earned_replay_p2_s07, 11304, 269, 1, 7, &[]);
+    // SC189:53920's second choice reaches the CG branch at 61224 instead
+    // of the alternate ending. The earlier choice at 47468 stays first.
+    earned_replay!(retail_earned_replay_p2_s08, 11332, 189, 1, 8, &[0, 1]);
+    earned_replay!(retail_earned_replay_p2_s09, 11360, 292, 1, 9, &[]);
+    earned_replay!(retail_earned_replay_p2_s10, 11388, 290, 1, 10, &[]);
+    earned_replay!(retail_earned_replay_p2_s11, 11416, 304, 1, 11, &[]);
+    earned_replay!(retail_earned_replay_p2_s12, 11444, 370, 1, 12, &[]);
+    earned_replay!(retail_earned_replay_p2_s13, 11472, 231, 1, 13, &[]);
+    earned_replay!(retail_earned_replay_p2_s14, 11500, 217, 1, 14, &[]);
 
     fn check_earned_replay(
         packet_address: u32,
         entry: usize,
         page: u32,
         selector: u32,
+        story_choices: &[u8],
     ) -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let mut game = Game::open(root.as_ref())?;
@@ -790,11 +780,67 @@ mod tests {
         );
         let native = NativeSchema::from_directory(root.as_ref())?;
         let program = Arc::new(Program::load(&game.archive, &native)?);
+        if page == 0 && selector == 12 {
+            // SC296:186808 requires the original encounter counter >= 2.
+            // Earn it by running SC425 twice in normal (not replay) mode;
+            // SC425:48972 increments it only after real dialogue/choices.
+            // This remains isolated scene coverage, not a complete prefix.
+            ensure!(
+                game.vm.variables[&1776983].integer()? == 0,
+                "unexpected initial encounter count"
+            );
+            for required in 1..=2 {
+                let mut vm = Vm::new(Arc::clone(&program), 425)?;
+                vm.variables = std::mem::take(&mut game.vm.variables);
+                game.vm = vm;
+                game.selection = None;
+                let mut pages = 0;
+                let mut completed = false;
+                for tick in 0..10_000 {
+                    if game.dialogue_waits_for_input() {
+                        game.activate_selection()?;
+                        pages += 1;
+                    }
+                    if game.waiting_for_input() {
+                        game.activate_selection()?;
+                    }
+                    if game.waiting_for_selection() {
+                        ensure!(
+                            game.selection_text_target().is_some(),
+                            "prerequisite reached an unexpected image menu"
+                        );
+                        game.navigate_selection(1)?;
+                        game.activate_selection()?;
+                    }
+                    crate::audio::mute_requests(&mut game, &mut audio)?;
+                    ensure!(
+                        game.step(1000).with_context(|| format!(
+                            "replay prerequisite {required}, tick {tick}"
+                        ))? != RunState::Ended,
+                        "prerequisite ended before incrementing its counter"
+                    );
+                    if game.vm.variables[&1776983].integer()? == required {
+                        ensure!(pages > 0, "prerequisite incremented without dialogue");
+                        eprintln!(
+                            "original prerequisite earned counter {required}: tick={tick}, pages={pages}"
+                        );
+                        completed = true;
+                        break;
+                    }
+                }
+                ensure!(
+                    completed,
+                    "prerequisite counter {required} not reached at {:?}",
+                    game.vm.cursor()
+                );
+            }
+        }
         let mut vm = Vm::new(program, entry)?;
         vm.variables = std::mem::take(&mut game.vm.variables);
         game.vm = vm;
         game.selection = None;
         let mut pages = 0;
+        let mut choices = 0;
         let mut earned = false;
         for tick in 0u32..10_000 {
             if game.dialogue_waits_for_input() {
@@ -805,8 +851,16 @@ mod tests {
                 game.activate_selection()?;
             }
             if game.waiting_for_selection() {
-                game.navigate_selection(1)?;
+                ensure!(
+                    game.selection_text_target().is_some(),
+                    "story returned to an image menu before earning replay at {:?}",
+                    game.vm.cursor()
+                );
+                for _ in 0..=story_choices.get(choices).copied().unwrap_or(0) {
+                    game.navigate_selection(1)?;
+                }
                 game.activate_selection()?;
+                choices += 1;
             }
             crate::audio::mute_requests(&mut game, &mut audio)?;
             ensure!(
@@ -821,7 +875,7 @@ mod tests {
             // have occurred, rather than treating that ordering as an error.
             if pages > 0 && game.profile_database(database)?.read_string(&key, "0") == "1" {
                 eprintln!(
-                    "original scene {entry} earned replay {page}/{selector}: tick={tick}, pages={pages}"
+                    "original scene {entry} earned replay {page}/{selector}: tick={tick}, pages={pages}, choices={choices}"
                 );
                 earned = true;
                 break;
