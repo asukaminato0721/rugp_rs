@@ -352,5 +352,47 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     }
     assert!(game.dialogue_waits_for_input());
     assert_ne!(game.vm.cursor().map(|pc| pc.address), Some(0x1c8));
+    // Follow actual page input until the next known unsupported host operation.
+    // This guards against treating a non-video synchronization as a no-op.
+    let mut boundary = None;
+    for _ in 0..100 {
+        if game.dialogue_waits_for_input() {
+            game.activate_selection()?;
+        }
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        match game.step(100) {
+            Err(error) => {
+                boundary = Some(error);
+                break;
+            }
+            Ok(RunState::Ended) => panic!("chapter ended before pending synchronization"),
+            _ => {}
+        }
+    }
+    let boundary = boundary.context("expected pending non-video synchronization")?;
+    assert_eq!(
+        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
+        Some((483, 0x3c8))
+    );
+    assert!(
+        format!("{boundary:#}").contains("unsupported synchronization target"),
+        "{boundary:#}"
+    );
+    if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
+        assert_eq!(instruction.class.name, "CVmSync");
+        let rugp_scene_vm::vm::Value::Reference(target) =
+            game.vm.evaluate(&instruction.arguments[0])?
+        else {
+            panic!("missing synchronization target");
+        };
+        assert_eq!(
+            target.class.as_ref().map(|c| c.name.as_str()),
+            Some("CPmEffect")
+        );
+        assert_eq!(game.vm.evaluate(&instruction.arguments[1])?.integer()?, 32);
+        assert_eq!(game.vm.evaluate(&instruction.arguments[2])?.integer()?, 0);
+    } else {
+        panic!("unsupported synchronization was acknowledged");
+    }
     Ok(())
 }
