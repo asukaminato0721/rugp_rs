@@ -406,6 +406,21 @@ impl Game {
     }
     fn message(&mut self, message: Message) -> Result<()> {
         let fields = message.fields;
+        if message.class == "OM_VmmFinishByUser" {
+            ensure!(
+                number(&fields, "終了コード", 0)? == 0,
+                "unsupported nonzero engine exit code"
+            );
+            self.queue_sound(SoundRequest {
+                ticket: None,
+                source: None,
+                kind: 255,
+                flags: 0,
+                parameters: [0; 3],
+            })?;
+            self.ended = true;
+            return Ok(());
+        }
         if message.class == "OM_SetUucSaveSwitch" {
             let enabled = number(&fields, "フラグ", 1)?;
             ensure!(
@@ -608,6 +623,60 @@ impl Game {
                     .properties
                     .extend(fields);
             }
+            "OM_StopAutoAnim"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CParseBgBox") =>
+            {
+                ensure!(
+                    number(&fields, "停止モード", 0)? == 0,
+                    "unsupported background auto-animation stop mode"
+                );
+                // Native built-in background auto-animation is not started by
+                // this host. This is distinct from explicit posture resources
+                // and ParseScreen camera tweens, which keep their own clocks.
+                for (key, value) in fields {
+                    self.objects
+                        .entry(id)
+                        .or_default()
+                        .properties
+                        .insert(format!("render.auto_anim.{key}"), value);
+                }
+            }
+            "OM_SetCacheExtra"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CParseBgBox") =>
+            {
+                // Native enlarged backing/cache hints do not affect the
+                // portable full-scene renderer's logical viewport.
+                for (key, value) in fields {
+                    self.objects
+                        .entry(id)
+                        .or_default()
+                        .properties
+                        .insert(format!("render.cache_extra.{key}"), value);
+                }
+            }
+            "OM_StopXsFade"
+                if target.class.as_ref().is_some_and(|c| {
+                    ["CParseBgBox", "CImgAreaBox", "CImgBox"].contains(&c.name.as_str())
+                }) =>
+            {
+                ensure!(
+                    number(&fields, "モード", 0)? == 0,
+                    "unsupported Xs-effect stop mode"
+                );
+                // Only the separately retained native window effect is stopped.
+                // Do not cancel a framebuffer fade or a posture/camera motion.
+                self.objects
+                    .entry(id)
+                    .or_default()
+                    .properties
+                    .retain(|key, _| !key.starts_with("render.xs_fade."));
+            }
             "OM_SetWorldCameraAsScreen" => {
                 self.set_camera(id, fields, true)?;
             }
@@ -701,6 +770,9 @@ impl Game {
                 let synchronous_parse = message.class == "OM_ParseScreenTrigger"
                     && number(&message.fields, "スタイル", 0)? & 0x8000 == 0;
                 self.message(message)?;
+                if self.ended {
+                    return Ok(());
+                }
                 if synchronous_parse
                     && (self.parse_transition.is_some() || self.transition.is_some())
                 {
@@ -888,6 +960,9 @@ impl Game {
                     self.host(&instruction).with_context(|| {
                         format!("runtime at {}:{:#x}", cursor.scene, cursor.address)
                     })?;
+                    if self.ended {
+                        return Ok(RunState::Ended);
+                    }
                     if self.wait_ms.is_some()
                         || self.parse_wait
                         || self.audio_wait.is_some()

@@ -198,6 +198,44 @@ mod tests {
         game.present_scene()?;
         assert_eq!(game.frame(), pixels); // native fast background pass is unaffected
         let cursor = game.vm.cursor().cloned();
+        let tween = crate::world::CameraTween::new(
+            Camera::default(),
+            Camera {
+                position: [100, 0, 0],
+                ..Camera::default()
+            },
+            1,
+        )?;
+        game.objects.get_mut(&212259).unwrap().pending_camera = Some(tween);
+        for (class, fields) in [
+            (
+                "OM_StopAutoAnim",
+                BTreeMap::from([("停止モード".into(), Value::Integer(0))]),
+            ),
+            (
+                "OM_SetCacheExtra",
+                BTreeMap::from([("左辺".into(), Value::Integer(2))]),
+            ),
+        ] {
+            game.message(Message {
+                class: class.into(),
+                target: Value::Reference(target.clone()),
+                fields,
+            })?;
+        }
+        let object = &game.objects[&212259];
+        assert_eq!(object.pending_camera, Some(tween));
+        assert!(object.auto_update && object.visible);
+        assert!(matches!(
+            object.properties["render.auto_anim.停止モード"],
+            Value::Integer(0)
+        ));
+        assert!(matches!(
+            object.properties["render.cache_extra.左辺"],
+            Value::Integer(2)
+        ));
+        // This test presents only the current camera; the queued tween must not
+        // be canceled by a distinct native auto-animation stop/cache hint.
         game.message(Message {
             class: "OM_SetSpecifyCmdLighting".into(),
             target: Value::Reference(target.clone()),

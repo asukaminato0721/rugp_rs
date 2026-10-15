@@ -275,7 +275,7 @@ Default-bound mode 0 is supported as well as explicit-region mode 0x11.
 Standard `0x6` text
 packet variants share the portable layout while retaining their explicit text
 control-code waits. Normal-render and raster-suppressed real-host autoplay
-probes match through 1202 text confirmations and two story selections,
+probes match through 1842 text confirmations and five story selections,
 including the first character motion and later external posture resources.
 Choosing the alternate first story option follows a different script branch
 and reaches the same weather helper after 1160 confirmations. These are
@@ -296,6 +296,22 @@ Image-area `OM_BodyScroll` retains the configured origin/time but currently
 shows the full source surface without independent body cropping/panning.
 Mode-zero `OM_BoxScroll` uses staged absolute endpoint placement, without native
 in-flight movement; the helper's separate blocking blit still retains its clock.
+Background `OM_StopAutoAnim` mode zero stops an unimplemented native animation
+channel, not explicit posture/camera tweens. Backing-cache enlargement hints
+(`OM_SetCacheExtra`) are retained without changing the logical viewport.
+Window-attached `CVmBlt` flag 1 retains its Xs-effect packet without replacing
+world planes/cameras or drawing native raster distortion. Finite blocking
+requests keep their duration; asynchronous duration -1 is retained without a
+blocking wait. `OM_StopXsFade` mode zero clears only this separate effect
+configuration, not ordinary framebuffer transitions or posture motion.
+The title's quit item now handles global `OM_VmmFinishByUser` exit code zero:
+it stops audio, returns `RunState::Ended` and does not execute the following
+title-loop jump. Nonzero exit codes remain explicit errors.
+
+`message_stats` audits static message call sites/fields and encoded overrides
+without printing retail text or sample bytes, for example:
+`cargo run -p rugp_scene_vm --example message_stats -- GAME OM_BoxScroll`.
+
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
 geometry/deformation/tinting. The

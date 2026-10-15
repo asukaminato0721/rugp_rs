@@ -398,6 +398,21 @@ fn title_keyboard_activation_returns_the_numeric_selector_not_the_mask_id() -> R
         game.vm.cursor().map(|p| (p.scene, p.address)),
         Some((252, 0xfbc))
     );
+    // ID 4 follows the real global engine-exit message, rather than executing
+    // its following jump back to the title menu or reporting a null-target error.
+    assert_eq!(game.step(0)?, RunState::Ended);
+    assert_eq!(
+        game.vm.cursor().map(|p| (p.scene, p.address)),
+        Some((252, 0x1500))
+    );
+    assert!(
+        game.pending_sounds()
+            .iter()
+            .any(|s| s.source.is_none() && s.kind == 255)
+    );
+    let cursor = game.vm.cursor().cloned();
+    assert_eq!(game.step(1000)?, RunState::Ended);
+    assert_eq!(game.vm.cursor(), cursor.as_ref());
     Ok(())
 }
 

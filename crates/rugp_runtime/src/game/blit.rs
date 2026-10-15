@@ -272,15 +272,14 @@ impl Game {
         // does not replace the separately decoded blocking/time parameters.
         let _control = self.vm.evaluate(control)?.integer()?;
         let flags = self.vm.evaluate(flags)?.integer()?;
-        ensure!(flags == 0, "unsupported blit flags {flags:#x}");
+        ensure!(matches!(flags, 0 | 1), "unsupported blit flags {flags:#x}");
         let blocking = self.vm.evaluate(blocking)?.integer()?;
         ensure!(blocking == 0 || blocking == 1, "invalid blit wait mode");
         let duration = self.vm.evaluate(duration)?.integer()?;
         ensure!(
-            duration >= 0,
+            duration >= 0 || (flags == 1 && blocking == 0 && duration == -1),
             "unbounded blit duration is not implemented yet"
         );
-        let duration = duration as u32;
         let resolve = |arg: &Argument| -> Result<ObjectRef> {
             match self.vm.evaluate(arg)? {
                 Value::Reference(reference) => Ok(reference),
@@ -290,6 +289,40 @@ impl Game {
         let source = resolve(source)?;
         let background = resolve(background)?;
         let destination = resolve(destination)?;
+        if flags == 1 {
+            // Native Xs effects attach to a window, not the primary surface.
+            // Keep their configuration without replacing world planes/cameras
+            // with a captured screen texture. Distortion itself is omitted;
+            // finite blocking requests still retain their explicit wait.
+            ensure!(
+                destination.class.as_ref().is_some_and(|c| [
+                    "CParseBgBox",
+                    "CImgAreaBox",
+                    "CImgBox"
+                ]
+                .contains(&c.name.as_str())),
+                "unsupported window-effect destination"
+            );
+            let id = destination
+                .offset
+                .context("window-effect destination identity missing")?;
+            let properties = &mut self.objects.entry(id).or_default().properties;
+            for (key, value) in [
+                ("class", Value::Text(class.name.clone())),
+                ("duration", Value::Integer(duration)),
+                ("source", Value::Reference(source)),
+                ("background", Value::Reference(background)),
+                ("packet", Value::Bytes(data.clone())),
+            ] {
+                properties.insert(format!("render.xs_fade.{key}"), value);
+            }
+            if blocking != 0 && duration > 0 {
+                self.wait_ms = Some(duration as u32);
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        let duration = duration as u32;
         let source = self.surface(&source)?;
         let previous = self.surface(&destination)?;
         let background = if let Some(color) = fade.color {
@@ -355,6 +388,146 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn window_effect_fallback_preserves_world_layers_and_blocking_clocks() -> Result<()> {
+        use crate::{
+            game::{ObjectState, RunState},
+            image_manager::WorldImage,
+        };
+        use rugp_assets::{native_schema::NativeSchema, object::ClassId, script::Script};
+        use rugp_scene_vm::{
+            Scenario,
+            vm::{Message, Program, Vm},
+        };
+        use std::collections::BTreeMap;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 48)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let original = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x120)
+            .context("window effect missing")?;
+        let vm = |blocking, flags, duration| -> Result<Vm> {
+            let mut instruction = original.clone();
+            instruction.address = 0;
+            instruction.next_address = 24;
+            instruction.arguments[2] = Argument::Number(blocking);
+            instruction.arguments[3] = Argument::Number(flags);
+            instruction.arguments[4] = Argument::Number(duration);
+            let mut program = Program::default();
+            program.insert(
+                0,
+                Scenario {
+                    object_id: 1,
+                    memory_size: 36,
+                    null_records: vec![],
+                    trailing_bytes: 0,
+                    instructions: vec![
+                        instruction,
+                        Instruction {
+                            index: 1,
+                            stream_offset: 0,
+                            class: ClassId {
+                                name: "CVmRet".into(),
+                                schema: 17,
+                            },
+                            address: 24,
+                            next_address: u32::MAX,
+                            flags: 0,
+                            arguments: vec![],
+                        },
+                    ],
+                },
+            )?;
+            Vm::new(Arc::new(program), 1)
+        };
+        let texture = Texture {
+            width: 2,
+            height: 2,
+            display_scale: 1.0,
+            rgba: [32, 64, 128, 255].repeat(4),
+        };
+        let plane = crate::world::Plane::bitmap(&texture)?;
+        let mut object = ObjectState {
+            rect: (0, 0, 4, 4),
+            ..ObjectState::default()
+        };
+        object.layers.insert(
+            512,
+            Layer::World(WorldImage {
+                planes: vec![crate::image_manager::WorldImagePlane {
+                    texture: Arc::new(texture),
+                    plane,
+                    draw_flags: 0,
+                }],
+                boundary: plane,
+            }),
+        );
+        game.objects.insert(212259, object);
+        game.frame = Framebuffer::new(4, 4)?;
+        let pixels = game.frame().to_vec();
+        game.vm = vm(1, 1, 400)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert!(matches!(
+            game.objects[&212259].layers[&512],
+            Layer::World(_)
+        ));
+        assert!(!game.buffers.contains_key(&212259));
+        assert_eq!(game.frame(), pixels);
+        assert_eq!(game.step(399)?, RunState::Waiting);
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        assert_eq!(game.step(1)?, RunState::Ended);
+        game.ended = false;
+        game.vm = vm(0, 1, u32::MAX)?; // -1: retained indefinite, non-blocking effect
+        assert_eq!(game.step(0)?, RunState::Ended);
+        assert!(matches!(
+            game.objects[&212259].properties["render.xs_fade.duration"],
+            Value::Integer(-1)
+        ));
+        let target = match &original.arguments[0] {
+            Argument::Message { arguments, .. } => match &arguments[3] {
+                Argument::Reference(r) => r.clone(),
+                _ => bail!("effect destination missing"),
+            },
+            _ => bail!("effect missing"),
+        };
+        let stop = |mode| Message {
+            class: "OM_StopXsFade".into(),
+            target: Value::Reference(target.clone()),
+            fields: BTreeMap::from([("モード".into(), Value::Integer(mode))]),
+        };
+        assert!(game.message(stop(1)).is_err());
+        assert!(
+            game.objects[&212259]
+                .properties
+                .contains_key("render.xs_fade.class")
+        );
+        game.message(stop(0))?;
+        assert!(
+            !game.objects[&212259]
+                .properties
+                .keys()
+                .any(|key| key.starts_with("render.xs_fade."))
+        );
+        assert_eq!(game.frame(), pixels);
+        for (blocking, flags, duration) in [(0, 2, 400), (1, 1, u32::MAX)] {
+            game.ended = false;
+            game.vm = vm(blocking, flags, duration)?;
+            assert!(game.step(0).is_err());
+            assert!(matches!(
+                game.objects[&212259].layers[&512],
+                Layer::World(_)
+            ));
+        }
+        Ok(())
+    }
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn vm_image_stages_real_image_box_surfaces_and_null_clears_them() -> Result<()> {
