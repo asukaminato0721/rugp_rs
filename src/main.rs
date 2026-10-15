@@ -92,14 +92,27 @@ fn main() -> Result<()> {
             let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
             let mut ok = 0;
             let mut failures = BTreeMap::new();
-            for resource in index
-                .resources
-                .values()
-                .filter(|r| ["Cr6Ti", "CRip007", "CRip008"].contains(&r.class.name.as_str()))
-            {
-                match decode_image(&archive, resource) {
-                    Ok(_) => {
-                        ok += 1;
+            for resource in index.resources.values().filter(|r| {
+                ["Cr6Ti", "CRip007", "CRip008", "CRmt"].contains(&r.class.name.as_str())
+                    && r.size > 3
+            }) {
+                let result = if resource.class.name == "CRmt" {
+                    archive
+                        .read_at(resource.offset, resource.size as usize)
+                        .and_then(|bytes| {
+                            let container =
+                                rugp_assets::crmt::Crmt::parse(&bytes, archive.address_shift)?;
+                            for (i, level) in container.levels.iter().enumerate() {
+                                level.decode().with_context(|| format!("mip {i}"))?;
+                            }
+                            Ok(container.levels.len())
+                        })
+                } else {
+                    decode_image(&archive, resource).map(|_| 1)
+                };
+                match result {
+                    Ok(count) => {
+                        ok += count;
                     }
                     Err(error) => {
                         *failures
@@ -290,6 +303,11 @@ fn decode_image(
         "CRip008" => {
             rugp_assets::rip::decode_rip008(&bytes, resource.class.schema, archive.address_shift)
         }
+        "CRmt" => rugp_assets::crmt::Crmt::parse(&bytes, archive.address_shift)?
+            .levels
+            .first()
+            .context("CRmt has no mipmaps")?
+            .decode(),
         other => anyhow::bail!("unsupported bitmap class {other}"),
     }
 }

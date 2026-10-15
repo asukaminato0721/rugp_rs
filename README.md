@@ -2,7 +2,7 @@
 
 Native Rust reimplementation of rUGP, targeting the 2008 **君が望む永遠
 ～Latest Edition～** disc. This is an active port: archive and scene decoding
-work, along with Cr6Ti/CRip007/CRip008 bitmap decoding. Game execution, rendering,
+work, along with Cr6Ti/CRip007/CRip008 and CRmt mipmap decoding. Game execution, rendering,
 audio, and save/load are not implemented yet.
 
 The workspace follows `../siglus_rs`'s separation between asset formats,
@@ -51,8 +51,11 @@ The disc contains two volumes totaling 3,028,167,410 bytes and 666 project
 objects. All 283 project CRsa scenes decode sequentially with checksums and
 without trailing bytes (249,234 instructions). The reference index contains
 34,993 unique resources and 100,923 dialogue records. All 951 directly
-referenced Cr6Ti/CRip007/CRip008 bitmaps decode; this does not yet cover CRmt
-containers, their mipmaps, or images reachable only through other asset objects.
+referenced Cr6Ti/CRip007/CRip008 bitmaps decode, as do all 9,948 mip levels in
+1,658 referenced CRmt texture containers (10,899 decoded bitmaps total). Two
+three-byte CRmt placeholders are not textures. CRmt parent trailers (mask,
+motion, and extra properties) are retained but not interpreted yet. Images
+reachable only through other asset objects are not included in this count.
 Unsupported formats return errors with class and byte
 offset; the parser never searches forward to guess instruction boundaries.
 

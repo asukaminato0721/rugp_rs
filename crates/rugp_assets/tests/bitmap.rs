@@ -64,3 +64,78 @@ fn rip_007_and_008_pixel_layouts() {
         assert!(decode_rip008(&modern[..length], 3, 0).is_err());
     }
 }
+
+#[derive(Default)]
+struct Codes(Vec<bool>);
+impl Codes {
+    fn bit(&mut self, value: bool) {
+        self.0.push(value);
+    }
+    fn signed(&mut self, value: i32) {
+        self.bit(value != 0);
+        if value == 0 {
+            return;
+        }
+        self.bit(value < 0);
+        let value = value.unsigned_abs();
+        for bit in (0..31 - value.leading_zeros()).rev() {
+            self.bit(true);
+            self.bit(value >> bit & 1 != 0);
+        }
+        self.bit(false);
+    }
+    fn bytes(&self, lsb: bool) -> Vec<u8> {
+        let mut data = vec![0; self.0.len().div_ceil(8)];
+        for (i, bit) in self.0.iter().enumerate() {
+            data[i / 8] |= (*bit as u8) << if lsb { i % 8 } else { 7 - i % 8 };
+        }
+        data
+    }
+}
+
+#[test]
+fn crmti_profiles_channel_order_copy_and_bounds() {
+    use rugp_assets::crmt::MipLevel;
+    let mut codes = Codes::default();
+    codes.signed(1);
+    codes.signed(0); // first row, one pixel
+    codes.signed(0);
+    codes.signed(0); // next row, unchanged span/start
+    for copy in [false, true] {
+        codes.signed(32); // opaque
+        codes.bit(false); // alpha count: unsigned zero = one pixel
+        codes.bit(false); // literal count: one pixel
+        codes.bit(copy);
+        if !copy {
+            codes.signed(0); // common green delta
+            codes.signed(1); // native B
+            codes.signed(0); // native R
+        }
+    }
+    for depth in [5u32, 6, 7] {
+        for flags in [7, 15] {
+            let mut level = MipLevel {
+                width: 1,
+                height: 2,
+                precision: flags | (depth * 0x01010100),
+                active_rows: 2,
+                data: codes.bytes(flags == 15),
+            };
+            let blue = 1u8 << (8 - depth);
+            assert_eq!(
+                level.decode().unwrap().rgba,
+                [0, 0, blue, 255, 0, 0, blue, 255]
+            );
+            let original = level.data.clone();
+            for length in 0..original.len() {
+                level.data = original[..length].to_vec();
+                assert!(level.decode().is_err());
+            }
+            level.data = original;
+            level.data.push(1);
+            assert!(level.decode().is_err()); // nonzero padding
+            level.active_rows = 3;
+            assert!(level.decode().is_err());
+        }
+    }
+}
