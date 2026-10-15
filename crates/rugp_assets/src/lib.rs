@@ -14,6 +14,7 @@ pub mod mime;
 pub mod native_schema;
 pub mod object;
 pub mod oor;
+pub mod posture;
 pub mod process;
 pub mod profile;
 pub mod project;

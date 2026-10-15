@@ -41,6 +41,7 @@ fn kiminozo_le_all_project_scenes() -> Result<()> {
     ensure!(native.messages.len() >= 262, "incomplete native schema");
     let mut scenes = 0;
     let mut instructions = 0;
+    let mut postures = 0;
     for node in archive.nodes.iter().filter(|n| n.class.name == "CRsa") {
         let script = Script::load(&archive, node.id)?;
         let scene = Scenario::decode_with_schema(&script, archive.address_shift, Some(&native))?;
@@ -50,11 +51,43 @@ fn kiminozo_le_all_project_scenes() -> Result<()> {
             node.id
         );
         ensure!(scene.trailing_bytes == 0, "unparsed scene bytes");
+        let mut posture_failure = None;
+        scene.visit_references(&mut |reference| {
+            if let Some(class) = &reference.class
+                && class.name == "CPostureMoment"
+                && let Some(inline) = &reference.inline
+            {
+                match rugp_assets::posture::Posture::from_inline(inline, class) {
+                    Ok(posture) => {
+                        postures += 1;
+                        assert_eq!(posture.fields.version, 2);
+                        assert_eq!(posture.fields.state, 0);
+                        assert!(posture.fields.options <= 1);
+                        for motion in &posture.references[2..] {
+                            if let Some(class) = &motion.class {
+                                assert_eq!(class.name, "CMoveAcsOngen");
+                                assert_eq!(class.schema, 3);
+                            }
+                        }
+                    }
+                    Err(error) => posture_failure = Some(error),
+                }
+            }
+        });
+        if let Some(error) = posture_failure {
+            return Err(error);
+        }
         instructions += scene.instructions.len();
         scenes += 1;
     }
     ensure!(scenes == 283, "unexpected scene count {scenes}");
-    println!("Validated {scenes} scenes and {instructions} instructions");
+    ensure!(
+        postures == 152,
+        "unexpected inline posture count {postures}"
+    );
+    println!(
+        "Validated {scenes} scenes, {instructions} instructions and {postures} inline postures"
+    );
     Ok(())
 }
 

@@ -45,6 +45,8 @@ pub struct InlineObject {
     pub references: Vec<ObjectRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bitmap: Option<InlineBitmap>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub posture: Option<Box<crate::posture::PostureFields>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -217,6 +219,7 @@ impl<'a> ObjectReader<'a> {
         let start = self.input.position;
         let mut references = Vec::new();
         let mut bitmap = None;
+        let mut posture = None;
         match (class.name.as_str(), class.schema) {
             ("CMimeFlat16LimitOne", 1) => {
                 crate::mime::MimeCurve::read_body(&mut self.input, class)?;
@@ -372,14 +375,9 @@ impl<'a> ObjectReader<'a> {
                 self.input.skip(15)?;
             }
             ("CPostureMoment", 4) => {
-                self.input.u8()?;
-                let version = self.input.u8()?;
-                ensure!(version <= 2, "unsupported posture version {version}");
-                self.input.u8()?;
-                for _ in 0..5 {
-                    references.push(self.reference(shift)?);
-                }
-                self.input.skip(56 + if version >= 2 { 14 } else { 0 })?;
+                let parsed = crate::posture::Posture::read_body(self, class, shift)?;
+                references.extend(parsed.references);
+                posture = Some(Box::new(parsed.fields));
             }
             (name, 12) if name.starts_with("CFade") => {
                 ensure!(
@@ -445,6 +443,7 @@ impl<'a> ObjectReader<'a> {
             data: self.input.consumed_since(start)?.to_vec(),
             references,
             bitmap,
+            posture,
         })
     }
     pub fn header(&mut self) -> Result<ClassId> {

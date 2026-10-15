@@ -227,6 +227,12 @@ later camera setup. Native default angular boundary correction now passes
 the translated target at scene 79, PC `0x60`, and mode-4 camera setup
 at scene 79, PC `0x3a8`. The chapter now reaches the next unsupported
 `OM_AddPostureMomentum` request at scene 64, PC `0x0`.
+Its inline `CPostureMoment#4` resources now retain typed numeric fields and
+all five context-bound references during the original archive-reading pass.
+Inner versions 0–2, conditional vectors/modes, signed vectors and finite channel
+scales have synthetic truncation/alignment tests, and all retail scenes validate
+their 152 typed inline posture records. Motion-curve sampling and posture execution
+remain unsupported; recognizing the resource does not acknowledge the message.
 Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
