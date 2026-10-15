@@ -1,4 +1,14 @@
 //! Axis-aligned world image planes. Native zoom is a focal length, not a FOV.
+//!
+//! Camera porting evidence (static inspection, never native execution):
+//! Vm60 1003ffc0 receives OM_SetWorldCamera; 1004009b..100400b9
+//! shift script roll/pitch/bank by four. 1003bd90 negates roll before
+//! 100683f0 builds its signed Q12 matrix. Its radians coefficient at
+//! 100904d0 is 2*pi/65536, hence 4096 script units per revolution.
+//! 10046c70's mode-0 branch (10046cb2) takes start+delta, ignoring
+//! interpolation progress. Do not infer linear motion from duration alone.
+//! CBg2d has its own placement metadata; treating its inline bitmap as an
+//! ordinary rotated image is not a faithful implementation of that resource.
 use crate::render::Texture;
 use anyhow::{Result, ensure};
 

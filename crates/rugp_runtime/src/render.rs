@@ -2,6 +2,8 @@
 use anyhow::{Result, ensure};
 use rugp_assets::image::Image;
 
+mod projective;
+
 pub struct Texture {
     pub width: u32,
     pub height: u32,
@@ -9,6 +11,16 @@ pub struct Texture {
     pub rgba: Vec<u8>,
 }
 impl Texture {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.width > 0
+                && self.height > 0
+                && self.width as u64 * self.height as u64 <= 16_777_216
+                && self.rgba.len() == self.width as usize * self.height as usize * 4,
+            "invalid source texture"
+        );
+        Ok(())
+    }
     pub fn from_image(image: Image) -> Result<Self> {
         ensure!(
             image.canvas_width > 0
@@ -89,13 +101,7 @@ impl Framebuffer {
         if w == 0 || h == 0 || opacity == 0 {
             return Ok(());
         }
-        ensure!(
-            texture.width > 0
-                && texture.height > 0
-                && texture.width as u64 * texture.height as u64 <= 16_777_216
-                && texture.rgba.len() == texture.width as usize * texture.height as usize * 4,
-            "invalid source texture"
-        );
+        texture.validate()?;
         let left = (x as i64).max(0);
         let top = (y as i64).max(0);
         let right = (x as i64 + w as i64).min(self.width as i64);

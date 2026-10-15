@@ -165,6 +165,11 @@ Native Cr6Ti world-display scales are preserved independently of pixels. The
 following startup screen's 0.5 bitmap scale and 1440 camera focal length now
 project to the full viewport, covered by a retail pixel-equality regression.
 Camera rotation, translated view targets, and general 3D geometry remain incomplete.
+The software compositor now also has a perspective-correct quadrilateral path:
+reciprocal-depth texture interpolation, pixel-center sampling, object-viewport
+clipping, either winding, and shared-edge alpha coverage are tested against
+independent ray/plane intersections. This is rendering infrastructure, not yet
+VM camera support: CBg2d world metadata must be applied before connecting it.
 Desktop presentation and automatic exit have also been exercised under Xvfb.
 The startup movie regression checks frame-clock boundaries, actual temporal
 pixels, a large clock jump, and synchronization through the end of the opening.
@@ -201,7 +206,13 @@ the envelope and fading to silence does not itself stop playback. Kira mock
 tests check actual output samples; native block buffering/quantization are not
 reproduced bit-for-bit. Native extended acoustic packets remain unsupported.
 Chapter execution now reaches a nonzero camera pitch in `OM_SetWorldCamera`
-at scene 130, PC `0x60`. For X11 isolation, unset
+at scene 130, PC `0x60`. Static native inspection establishes that script camera
+angles use 4096 units per turn (internally shifted left by four for a 65536-unit
+matrix), and fade mode 0 takes the target state directly, not a linear 400ms
+interpolation. Other camera transition modes and background geometry remain
+under investigation. The metadata-only `rugp_assets` example `background`
+accepts a game directory, CBg2d offset and extent for this work.
+For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.
 Unsupported host messages are never skipped; dialogue resource callbacks,
