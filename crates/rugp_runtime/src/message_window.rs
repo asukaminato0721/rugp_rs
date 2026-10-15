@@ -142,6 +142,7 @@ pub struct MessageWindow {
     pieces: Vec<Arc<Texture>>,
     pub page: Vec<TextPart>,
 }
+pub(crate) type SelectorRect = (i32, i32, u32, u32);
 impl MessageWindow {
     pub fn load(
         archive: &RioArchive,
@@ -187,6 +188,104 @@ impl MessageWindow {
             pieces,
             page: vec![],
         })
+    }
+    /// Approximate choice layout: wrapped rows with explicit hover/press
+    /// feedback and matching pointer hit rectangles, independent of GDI.
+    pub(crate) fn compose_selectors(
+        &self,
+        font: &mut TextFont,
+        width: u32,
+        height: u32,
+        entries: &[String],
+        hover: Option<usize>,
+        pressed: Option<usize>,
+    ) -> Result<(Texture, Vec<SelectorRect>)> {
+        let mut frame = Framebuffer::transparent(width, height)?;
+        paint_border(&self.border, &self.pieces, &mut frame)?;
+        let g = &self.border.geometry;
+        let left = i32::from(g[12]);
+        let top = i32::from(g[13]);
+        let right = width as i32 - i32::from(g[14]);
+        let bottom = height as i32 - i32::from(g[15]);
+        ensure!(
+            left >= 0 && top >= 0 && right > left + 12 && bottom > top,
+            "invalid text selector insets"
+        );
+        let line = i32::from(font.size);
+        let mut rows = Vec::new();
+        let mut total = 0;
+        for text in entries {
+            let mut glyphs = Vec::new();
+            let mut x = left + 6;
+            let mut y = 0;
+            for ch in text.chars() {
+                if ch == '\n' {
+                    x = left + 6;
+                    y += line;
+                    continue;
+                }
+                let glyph = font.glyph(ch)?;
+                ensure!(
+                    glyph.advance <= right - left - 12,
+                    "selector glyph exceeds row width"
+                );
+                if x + glyph.advance > right - 6 {
+                    x = left + 6;
+                    y += line;
+                }
+                glyphs.push((Arc::clone(&glyph), x, y));
+                x += glyph.advance;
+            }
+            let h = y + line + 8;
+            total += h;
+            ensure!(
+                total <= bottom - top,
+                "text selectors exceed portable viewport"
+            );
+            rows.push((glyphs, h));
+        }
+        let mut y = top + (bottom - top - total) / 2;
+        let mut hits = Vec::new();
+        for (index, (glyphs, h)) in rows.into_iter().enumerate() {
+            hits.push((left, y, (right - left) as u32, h as u32));
+            if hover == Some(index) {
+                let color = if pressed == Some(index) {
+                    [24, 60, 84, 245]
+                } else {
+                    [32, 100, 136, 230]
+                };
+                for dy in y..y + h {
+                    for dx in left..right {
+                        frame.pixel(dx, dy, color);
+                    }
+                }
+            }
+            for (glyph, x, gy) in glyphs {
+                for sy in 0..glyph.height {
+                    for sx in 0..glyph.width {
+                        let dx = x + glyph.left + sx as i32;
+                        let dy = y + 4 + gy + glyph.top + sy as i32;
+                        if dx >= left && dx < right && dy >= y && dy < y + h {
+                            frame.pixel(
+                                dx,
+                                dy,
+                                [255, 255, 255, glyph.alpha[(sy * glyph.width + sx) as usize]],
+                            );
+                        }
+                    }
+                }
+            }
+            y += h;
+        }
+        Ok((
+            Texture {
+                width,
+                height,
+                display_scale: 1.0,
+                rgba: frame.rgba,
+            },
+            hits,
+        ))
     }
     pub fn compose(
         &self,

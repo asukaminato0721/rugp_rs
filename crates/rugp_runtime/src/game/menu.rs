@@ -1,7 +1,7 @@
 use super::*;
 pub(super) struct SelectionWait {
-    target: u64,
-    result: ObjectRef,
+    pub(super) target: u64,
+    pub(super) result: ObjectRef,
 }
 impl Game {
     fn ensure_menu(&mut self, reference: &ObjectRef) -> Result<u64> {
@@ -48,7 +48,11 @@ impl Game {
                 .compose(&mut self.images)?,
         ))
     }
-    fn install_menu_texture(&mut self, target: u64, texture: Arc<Texture>) -> Result<()> {
+    pub(super) fn install_menu_texture(
+        &mut self,
+        target: u64,
+        texture: Arc<Texture>,
+    ) -> Result<()> {
         let old = self.buffers.get(&target).map_or(0, |t| t.rgba.len());
         let total: usize = self.buffers.values().map(|t| t.rgba.len()).sum();
         ensure!(
@@ -137,6 +141,10 @@ impl Game {
         fields: &BTreeMap<String, Value>,
     ) -> Result<()> {
         ensure!(
+            self.dialogue.is_none() && self.selection.is_none(),
+            "overlapping dialogue/menu waits"
+        );
+        ensure!(
             number(fields, "スタイル", 0)? == 0,
             "unsupported image-menu selection style"
         );
@@ -154,6 +162,14 @@ impl Game {
             result.class.as_ref().is_some_and(|c| c.name == "CInt"),
             "unsupported menu result type"
         );
+        if let Some(menu) = self.text_menus.get(&target) {
+            ensure!(!menu.entries.is_empty(), "empty text selection");
+            self.selection = Some(SelectionWait {
+                target,
+                result: result.clone(),
+            });
+            return self.refresh_text_menu(target);
+        }
         let id = self
             .objects
             .get(&target)
@@ -178,6 +194,20 @@ impl Game {
     pub fn pointer_move(&mut self, x: i32, y: i32) -> Result<()> {
         self.pointer_inside =
             x >= 0 && y >= 0 && x < self.frame.width as i32 && y < self.frame.height as i32;
+        if let Some(target) = self.selection_text_target() {
+            let rect = self.objects[&target].rect;
+            let menu = self.text_menus.get_mut(&target).unwrap();
+            let hit = self
+                .pointer_inside
+                .then(|| x.checked_sub(rect.0).zip(y.checked_sub(rect.1)))
+                .flatten()
+                .and_then(|(x, y)| menu.hit(x, y));
+            if menu.hover != hit {
+                menu.hover = hit;
+                self.refresh_text_menu(target)?;
+            }
+            return Ok(());
+        }
         let Some(id) = self.selection_menu() else {
             return Ok(());
         };
@@ -215,6 +245,21 @@ impl Game {
             }
             return Ok(());
         }
+        if let Some(target) = self.selection_text_target() {
+            let menu = self.text_menus.get_mut(&target).unwrap();
+            if pressed {
+                menu.pressed = menu.hover;
+                self.refresh_text_menu(target)?;
+            } else {
+                let key = menu.pressed.take().filter(|key| Some(*key) == menu.hover);
+                if let Some(key) = key {
+                    self.finish_text_selection(target, key)?;
+                } else {
+                    self.refresh_text_menu(target)?;
+                }
+            }
+            return Ok(());
+        }
         let Some(id) = self.selection_menu() else {
             return Ok(());
         };
@@ -232,6 +277,12 @@ impl Game {
         Ok(())
     }
     pub fn navigate_selection(&mut self, delta: i32) -> Result<()> {
+        if let Some(target) = self.selection_text_target() {
+            let menu = self.text_menus.get_mut(&target).unwrap();
+            menu.navigate(delta);
+            menu.pressed = None;
+            return self.refresh_text_menu(target);
+        }
         if let Some(id) = self.selection_menu() {
             self.menus.get_mut(&id).unwrap().navigate(delta.signum());
             self.refresh_menu(id, true)?;
@@ -241,6 +292,12 @@ impl Game {
     pub fn activate_selection(&mut self) -> Result<()> {
         if self.dialogue.is_some() {
             return self.advance_dialogue();
+        }
+        if let Some(target) = self.selection_text_target() {
+            if let Some(key) = self.text_menus[&target].hover {
+                self.finish_text_selection(target, key)?;
+            }
+            return Ok(());
         }
         if let Some(id) = self.selection_menu()
             && let Some(key) = self.menus[&id].hover

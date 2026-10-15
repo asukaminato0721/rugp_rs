@@ -36,14 +36,26 @@ fn main() -> Result<()> {
         .nth(3)
         .map_or(Ok(1000), |s| s.parse::<u32>())?;
     let mut game = Game::open(root.as_ref())?;
-    if std::env::args()
-        .skip(4)
-        .any(|arg| arg == "--no-scene-raster")
-    {
-        eprintln!(
-            "Diagnostic: scene rasterization disabled; host logic/resources/timing still run. Not visual verification."
-        );
-        game.set_scene_rasterization(false);
+    let mut choice_plan = Vec::new();
+    for arg in std::env::args().skip(4) {
+        if arg == "--no-scene-raster" {
+            eprintln!(
+                "Diagnostic: scene rasterization disabled; host logic/resources/timing still run. Not visual verification."
+            );
+            game.set_scene_rasterization(false);
+        } else if let Some(plan) = arg.strip_prefix("--choices=") {
+            choice_plan = plan
+                .split(',')
+                .map(|s| {
+                    let index: u8 = s
+                        .parse()
+                        .context("choice plan requires zero-based indices 0..255")?;
+                    Ok(index)
+                })
+                .collect::<Result<Vec<_>>>()?;
+        } else {
+            anyhow::bail!("unknown autoplay option {arg}");
+        }
     }
     let mut audio = None;
     let mut scenes = BTreeSet::new();
@@ -56,7 +68,11 @@ fn main() -> Result<()> {
             dialogue_pages += 1;
         }
         if game.waiting_for_selection() {
-            game.navigate_selection(1)?;
+            // Plan includes the title menu (index 0 starts a new game).
+            // Unspecified choices select the first enabled entry.
+            for _ in 0..=choice_plan.get(choices).copied().unwrap_or(0) {
+                game.navigate_selection(1)?;
+            }
             game.activate_selection()?;
             choices += 1;
         }

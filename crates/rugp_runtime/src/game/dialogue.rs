@@ -54,7 +54,7 @@ impl Game {
         }
         Ok(id)
     }
-    fn ensure_text_font(&mut self) -> Result<()> {
+    pub(super) fn ensure_text_font(&mut self) -> Result<()> {
         if self.font.is_none() {
             let root = self.archive.volumes[0]
                 .path

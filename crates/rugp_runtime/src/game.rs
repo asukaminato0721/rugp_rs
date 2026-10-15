@@ -20,6 +20,7 @@ mod parse_screen;
 mod posture;
 mod profile;
 mod sound;
+mod text_menu;
 mod var_data;
 mod video;
 #[cfg(test)]
@@ -187,6 +188,7 @@ pub struct Game {
     profiles: crate::profile_store::ProfileStore,
     menus: BTreeMap<u64, crate::menu::MenuState>,
     selection: Option<menu::SelectionWait>,
+    text_menus: BTreeMap<u64, text_menu::TextMenu>,
     dialogue: Option<dialogue::DialogueWait>,
     message_windows: BTreeMap<u64, crate::message_window::MessageWindow>,
     message_config: Option<crate::message_window::MessageConfig>,
@@ -242,6 +244,7 @@ impl Game {
             profiles: crate::profile_store::ProfileStore::default(),
             menus: BTreeMap::new(),
             selection: None,
+            text_menus: BTreeMap::new(),
             dialogue: None,
             message_windows: BTreeMap::new(),
             message_config: None,
@@ -497,6 +500,19 @@ impl Game {
             }
             "OM_SetVarData" => self.set_var_data(&target, &fields)?,
             "OM_SetDrawRatioAsParseWnd" => self.set_draw_ratio(&target, &fields)?,
+            "OM_SetSpecifyCmdLighting"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CParseBgBox") =>
+            {
+                // Portable projection omits pulsing/recoloring of this world
+                // surface. Retain its settings without inventing a VM wait.
+                let properties = &mut self.objects.entry(id).or_default().properties;
+                for (key, value) in fields {
+                    properties.insert(format!("render.lighting.{key}"), value);
+                }
+            }
             "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
                 self.configure_menu(&target, &message.class, &fields)?
             }
@@ -510,6 +526,9 @@ impl Game {
             }
             "OM_UpdateAllView" | "OM_AgesRecalc" => self.present_scene()?,
             "OM_AskUserSelectEx" => self.ask_selection(id, &fields)?,
+            "OM_AddSelecter" if self.message_windows.contains_key(&id) => {
+                self.add_text_selector(id, &fields)?
+            }
             "OM_AccessGetValue" | "OM_AccessWrite" => {
                 self.access_profile(&target, &message.class, &fields)?
             }

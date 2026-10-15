@@ -93,6 +93,9 @@ cargo run --release -p rugp_runtime --no-default-features --example autoplay -- 
 For faster host-logic diagnostics, append `--no-scene-raster`. This still decodes
 resources, lays out text and advances real host/media clocks and projection
 caches, but omits scene pixel composition. It is not visual verification.
+`--choices=0,1,0` selects enabled entries by zero-based order for successive
+menus (including the title menu, where 0 starts a new game); remaining choices
+default to the first entry. Like keyboard navigation, oversized indices wrap.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
@@ -274,6 +277,14 @@ probes both reach the first story text selection at scene 470, PC `0x5dd4`,
 after 689 text confirmations with matching cursor/counter checkpoints. This
 includes the first character motion and later external posture resources;
 full-game completion is not yet verified.
+`CMsgSelBox` story selectors now use actual labels, wrapped portable rows,
+hover/pressed feedback and keyboard/mouse input. Confirmation writes the
+zero-based ordinal into the script's integer destination and consumes the
+selector list. A retail-resource regression covers both return values, real
+framebuffer changes, blocking without input and canceled pointer clicks.
+Non-null object-valued selector IDs/results and native selector markup remain
+unsupported. `OM_SetSpecifyCmdLighting` on background boxes retains its settings
+but currently omits the lighting/pulse effect without introducing a host wait.
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
 geometry/deformation/tinting. The

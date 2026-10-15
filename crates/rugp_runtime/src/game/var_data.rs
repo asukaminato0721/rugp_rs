@@ -197,6 +197,27 @@ mod tests {
         assert_eq!(game.objects[&212259].world_layers, state);
         game.present_scene()?;
         assert_eq!(game.frame(), pixels); // native fast background pass is unaffected
+        let cursor = game.vm.cursor().cloned();
+        game.message(Message {
+            class: "OM_SetSpecifyCmdLighting".into(),
+            target: Value::Reference(target.clone()),
+            fields: BTreeMap::from([
+                ("モード".into(), Value::Integer(0)),
+                ("周期".into(), Value::Integer(100)),
+                ("色1".into(), Value::Bytes(vec![0, 1, 2, 3])),
+            ]),
+        })?;
+        assert!(matches!(
+            game.objects[&212259].properties["render.lighting.周期"],
+            Value::Integer(100)
+        ));
+        assert!(
+            matches!(&game.objects[&212259].properties["render.lighting.色1"], Value::Bytes(bytes) if bytes == &[0, 1, 2, 3])
+        );
+        assert_eq!(game.vm.cursor(), cursor.as_ref());
+        assert!(game.wait_ms.is_none() && game.parse_transition.is_none());
+        game.present_scene()?;
+        assert_eq!(game.frame(), pixels);
         let mut effect = target.clone();
         effect.class.as_mut().unwrap().name = "CLayerSimpleFlush".into();
         effect.offset = Some(1014184);
