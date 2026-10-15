@@ -11,6 +11,7 @@ pub mod image;
 pub mod menu;
 pub mod message;
 pub mod mime;
+pub mod motion;
 pub mod native_schema;
 pub mod object;
 pub mod oor;

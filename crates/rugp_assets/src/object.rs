@@ -47,6 +47,8 @@ pub struct InlineObject {
     pub bitmap: Option<InlineBitmap>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub posture: Option<Box<crate::posture::PostureFields>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub motion: Option<Box<crate::motion::MotionCurve>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +102,7 @@ enum CacheEntry {
     Empty,
     Class(ClassId),
     Object(ObjectRef),
+    TimeCurve(Box<crate::motion::TimeCurve>),
 }
 
 pub struct ObjectReader<'a> {
@@ -220,6 +223,7 @@ impl<'a> ObjectReader<'a> {
         let mut references = Vec::new();
         let mut bitmap = None;
         let mut posture = None;
+        let mut motion = None;
         match (class.name.as_str(), class.schema) {
             ("CMimeFlat16LimitOne", 1) => {
                 crate::mime::MimeCurve::read_body(&mut self.input, class)?;
@@ -326,53 +330,9 @@ impl<'a> ObjectReader<'a> {
                 self.input.skip(32)?;
             }
             ("CMoveAcsOngen", 3) => {
-                self.input.skip(12)?;
-                loop {
-                    let kind = self.input.u8()?;
-                    if kind == 0x70 {
-                        break;
-                    }
-                    ensure!(
-                        kind == 2 || kind == 3,
-                        "unsupported curve point type {kind}"
-                    );
-                    let options = self.input.u8()?;
-                    self.input.u32()?;
-                    let coordinates = if (if kind == 3 { options & 1 } else { options }) != 0 {
-                        12
-                    } else {
-                        8
-                    };
-                    self.input.skip(coordinates)?;
-                    if kind == 3 {
-                        let count = self.input.u16()? as usize;
-                        self.input.skip(count * coordinates)?;
-                    }
-                    if kind == 2 || options & 2 != 0 {
-                        let scrambled = self.scrambled;
-                        self.scrambled = false;
-                        let class = self.class()?;
-                        self.scrambled = scrambled;
-                        if let Some(class) = class {
-                            self.pad(1)?;
-                            match (class.name.as_str(), class.schema) {
-                                ("CMN_Time_2G", 0) => {
-                                    self.input.u32()?;
-                                }
-                                ("CMN_Time_Bezier", 0) => {
-                                    let count = self.input.u16()? as usize;
-                                    self.input.skip(count * 24)?;
-                                }
-                                _ => bail!(
-                                    "unsupported MFC curve class {}#{}",
-                                    class.name,
-                                    class.schema
-                                ),
-                            }
-                        }
-                    }
-                }
-                self.input.skip(15)?;
+                motion = Some(Box::new(crate::motion::MotionCurve::read_body(
+                    self, class,
+                )?));
             }
             ("CPostureMoment", 4) => {
                 let parsed = crate::posture::Posture::read_body(self, class, shift)?;
@@ -444,6 +404,7 @@ impl<'a> ObjectReader<'a> {
             references,
             bitmap,
             posture,
+            motion,
         })
     }
     pub fn header(&mut self) -> Result<ClassId> {
@@ -481,6 +442,26 @@ impl<'a> ObjectReader<'a> {
         self.cache
             .resize(self.cache.len() + count, CacheEntry::Empty);
         Ok(())
+    }
+    pub(crate) fn motion_time_curve(&mut self) -> Result<Option<crate::motion::TimeCurve>> {
+        let scrambled = self.scrambled;
+        self.scrambled = false;
+        let class = self.class();
+        self.scrambled = scrambled;
+        if let Some(class) = class? {
+            let index = self.cache.len();
+            self.pad(1)?;
+            let curve = crate::motion::TimeCurve::read_body(&mut self.input, &class)?;
+            self.cache[index] = CacheEntry::TimeCurve(Box::new(curve.clone()));
+            Ok(Some(curve))
+        } else if self.last_tag == 0 {
+            Ok(None)
+        } else {
+            match self.cache.get(self.last_tag as usize) {
+                Some(CacheEntry::TimeCurve(curve)) => Ok(Some((**curve).clone())),
+                _ => bail!("invalid motion time curve reference {}", self.last_tag),
+            }
+        }
     }
     pub fn cached_class(&self, index: u32) -> Result<&ClassId> {
         match self.cache.get(index as usize) {

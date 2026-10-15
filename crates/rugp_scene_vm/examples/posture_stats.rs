@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 
 fn main() -> Result<()> {
     let root = std::env::args_os().nth(1).context("game root")?;
+    let scene_filter = std::env::args()
+        .nth(2)
+        .map(|s| s.parse::<usize>())
+        .transpose()?;
     let archive = RioArchive::open(&root)?;
     let native = NativeSchema::from_directory(root.as_ref())?;
     let program = Program::load(&archive, &native)?;
@@ -13,6 +17,9 @@ fn main() -> Result<()> {
     let mut fields = BTreeMap::new();
     let mut failure = None;
     for scene in program.scenes.values() {
+        if scene_filter.is_some_and(|id| id != scene.object_id) {
+            continue;
+        }
         scene.visit_references(&mut |reference| {
             if reference
                 .class

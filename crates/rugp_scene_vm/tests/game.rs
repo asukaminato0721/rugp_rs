@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use rugp_assets::{RioArchive, native_schema::NativeSchema, script::Script};
 use rugp_scene_vm::Scenario;
 
@@ -42,6 +42,7 @@ fn kiminozo_le_all_project_scenes() -> Result<()> {
     let mut scenes = 0;
     let mut instructions = 0;
     let mut postures = 0;
+    let mut motions = 0;
     for node in archive.nodes.iter().filter(|n| n.class.name == "CRsa") {
         let script = Script::load(&archive, node.id)?;
         let scene = Scenario::decode_with_schema(&script, archive.address_shift, Some(&native))?;
@@ -53,6 +54,28 @@ fn kiminozo_le_all_project_scenes() -> Result<()> {
         ensure!(scene.trailing_bytes == 0, "unparsed scene bytes");
         let mut posture_failure = None;
         scene.visit_references(&mut |reference| {
+            if let Some(class) = &reference.class
+                && class.name == "CMoveAcsOngen"
+                && let Some(inline) = &reference.inline
+            {
+                let curve = rugp_assets::motion::MotionCurve::from_inline(inline, class).unwrap();
+                motions += 1;
+                assert!((-1..=1).contains(&curve.timing_mode));
+                assert_eq!(curve.dimensions, 1);
+                assert_eq!(curve.rate, 1000.0);
+                assert!(matches!(curve.flags, 1 | 3));
+                for segment in &curve.segments {
+                    assert_eq!(segment.kind, 3);
+                    assert!(matches!(segment.options, 1 | 3));
+                    assert_eq!(segment.controls.len(), 2);
+                    if let Some(time) = &segment.time_curve {
+                        let rugp_assets::motion::TimeCurve::Bezier(knots) = time else {
+                            panic!("unexpected retail timing curve");
+                        };
+                        assert_eq!(knots.len(), 2);
+                    }
+                }
+            }
             if let Some(class) = &reference.class
                 && class.name == "CPostureMoment"
                 && let Some(inline) = &reference.inline
@@ -85,9 +108,44 @@ fn kiminozo_le_all_project_scenes() -> Result<()> {
         postures == 152,
         "unexpected inline posture count {postures}"
     );
+    ensure!(motions == 146, "unexpected inline motion count {motions}");
     println!(
         "Validated {scenes} scenes, {instructions} instructions and {postures} inline postures"
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
+fn external_motion_extents_preserve_uninterpreted_trailers() -> Result<()> {
+    use rugp_assets::motion::{MotionCurve, MotionResource};
+    use rugp_scene_vm::resources::ResourceIndex;
+    let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+    let archive = RioArchive::open(&root)?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let index = ResourceIndex::scan(&archive, &native)?;
+    let mut trailer_sizes = Vec::new();
+    for resource in index
+        .resources
+        .values()
+        .filter(|r| r.class.name == "CMoveAcsOngen")
+    {
+        let bytes = index.read(&archive, resource.offset)?;
+        let motion = MotionResource::parse(&bytes, &resource.class)?;
+        let body_end = bytes.len() - motion.trailing_data.len();
+        assert_eq!(motion.trailing_data, bytes[body_end..]);
+        assert_eq!(
+            MotionCurve::parse(&bytes[..body_end], &resource.class)?,
+            motion.curve
+        );
+        assert_eq!(
+            MotionCurve::parse(&bytes, &resource.class).is_ok(),
+            motion.trailing_data.is_empty()
+        );
+        trailer_sizes.push(motion.trailing_data.len());
+    }
+    trailer_sizes.sort_unstable();
+    assert_eq!(trailer_sizes, [0, 0, 26, 26]);
     Ok(())
 }
 

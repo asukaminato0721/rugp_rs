@@ -233,6 +233,13 @@ Inner versions 0–2, conditional vectors/modes, signed vectors and finite chann
 scales have synthetic truncation/alignment tests, and all retail scenes validate
 their 152 typed inline posture records. Motion-curve sampling and posture execution
 remain unsupported; recognizing the resource does not acknowledge the message.
+`CMoveAcsOngen#3` now retains sequential segment endpoints, X/Z compact vectors,
+Bezier controls, timing modes, flags and embedded quadratic/Bezier time curves.
+Timing instances and class reuse share the original archive cache. Tests cover
+synthetic truncations, cache reuse and all 146 retail inline motion records.
+Four external motion bodies also parse; two extents have an unexplained 26-byte
+trailer that is retained explicitly for inspection, not accepted as executable
+motion data. No retail coordinates or curve tables are included in the repo.
 Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
