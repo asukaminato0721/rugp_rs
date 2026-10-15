@@ -181,14 +181,20 @@ fn startup_movie_uses_real_sync_and_fractional_frame_clock() -> Result<()> {
     assert_eq!(game.video().unwrap().frame_index(), 3510);
     assert!(!game.video().unwrap().finished());
     assert_eq!(game.vm.cursor(), movie_pc.as_ref());
+    // A sentinel proves the database query really writes its output rather
+    // than just leaving the variable's original zero in place.
+    game.vm
+        .variables
+        .insert(213487, rugp_scene_vm::vm::Value::Integer(99));
     let resumed = game.step(1);
     assert!(game.video().unwrap().finished());
     assert_ne!(game.vm.cursor(), movie_pc.as_ref());
+    assert_eq!(game.vm.variables[&213487].integer()?, 0);
     // The next currently unsupported host request is after movie completion;
     // it must not leave the VM parked on its synchronization instruction.
     if let Err(error) = resumed {
         anyhow::ensure!(
-            format!("{error:#}").contains("OM_AccessGetValue"),
+            format!("{error:#}").contains("OM_AllDisableSelecter"),
             "unexpected post-movie failure: {error:#}"
         );
     }

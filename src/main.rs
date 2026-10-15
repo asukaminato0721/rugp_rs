@@ -29,6 +29,9 @@ enum Command {
         mute: bool,
         #[arg(long)]
         quit_after_ms: Option<u32>,
+        /// User-owned configuration/progress root; never written into the game archive directory.
+        #[arg(long)]
+        user_data_dir: Option<PathBuf>,
     },
     /// Run the current runtime headlessly and export its RGBA frame (development diagnostic).
     Frame {
@@ -116,11 +119,16 @@ fn main() -> Result<()> {
         Command::Play {
             mute,
             quit_after_ms,
-        } => desktop::run(
-            rugp_runtime::Game::open(&args.project_dir)?,
-            mute,
-            quit_after_ms,
-        )?,
+            user_data_dir,
+        } => {
+            let directory =
+                user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
+            let game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
+            if let Some(path) = game.user_data_dir() {
+                eprintln!("User data: {}", path.display());
+            }
+            desktop::run(game, mute, quit_after_ms)?;
+        }
         Command::Frame { output, time_ms } => {
             let mut game = rugp_runtime::Game::open(&args.project_dir)?;
             let mut muted_audio = None;

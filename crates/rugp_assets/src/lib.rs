@@ -12,6 +12,7 @@ pub mod native_schema;
 pub mod object;
 pub mod oor;
 pub mod process;
+pub mod profile;
 pub mod project;
 pub mod rip;
 mod rip_quant;

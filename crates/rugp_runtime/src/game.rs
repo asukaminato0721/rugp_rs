@@ -12,6 +12,7 @@ use rugp_scene_vm::{
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
+mod profile;
 mod video;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,7 @@ pub struct Game {
     sounds: Vec<SoundRequest>,
     video: Option<(u64, crate::video::VideoPlayer)>,
     video_wait: bool,
+    profiles: crate::profile_store::ProfileStore,
     pub navigation: String,
     pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
     ended: bool,
@@ -130,6 +132,7 @@ impl Game {
             sounds: Vec::new(),
             video: None,
             video_wait: false,
+            profiles: crate::profile_store::ProfileStore::default(),
             navigation: String::new(),
             settings: BTreeMap::new(),
             ended: false,
@@ -137,6 +140,42 @@ impl Game {
     }
     pub fn size(&self) -> (u32, u32) {
         (self.frame.width, self.frame.height)
+    }
+    /// Desktop sessions use a per-game user-data folder. The ordinary `open`
+    /// remains volatile for deterministic diagnostics and tests.
+    pub fn open_persistent(root: &Path, data_root: &Path) -> Result<Self> {
+        use sha1::{Digest, Sha1};
+        let mut game = Self::open(root)?;
+        let mut digest = Sha1::new();
+        digest.update(game.archive.manifest.title.as_bytes());
+        digest.update(&game.archive.project_data);
+        for volume in &game.archive.volumes {
+            digest.update(volume.size.to_le_bytes());
+        }
+        let data_root = if data_root.is_absolute() {
+            data_root.to_owned()
+        } else {
+            std::env::current_dir()?.join(data_root)
+        };
+        let directory = data_root.join(format!("{:x}", digest.finalize()));
+        let original = game.archive.volumes[0]
+            .path
+            .parent()
+            .context("game root missing")?
+            .canonicalize()?;
+        let mut ancestor = directory.as_path();
+        while !ancestor.exists() {
+            ancestor = ancestor.parent().context("invalid user-data directory")?;
+        }
+        ensure!(
+            !ancestor.canonicalize()?.starts_with(&original),
+            "user data must be outside the original game directory"
+        );
+        game.profiles = crate::profile_store::ProfileStore::persistent(&directory)?;
+        Ok(game)
+    }
+    pub fn user_data_dir(&self) -> Option<&Path> {
+        self.profiles.directory()
     }
     pub fn frame(&self) -> &[u8] {
         &self.frame.rgba
@@ -221,6 +260,9 @@ impl Game {
             .offset
             .context("message target is not bound to a stored object")?;
         match message.class.as_str() {
+            "OM_AccessGetValue" | "OM_AccessWrite" => {
+                self.access_profile(&target, &message.class, &fields)?
+            }
             "OM_PlayDeviceStreamVideo" => self.play_video(&target, &fields)?,
             "OM_Enable" => self.objects.entry(id).or_default().enabled = true,
             "OM_Disable" => self.objects.entry(id).or_default().enabled = false,

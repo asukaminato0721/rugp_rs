@@ -71,6 +71,15 @@ cargo run --release --features audio -- --project-dir /run/media/w/KIMINOZO_LE p
 
 Muted/headless runs still honor the duration of scripted waiting one-shot sounds.
 
+Desktop `play` keeps CStdb configuration/progress databases under a per-game
+subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
+`~/.local/share/rugp_rs` on Linux). Use `play --user-data-dir PATH` to choose
+another root. Saves are atomically replaced with a process-exclusive lock;
+corrupt or oversized saved profiles return errors instead of being reset.
+The original game directory is rejected as an output location. Diagnostics and
+`Game::open` remain volatile. This currently persists CStdb key/value writes,
+not complete VM/game save slots or imports of original Windows save files.
+
 ## Validation
 
 ```sh
@@ -144,8 +153,12 @@ Camera rotation, translated view targets, and general 3D geometry remain incompl
 Desktop presentation and automatic exit have also been exercised under Xvfb.
 The startup movie regression checks frame-clock boundaries, actual temporal
 pixels, a large clock jump, and synchronization through the end of the opening.
-The current subsequent runtime boundary is the persistent-value lookup
-`OM_AccessGetValue`; unsupported host messages are still never skipped.
+Native CStdb text lookup/write and scalar output binding now run after the
+opening. A sentinel regression verifies that the query actually updates its
+destination, and another retail regression writes, closes, reopens, and reads
+an isolated user-data directory. The current subsequent runtime boundary is
+title-selector initialization (`OM_AllDisableSelecter`); unsupported host
+messages are still never skipped.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.

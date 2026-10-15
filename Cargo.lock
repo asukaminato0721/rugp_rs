@@ -1788,6 +1788,7 @@ dependencies = [
  "kira",
  "rugp_assets",
  "rugp_scene_vm",
+ "sha1",
 ]
 
 [[package]]

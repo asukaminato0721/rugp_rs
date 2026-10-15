@@ -49,3 +49,5 @@ cross-checked against static disassembly of the user's `rvmm.dll` and
 The CRsi index and paired-row YUV movie codec were independently reconstructed
 from the same static serialization/decoder routines; adaptive tables are
 generated from formulas rather than copied from the original binary.
+CStdb/CProfile text lookup, updates, and scalar string setters were checked
+against the user's `UnivUI.dll` and `GMfc.dll`, also by static disassembly only.
