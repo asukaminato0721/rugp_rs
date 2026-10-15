@@ -291,11 +291,45 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
     let before_build = game.frame().to_vec();
     game.message(call(
         "OM_ParseImageBuild",
-        BTreeMap::from([("対象ウインドウ".into(), Value::Reference(destination))]),
+        BTreeMap::from([(
+            "対象ウインドウ".into(),
+            Value::Reference(destination.clone()),
+        )]),
     ))?;
     assert_eq!(game.buffers[&212650].rgba, expected.rgba);
     assert_eq!(game.frame(), before_build); // construction alone is not presentation
     game.message(call("OM_UpdateAllView", BTreeMap::new()))?;
     assert_eq!(game.frame(), expected.rgba);
+    game.message(call(
+        "OM_VramAgesImageIn",
+        BTreeMap::from([
+            ("画像ソースウインドウ".into(), Value::Reference(destination)),
+            ("スタイル".into(), Value::Integer(512)),
+        ]),
+    ))?;
+    assert!(matches!(
+        game.objects[&212259].layers[&512],
+        Layer::Screen(_)
+    ));
+    game.message(call("OM_SetWorldCamera", BTreeMap::new()))?;
+    game.message(call("OM_ParseScreenTrigger_AllHumanOut", BTreeMap::new()))?;
+    game.message(call("OM_UpdateAllView", BTreeMap::new()))?;
+    assert_eq!(game.frame(), expected.rgba);
+    game.objects.insert(
+        900,
+        ObjectState {
+            parent: Some(212259),
+            ..ObjectState::default()
+        },
+    );
+    for visible in [false, true] {
+        game.message(call(
+            "OM_ChangeAllBoxVisibility",
+            BTreeMap::from([("可視".into(), Value::Integer(i32::from(visible)))]),
+        ))?;
+        assert_eq!(game.objects[&900].visible, visible);
+        assert!(game.objects[&212259].visible);
+        assert!(!game.objects[&212650].visible);
+    }
     Ok(())
 }

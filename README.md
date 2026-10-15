@@ -170,8 +170,8 @@ The first-logo runtime regression executes the original startup messages and
 checks that the fully faded 1024x600 frame equals the decoded source pixels.
 The next startup regression exercises native framebuffer snapshots, CFadeNormal
 copying, the serialized CFadeMergeWhite curve, its blocking 800ms wait, and the
-subsequent white CBg2d background. Only full-screen blit regions are implemented;
-other effects, transformed regions, and timed offscreen blits remain unsupported.
+subsequent white CBg2d background. Region copying/scaling and specialized-effect
+fallbacks have since been added; timed offscreen blits remain unsupported.
 Native Cr6Ti world-display scales are preserved independently of pixels. The
 following startup screen's 0.5 bitmap scale and 1440 camera focal length now
 project to the full viewport, covered by a retail pixel-equality regression.
@@ -179,8 +179,8 @@ Static CBg2d world placement now preserves the serialized Q16 scale, base point,
 depth and pitch bias, independently of bitmap dimensions/display scale. The
 default simplified camera mode uses the native linear roll/pitch pan and Q16
 projection rounding; bank is unused in that mode. Translated camera positions,
-edge-clamping, nonzero transition/style modes and general 3D geometry remain
-incomplete and stop explicitly when requested.
+angular bounds and synchronized modes 4/8 (plus approximate mode 12) are now
+supported. Other styles and general 3D geometry remain incomplete.
 The software compositor now also has a perspective-correct quadrilateral path:
 reciprocal-depth texture interpolation, pixel-center sampling, object-viewport
 clipping, either winding, and shared-edge alpha coverage are tested against
@@ -266,7 +266,7 @@ Default-bound mode 0 is supported as well as explicit-region mode 0x11.
 Standard `0x6` text
 packet variants share the portable layout while retaining their explicit text
 control-code waits. The real-host first-choice autoplay probe has advanced
-more than 54 text waits, including the first character motion and later external
+109 text waits, including the first character motion and later external
 posture resources; full-game completion is not yet verified.
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
@@ -280,6 +280,9 @@ surface without presenting it; `OM_UpdateAllView` explicitly refreshes the
 logical scene; `OM_AgesRecalc` refreshes the portable geometry/rendered view.
 The native incremental queue-clear property 41 is accepted
 without discarding logical images/motions in the full-scene renderer.
+Captured-frame re-entry (`OM_VramAgesImageIn`) currently stages a fixed screen
+snapshot. Group visibility and all-character removal operate on the owning
+window's children; unrelated UI windows retain their visibility.
 Null-source sound operations 0/1 stop the effect/music group respectively,
 using the same group mapping for device audio and muted scheduling.
 Its inline `CPostureMoment#4` resources now retain typed numeric fields and

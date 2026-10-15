@@ -65,6 +65,7 @@ pub struct ObjectState {
     camera_center_y: Cell<i16>,
     pub world_layers: crate::world::WorldLayerFlags,
     pub opacity: u8,
+    parent: Option<u64>,
     pending_draw_ratio: Option<rugp_assets::mime::MimeCurve>,
     menu: Option<u64>,
     backdrop: Option<crate::message_window::Backdrop>,
@@ -88,6 +89,7 @@ impl Default for ObjectState {
             camera_center_y: Cell::new(0),
             world_layers: crate::world::WorldLayerFlags::default(),
             opacity: 255,
+            parent: None,
             pending_draw_ratio: None,
             menu: None,
             backdrop: None,
@@ -395,7 +397,21 @@ impl Game {
         {
             self.ensure_message_window(&target)?;
         }
+        if let Some(parent) = target.owner.as_ref().and_then(|r| r.offset) {
+            self.objects.entry(id).or_default().parent = Some(parent);
+        }
         match message.class.as_str() {
+            "OM_ChangeAllBoxVisibility" => {
+                let visible = number(&fields, "可視", 1)?;
+                ensure!(matches!(visible, 0 | 1), "invalid group visibility");
+                ensure!(
+                    number(&fields, "モード", 0)? == 0,
+                    "unsupported group visibility mode"
+                );
+                for object in self.objects.values_mut().filter(|o| o.parent == Some(id)) {
+                    object.visible = visible != 0;
+                }
+            }
             "OM_QueueFace2Data" => self.queue_character_face(id, &fields)?,
             "OM_SetLayerData2D" => self.set_character_layer(id, &fields)?,
             "OM_PlayMedia"
@@ -422,6 +438,12 @@ impl Game {
             }
             "OM_LoadImageArea" => self.load_image_area(id, &fields)?,
             "OM_ParseImageBuild" => self.build_parse_image(id, &fields)?,
+            "OM_VramAgesImageIn" => self.vram_image_in(id, &fields)?,
+            "OM_ParseScreenTrigger_AllHumanOut" => {
+                for object in self.objects.values_mut().filter(|o| o.parent == Some(id)) {
+                    object.character.remove(0);
+                }
+            }
             "OM_UpdateAllView" | "OM_AgesRecalc" => self.present_scene()?,
             "OM_AskUserSelectEx" => self.ask_selection(id, &fields)?,
             "OM_AccessGetValue" | "OM_AccessWrite" => {

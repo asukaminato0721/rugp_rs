@@ -58,6 +58,24 @@ fn place_region(
 }
 
 impl Game {
+    pub(super) fn vram_image_in(
+        &mut self,
+        id: u64,
+        fields: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let Some(Value::Reference(source)) = fields.get("画像ソースウインドウ") else {
+            bail!("captured image source missing")
+        };
+        let texture = self.surface(source)?;
+        let style = super::number(fields, "スタイル", 512)?;
+        self.buffers.remove(&id);
+        let object = self.objects.entry(id).or_default();
+        object.layers.clear();
+        object.layers.insert(style, Layer::Screen(texture));
+        object.menu = None;
+        object.properties.extend(fields.clone());
+        Ok(())
+    }
     pub(super) fn build_parse_image(
         &mut self,
         id: u64,
@@ -72,7 +90,11 @@ impl Game {
             .context("parse image source missing")?
             .render(&mut frame)?;
         for (&other_id, object) in &self.objects {
-            if other_id != id && object.visible && object.has_character_image() {
+            if other_id != id
+                && object.parent == Some(id)
+                && object.visible
+                && object.has_character_image()
+            {
                 object.render(&mut frame)?;
             }
         }
