@@ -344,6 +344,11 @@ input and exactly one voice callback (or none for unvoiced packets). The
 metadata-only `message_stats` example accepts `CVmMsg` to audit all output
 modifier counts and one representative call site per family without printing
 retail text.
+Signed message speeds at or below `-10` use their magnitude as a forced
+per-glyph delay (clamped to 3000 ms), with click-to-reveal disabled; they do
+not invent input waits in automatically continuing text. Ordinary negative
+speed settings inherit the configured user speed. A retail `-100` packet
+regression checks the exact clock endpoint and the voice start/stop pair.
 `CLayoutTextImg` ending resources are decoded with their font/style fields,
 text, extent, and typed `CSbm` reference arrays. `OM_PlayTextStaffrollVideo`
 scrolls the original labels in a separate window overlay with portable,

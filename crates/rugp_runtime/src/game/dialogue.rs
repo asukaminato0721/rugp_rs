@@ -9,6 +9,24 @@ pub(super) struct DialogueWait {
     target: u64,
     stream: Dialogue,
     voice: Option<ObjectRef>,
+    forced_clock: bool,
+}
+fn output_speed(value: i32, default: u32) -> Result<u32> {
+    ensure!(
+        i16::try_from(value).is_ok(),
+        "dialogue speed exceeds native signed word"
+    );
+    ensure!(default <= 3000, "invalid default dialogue speed");
+    // Vm60 10015b34 uses the configured speed for nonnegative values and
+    // the global speed for -1..-9. At 10015d78, <= -10 forces its magnitude,
+    // clears the reveal/skip input mode and clamps the delay to 3000 ms.
+    Ok(if value <= -10 {
+        (-value).min(3000) as u32
+    } else if value < 0 {
+        default
+    } else {
+        value.min(3000) as u32
+    })
 }
 fn supported_text_mode(flags: u32) -> bool {
     // The retail even-nibble families share the text/callback packet.
@@ -120,16 +138,11 @@ impl Game {
             [0x311, 0x711].contains(&layout),
             "unsupported dialogue layout {layout:#x}"
         );
-        let speed = number(&object.properties, "速度", -1)?;
-        ensure!(
-            (-1..=3000).contains(&speed),
-            "unsupported dialogue speed {speed}"
-        );
-        let speed = if speed < 0 {
-            self.message_config.as_ref().unwrap().speed_ms
-        } else {
-            speed as u32
-        };
+        let configured_speed = number(&object.properties, "速度", -1)?;
+        let speed = output_speed(
+            configured_speed,
+            self.message_config.as_ref().unwrap().speed_ms,
+        )?;
         let stream = Dialogue::new(&text, speed, self.message_windows[&id].page.clone())?;
         if let Some(source) = &voice {
             self.queue_sound(SoundRequest {
@@ -153,6 +166,7 @@ impl Game {
             target: id,
             stream,
             voice,
+            forced_clock: configured_speed <= -10,
         });
         self.dialogue_pressed = false;
         self.tick_dialogue(0)
@@ -202,6 +216,13 @@ impl Game {
     pub(super) fn advance_dialogue(&mut self) -> Result<()> {
         if self
             .dialogue
+            .as_ref()
+            .is_some_and(|d| d.forced_clock && !d.stream.waiting())
+        {
+            return Ok(());
+        }
+        if self
+            .dialogue
             .as_mut()
             .context("no pending dialogue")?
             .stream
@@ -216,6 +237,25 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn signed_output_speeds_keep_forced_delays_default_modes_and_native_clamp() -> Result<()> {
+        for (value, expected) in [
+            (0, 0),
+            (30, 30),
+            (-1, 17),
+            (-9, 17),
+            (-10, 10),
+            (-100, 100),
+            (-32768, 3000),
+            (32767, 3000),
+        ] {
+            assert_eq!(output_speed(value, 17)?, expected);
+        }
+        assert!(output_speed(i32::MIN, 17).is_err());
+        assert!(output_speed(32768, 17).is_err());
+        assert!(output_speed(-1, 3001).is_err());
+        Ok(())
+    }
     #[test]
     fn output_modifiers_do_not_reject_the_standard_text_packet_family() {
         for flags in [
@@ -254,7 +294,7 @@ mod tests {
         Ok(())
     }
     fn check_retail_packet(scene_id: usize, address: u32, modifiers: u32) -> Result<()> {
-        use rugp_assets::{object::ClassId, script::Script};
+        use rugp_assets::script::Script;
         use rugp_scene_vm::{Argument, Scenario};
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let mut game = Game::open(root.as_ref())?;
@@ -284,32 +324,7 @@ mod tests {
         message.address = 0;
         message.next_address = 48;
         message.arguments[1] = Argument::Text("probe\u{3}line\u{1}".into());
-        let mut program = Program::default();
-        program.insert(
-            0,
-            Scenario {
-                object_id: 1,
-                memory_size: 60,
-                null_records: vec![],
-                trailing_bytes: 0,
-                instructions: vec![
-                    message,
-                    Instruction {
-                        index: 1,
-                        stream_offset: 0,
-                        class: ClassId {
-                            name: "CVmRet".into(),
-                            schema: 17,
-                        },
-                        address: 48,
-                        next_address: u32::MAX,
-                        flags: 0,
-                        arguments: vec![],
-                    },
-                ],
-            },
-        )?;
-        game.vm = Vm::new(Arc::new(program), 1)?;
+        game.vm = message_then_return(message)?;
         assert_eq!(game.step(0)?, RunState::Waiting);
         assert!(!game.dialogue_waits_for_input());
         assert_eq!(
@@ -345,6 +360,111 @@ mod tests {
             has_voice
         );
         assert_eq!(game.step(0)?, RunState::Ended);
+        Ok(())
+    }
+    fn message_then_return(message: Instruction) -> Result<Vm> {
+        use rugp_assets::object::ClassId;
+        use rugp_scene_vm::Scenario;
+        let mut program = Program::default();
+        program.insert(
+            0,
+            Scenario {
+                object_id: 1,
+                memory_size: 60,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    message,
+                    Instruction {
+                        index: 1,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmRet".into(),
+                            schema: 17,
+                        },
+                        address: 48,
+                        next_address: u32::MAX,
+                        flags: 0,
+                        arguments: vec![],
+                    },
+                ],
+            },
+        )?;
+        Vm::new(Arc::new(program), 1)
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_negative_speed_runs_on_clock_without_click_skip_or_invented_input_wait() -> Result<()>
+    {
+        use rugp_assets::script::Script;
+        use rugp_scene_vm::{Argument, Scenario};
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 469)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let setting = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x9fd8)
+            .context("forced speed setting")?;
+        let setting = game.vm.message(setting)?;
+        assert_eq!(number(&setting.fields, "速度", 0)?, -100);
+        game.message(setting)?;
+        let mut message = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x9ff4)
+            .context("timed text packet")?
+            .clone();
+        let Argument::Text(text) = &message.arguments[1] else {
+            bail!("text missing");
+        };
+        assert!(!text.contains(['\u{1}', '\u{2}']));
+        message.address = 0;
+        message.next_address = 48;
+        message.arguments[1] = Argument::Text("probe".into());
+        game.vm = message_then_return(message)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert!(!game.dialogue_waits_for_input());
+        assert_eq!(
+            game.pending_sounds()
+                .iter()
+                .filter(|s| s.ticket.is_some())
+                .count(),
+            1
+        );
+        let before = game.frame().to_vec();
+        game.activate_selection()?;
+        assert_eq!(game.frame(), before);
+        assert_eq!(game.step(499)?, RunState::Waiting);
+        assert!(!game.dialogue_waits_for_input());
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        assert_eq!(
+            game.pending_sounds()
+                .iter()
+                .filter(|s| s.ticket.is_some())
+                .count(),
+            1
+        );
+        assert!(
+            game.frame()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p[..3] != [0; 3])
+        );
+        assert!(!game.pending_sounds().iter().any(|s| s.kind == 3));
+        assert_eq!(game.step(1)?, RunState::Ended);
+        assert!(!game.waiting_for_dialogue());
+        assert!(
+            game.pending_sounds()
+                .iter()
+                .any(|s| s.kind == 3 && s.source.is_some())
+        );
         Ok(())
     }
 }
