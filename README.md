@@ -341,6 +341,10 @@ text/voice flow while retaining their modifier words. Explicit text
 pauses/confirmation still apply; native callback mixing/style differences are
 not reproduced. Retail-packet regressions check actual font pixels, blocking
 input and a single voice callback.
+`CLayoutTextImg` ending resources are decoded with their font/style fields,
+text, extent, and typed `CSbm` reference arrays. All four retail text-layout
+resources pass the parser regression; this alone does not implement staff-roll
+playback or its synchronization.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

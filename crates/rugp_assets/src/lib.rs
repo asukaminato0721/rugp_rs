@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod fade;
 pub mod ici;
 pub mod image;
+pub mod layout_text;
 pub mod menu;
 pub mod message;
 pub mod mime;
