@@ -308,6 +308,7 @@ fn calls_returns_values_and_host_acknowledgement() {
         .unwrap();
     let mut vm = Vm::new(Arc::new(program), 1).unwrap();
     vm.variables.insert(600, Value::Integer(0));
+    assert!(vm.pending_instruction().is_none());
     assert!(vm.acknowledge_host().is_err());
     assert!(matches!(vm.step().unwrap(), Step::Advanced));
     assert_eq!(vm.call_depth(), 1);
@@ -318,8 +319,11 @@ fn calls_returns_values_and_host_acknowledgement() {
     for _ in 0..3 {
         assert!(matches!(vm.step().unwrap(), Step::Host { .. }));
         assert_eq!(vm.cursor().unwrap().address, 48);
+        assert_eq!(vm.pending_instruction().unwrap().class.name, "CVmMsg");
+        assert_eq!(vm.pending_instruction().unwrap().address, 48);
     }
     vm.acknowledge_host().unwrap();
+    assert!(vm.pending_instruction().is_none());
     vm.step().unwrap();
     assert_eq!(
         vm.cursor(),

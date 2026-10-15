@@ -22,6 +22,14 @@ fn reference(name: &str, schema: u16, offset: u64, size: u32) -> ObjectRef {
 fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
     let mut game = Game::open(root.as_ref())?;
+    for enabled in [false, true] {
+        game.message(Message {
+            class: "OM_SetUucSaveSwitch".into(),
+            target: Value::Null,
+            fields: BTreeMap::from([("フラグ".into(), Value::Integer(i32::from(enabled)))]),
+        })?;
+        assert_eq!(game.script_save_enabled(), enabled);
+    }
     let target = reference("CParseBgBox", 15, 212259, 118);
     let bg = reference("CBg2d", 6, 251819850, 3018612);
     let scene = rugp_assets::background::SceneBackground::parse(
@@ -84,7 +92,7 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
         "OM_SetWorldCameraAsScreen",
         BTreeMap::from([
             ("スタイル".into(), Value::Integer(0x800)),
-            ("フェード方式".into(), Value::Integer(12)),
+            ("フェード方式".into(), Value::Integer(16)),
             ("ズーム率".into(), Value::Integer(2000)),
         ]),
     ));
@@ -270,5 +278,24 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
     };
     assert_eq!(image.planes.len(), 1);
     assert!(!object.world_layers.draws_in_sprite_pass(3));
+    let mut expected = Framebuffer::new(1024, 600)?;
+    object.render(&mut expected)?;
+    let destination = reference("CImgAreaBox", 15, 212650, 91);
+    game.objects.insert(
+        212650,
+        ObjectState {
+            visible: false,
+            ..ObjectState::default()
+        },
+    );
+    let before_build = game.frame().to_vec();
+    game.message(call(
+        "OM_ParseImageBuild",
+        BTreeMap::from([("対象ウインドウ".into(), Value::Reference(destination))]),
+    ))?;
+    assert_eq!(game.buffers[&212650].rgba, expected.rgba);
+    assert_eq!(game.frame(), before_build); // construction alone is not presentation
+    game.message(call("OM_UpdateAllView", BTreeMap::new()))?;
+    assert_eq!(game.frame(), expected.rgba);
     Ok(())
 }

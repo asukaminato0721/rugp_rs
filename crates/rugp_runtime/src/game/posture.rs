@@ -1,17 +1,45 @@
 //! CParseBgBox OM_AddPostureMomentum, Vm60 10040fe0/10041bb0.
 use super::*;
 use crate::{motion::Motion, posture::PostureMotion};
-use rugp_assets::{motion::MotionCurve, posture::Posture};
+use rugp_assets::{
+    motion::{MotionCurve, MotionResource},
+    posture::Posture,
+};
+
+fn real_field(fields: &BTreeMap<String, Value>, name: &str) -> Result<f32> {
+    let value = match fields.get(name) {
+        None => 0.0,
+        Some(Value::Real(n)) => *n as f32,
+        Some(Value::Integer(n)) => f32::from_bits(*n as u32),
+        _ => bail!("invalid real posture parameter {name}"),
+    };
+    ensure!(value.is_finite(), "non-finite posture parameter {name}");
+    Ok(value)
+}
 
 #[derive(Clone)]
 pub(super) struct PostureInstance {
-    source: rugp_assets::object::InlineIdentity,
+    source: PostureIdentity,
     motion: PostureMotion,
 }
 pub(super) struct PostureWait {
-    source: rugp_assets::object::InlineIdentity,
+    source: PostureIdentity,
     snap: bool,
     remaining_ms: Option<u32>,
+}
+#[derive(Clone, PartialEq, Eq)]
+enum PostureIdentity {
+    Inline(rugp_assets::object::InlineIdentity),
+    Stored(u64),
+}
+impl PostureIdentity {
+    fn of(reference: &ObjectRef) -> Result<Self> {
+        Ok(if let Some(inline) = &reference.inline {
+            Self::Inline(inline.identity())
+        } else {
+            Self::Stored(reference.offset.context("posture identity missing")?)
+        })
+    }
 }
 
 impl Game {
@@ -27,25 +55,27 @@ impl Game {
             _ => bail!("invalid posture media reference"),
         };
         ensure!(
-            target
-                .class
-                .as_ref()
-                .is_some_and(|c| c.name == "CParseBgBox"),
+            target.class.as_ref().is_some_and(|c| matches!(
+                c.name.as_str(),
+                "CParseBgBox" | "CCharBox" | "CCharBox2"
+            )),
             "posture target class is not implemented yet"
         );
         let id = target.offset.context("posture target identity missing")?;
-        ensure!(
-            self.parse_transition.is_none() && self.transition.is_none(),
-            "posture activation during a screen transition is not implemented yet"
-        );
-        let posture = Posture::from_inline(
-            media
-                .inline
-                .as_ref()
-                .context("external posture is not implemented yet")?,
-            media.class.as_ref().context("posture class missing")?,
-        )?;
-        let source = media.inline.as_ref().unwrap().identity();
+        let class = media.class.as_ref().context("posture class missing")?;
+        let posture = if let Some(inline) = &media.inline {
+            Posture::from_inline(inline, class)?
+        } else {
+            Posture::parse(
+                &self.archive.read_at(
+                    media.offset.context("posture offset missing")?,
+                    media.size.context("posture extent missing")? as usize,
+                )?,
+                class,
+                self.archive.address_shift,
+            )?
+        };
+        let source = PostureIdentity::of(media)?;
         ensure!(
             !self
                 .objects
@@ -67,11 +97,23 @@ impl Game {
             } else {
                 let offset = reference.offset.context("motion offset missing")?;
                 let size = reference.size.context("motion size missing")?;
-                MotionCurve::parse(&self.archive.read_at(offset, size as usize)?, class)?
+                // Some external extents append native property data after the
+                // complete curve. Preserve it in the asset decoder; playback
+                // currently uses the validated curve without those properties.
+                MotionResource::parse(&self.archive.read_at(offset, size as usize)?, class)?.curve
             };
             *channel = Some(Motion::new(curve)?);
         }
         let mut motion = PostureMotion::new(&posture.fields, channels)?;
+        motion.configure_playback(
+            number(fields, "時間オフセット", 0)?,
+            real_field(fields, "時間スケール")?,
+            [
+                real_field(fields, "速度スケール")?,
+                real_field(fields, "角度スケール")?,
+                real_field(fields, "その他スケール")?,
+            ],
+        )?;
         let object = self.objects.entry(id).or_default();
         ensure!(
             object.pending_camera.is_none(),
@@ -93,10 +135,6 @@ impl Game {
         if !self.objects.values().any(|o| !o.postures.is_empty()) {
             return Ok(());
         }
-        ensure!(
-            self.parse_transition.is_none() && self.transition.is_none(),
-            "concurrent posture and screen transition is not implemented yet"
-        );
         for object in self.objects.values_mut() {
             let mut remaining = Vec::with_capacity(object.postures.len());
             // Validate the next state before committing either camera/history.
@@ -126,11 +164,7 @@ impl Game {
             matches!(mode, 16 | 17 | 32 | 33) && timeout >= 0,
             "unsupported posture synchronization mode/timeout {mode}/{timeout}"
         );
-        let source = reference
-            .inline
-            .as_ref()
-            .context("external posture synchronization is not implemented yet")?
-            .identity();
+        let source = PostureIdentity::of(reference)?;
         let active = self.posture_active(&source);
         if mode & 0x30 == 0x20 {
             self.finish_posture(&source, mode & 1 == 0)?;
@@ -147,16 +181,12 @@ impl Game {
             self.vm.acknowledge_host()
         }
     }
-    fn posture_active(&self, source: &rugp_assets::object::InlineIdentity) -> bool {
+    fn posture_active(&self, source: &PostureIdentity) -> bool {
         self.objects
             .values()
             .any(|o| o.postures.iter().any(|p| p.source == *source))
     }
-    fn finish_posture(
-        &mut self,
-        source: &rugp_assets::object::InlineIdentity,
-        snap: bool,
-    ) -> Result<()> {
+    fn finish_posture(&mut self, source: &PostureIdentity, snap: bool) -> Result<()> {
         let mut changed = false;
         for object in self.objects.values_mut() {
             if !object.postures.iter().any(|p| p.source == *source) {
@@ -258,6 +288,33 @@ mod tests {
             selector: 0,
             inline: None,
         }
+    }
+    #[test]
+    fn posture_source_keys_preserve_cached_inline_and_stored_instance_identity() -> Result<()> {
+        let first = media(400, 1);
+        assert!(PostureIdentity::of(&first)? == PostureIdentity::of(&first.clone())?);
+        assert!(PostureIdentity::of(&first)? != PostureIdentity::of(&media(400, 1))?);
+        let mut stored = target();
+        stored.class.as_mut().unwrap().name = "CPostureMoment".into();
+        let mut cached = stored.clone();
+        cached.cache_index = Some(99);
+        assert!(PostureIdentity::of(&stored)? == PostureIdentity::of(&cached)?);
+        cached.offset = Some(stored.offset.unwrap() + 1);
+        assert!(PostureIdentity::of(&stored)? != PostureIdentity::of(&cached)?);
+        Ok(())
+    }
+    #[test]
+    fn extended_real_parameters_accept_literals_and_raw_field_bits() -> Result<()> {
+        let fields = BTreeMap::from([
+            ("literal".into(), Value::Real(2.5)),
+            ("bits".into(), Value::Integer(1f32.to_bits() as i32)),
+            ("invalid".into(), Value::Real(f64::NAN)),
+        ]);
+        assert_eq!(real_field(&fields, "literal")?, 2.5);
+        assert_eq!(real_field(&fields, "bits")?, 1.0);
+        assert_eq!(real_field(&fields, "absent")?, 0.0);
+        assert!(real_field(&fields, "invalid").is_err());
+        Ok(())
     }
     fn install_sync(game: &mut Game, reference: ObjectRef, mode: i32) -> Result<()> {
         install_sync_timeout(game, reference, mode, 0)

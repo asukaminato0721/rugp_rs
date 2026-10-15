@@ -167,10 +167,9 @@ impl DeviceAudio {
             None
         };
         let Some(source) = request.source else {
-            match request.kind {
-                255 => self.mixer.stop_all(),
-                254 => self.mixer.stop_bus(Bus::Effect),
-                other => anyhow::bail!("unimplemented global sound operation {other}"),
+            match request.global_stop_bus()? {
+                Some(bus) => self.mixer.stop_bus(bus),
+                None => self.mixer.stop_all(),
             };
             return Ok(None);
         };

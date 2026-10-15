@@ -19,25 +19,26 @@ impl CharacterState {
         frame: &mut Framebuffer,
         viewport: (i32, i32, u32, u32),
         opacity: u8,
+        motion: &Camera,
     ) -> Result<()> {
         let Some(texture) = &self.texture else {
             return Ok(());
         };
         // Readable static standing portraits until native world-sprite
         // projection is ported. Preserve relative horizontal/depth placement.
-        let depth = if self.position[2] > 0 {
-            self.position[2]
-        } else {
-            1120
-        } as f64;
-        let height = (f64::from(viewport.3) * 1120.0 / depth).clamp(1.0, 16384.0);
+        let position =
+            std::array::from_fn::<_, 3, _>(|i| self.position[i].saturating_add(motion.position[i]));
+        let depth = if position[2] > 0 { position[2] } else { 1120 } as f64;
+        let height = (f64::from(viewport.3) * 1120.0 / depth * f64::from(motion.focal_length)
+            / 720.0)
+            .clamp(1.0, 16384.0);
         let width = height * f64::from(texture.width) / f64::from(texture.height);
         let x = f64::from(viewport.0)
             + f64::from(viewport.2) * 0.5
-            + f64::from(self.position[0]) * 720.0 / depth
+            + f64::from(position[0]) * 720.0 / depth
             - width * 0.5;
         let y = f64::from(viewport.1) + f64::from(viewport.3) - height
-            + f64::from(self.position[1]) * 720.0 / depth;
+            + f64::from(position[1]) * 720.0 / depth;
         frame.blit(
             texture,
             (
@@ -177,6 +178,10 @@ mod tests {
         let frame = Game::render_objects(&objects, (16, 16))?;
         assert_eq!(&frame.rgba[(8 * 16 + 8) * 4..][..4], &[255, 0, 0, 255]);
         assert_eq!(&frame.rgba[(14 * 16 + 8) * 4..][..4], &[0, 0, 255, 255]);
+        objects.get_mut(&2).unwrap().camera.position[0] = 4;
+        let moved = Game::render_objects(&objects, (16, 16))?;
+        assert_eq!(&moved.rgba[(8 * 16 + 4) * 4..][..4], &[0, 0, 0, 255]);
+        objects.get_mut(&2).unwrap().camera = Camera::default();
         let character = &mut objects.get_mut(&2).unwrap().character;
         character.position[2] = 2240;
         character.remove(1);

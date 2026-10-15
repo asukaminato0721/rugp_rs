@@ -50,7 +50,7 @@ impl Game {
         let style = number(&fields, "スタイル", 0)?;
         let fade = number(&fields, "フェード方式", 0)?;
         ensure!(
-            matches!(style, 0..=15 | 0x800) && matches!(fade, 0 | 4 | 8),
+            matches!(style, 0..=15 | 0x800) && matches!(fade, 0 | 4 | 8 | 12),
             "camera style/transition is not implemented yet"
         );
         number(&fields, "総処理時間基", 0)?; // synchronized mode uses the ParseScreen clock
@@ -94,7 +94,9 @@ impl Game {
                 .and_then(|o| o.pending_camera)
                 .map(|t| t.rebase_start(target))
                 .transpose()?
-        } else if matches!(fade, 4 | 8) {
+        } else if matches!(fade, 4 | 8 | 12) {
+            // Mode 12 shares the portable absolute interpolation clock. Its
+            // native spatial/effect presentation is intentionally approximate.
             let start = object.map_or(Camera::default(), |o| o.camera_start.unwrap_or(o.camera));
             Some(CameraTween::new(start, target, style as u8)?)
         } else {

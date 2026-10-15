@@ -151,6 +151,38 @@ fn external_motion_extents_preserve_uninterpreted_trailers() -> Result<()> {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
+fn standalone_postures_keep_bound_motion_references() -> Result<()> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+    let archive = RioArchive::open(&root)?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+    let mut count = 0;
+    for resource in index
+        .resources
+        .values()
+        .filter(|r| r.class.name == "CPostureMoment" && r.size > 3)
+    {
+        let bytes = index.read(&archive, resource.offset)?;
+        let posture =
+            rugp_assets::posture::Posture::parse(&bytes, &resource.class, archive.address_shift)?;
+        assert_eq!(posture.references.len(), 5);
+        for channel in &posture.references[2..] {
+            if let Some(class) = &channel.class {
+                assert_eq!(class.name, "CMoveAcsOngen");
+                assert!(
+                    channel.inline.is_some()
+                        || (channel.offset.is_some() && channel.size.is_some())
+                );
+            }
+        }
+        count += 1;
+    }
+    assert!(count > 0);
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
 fn kiminozo_le_startup_control_flow() -> Result<()> {
     use rugp_scene_vm::vm::{Cursor, Program, Step, Vm};
     let root = std::env::var_os("RUGP_TEST_GAME")

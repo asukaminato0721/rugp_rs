@@ -3,7 +3,29 @@
 //! Reports counters/cursors, never retail dialogue or asset data.
 use anyhow::{Context, Result};
 use rugp_runtime::{Game, RunState, audio::mute_requests};
+use rugp_scene_vm::vm::Value;
 use std::collections::BTreeSet;
+
+fn describe(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Integer(n) => n.to_string(),
+        Value::Real(n) => n.to_string(),
+        Value::Reference(r) => {
+            let class = r
+                .class
+                .as_ref()
+                .map_or("untyped object", |c| c.name.as_str());
+            if let Some(offset) = r.offset {
+                format!("{class}@{offset:#x}+{}", r.size.unwrap_or(0))
+            } else {
+                class.into()
+            }
+        }
+        Value::Text(s) => format!("<text: {} bytes>", s.len()),
+        Value::Bytes(b) => format!("<bytes: {}>", b.len()),
+    }
+}
 
 fn main() -> Result<()> {
     let root = std::env::args_os().nth(1).context("game root")?;
@@ -45,13 +67,33 @@ fn main() -> Result<()> {
                 scenes.len()
             );
         }
-        match game.step(if tick == 0 {0} else {dt}) {
+        match game.step(if tick == 0 { 0 } else { dt }) {
             Ok(RunState::Ended) => {
-                println!("ended tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds}", scenes.len());
+                println!(
+                    "ended tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds}",
+                    scenes.len()
+                );
                 return Ok(());
             }
-            Ok(_) => {},
-            Err(error) => return Err(error.context(format!("autoplay tick={tick}, scenes={}, pages={dialogue_pages}, choices={choices}, sounds={sounds}", scenes.len()))),
+            Ok(_) => {}
+            Err(error) => {
+                if let Some(ins) = game.vm.pending_instruction()
+                    && ins.class.name == "CVmGenericMsg"
+                    && let Ok(message) = game.vm.message(ins)
+                {
+                    eprintln!(
+                        "host {} target={}: {:?}",
+                        message.class,
+                        describe(&message.target),
+                        message
+                            .fields
+                            .iter()
+                            .map(|(key, value)| (key, describe(value)))
+                            .collect::<std::collections::BTreeMap<_, _>>()
+                    );
+                }
+                return Err(error.context(format!("autoplay tick={tick}, scenes={}, pages={dialogue_pages}, choices={choices}, sounds={sounds}", scenes.len())));
+            }
         }
     }
     anyhow::bail!(

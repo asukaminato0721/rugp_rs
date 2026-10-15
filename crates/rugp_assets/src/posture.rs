@@ -39,6 +39,19 @@ pub struct Posture {
     pub references: [ObjectRef; 5],
 }
 impl Posture {
+    pub fn parse(data: &[u8], class: &ClassId, shift: u32) -> Result<Self> {
+        let mut reader = ObjectReader::new(data);
+        reader.input.skip(3)?;
+        reader.scrambled = true;
+        reader.pad(3)?; // Standalone RIO object/class context, like CPm/CBg2d.
+        let posture = Self::read_body(&mut reader, class, shift)?;
+        ensure!(
+            reader.input.remaining() == 0,
+            "{} trailing posture bytes",
+            reader.input.remaining()
+        );
+        Ok(posture)
+    }
     pub fn from_inline(inline: &InlineObject, class: &ClassId) -> Result<Self> {
         validate_class(class)?;
         Ok(Self {

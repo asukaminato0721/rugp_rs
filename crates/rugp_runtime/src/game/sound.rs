@@ -3,6 +3,17 @@ use crate::audio_envelope::GainEnvelope;
 use crate::audio_state::Bus;
 
 impl SoundRequest {
+    /// Null-source native operations address channel groups, not PCM sources.
+    /// `None` denotes every bus; zero stops the native 3..11 effect group.
+    pub fn global_stop_bus(&self) -> Result<Option<Bus>> {
+        ensure!(self.source.is_none(), "global sound command has a source");
+        match self.kind {
+            0 | 254 => Ok(Some(Bus::Effect)),
+            1 => Ok(Some(Bus::Bgm)),
+            255 => Ok(None),
+            other => bail!("unsupported global sound operation {other}"),
+        }
+    }
     pub fn gain_envelope(&self) -> Result<GainEnvelope> {
         // The native execution path does not inspect bit 1. Bit 0 waits for
         // playback; bit 2 enables a different, extended acoustic packet.
@@ -51,10 +62,9 @@ impl Game {
                 other => bail!("unsupported sound operation {other}"),
             }
         } else {
-            match request.kind {
-                255 => self.audio_state.stop_all(),
-                254 => self.audio_state.stop_bus(Bus::Effect),
-                other => bail!("unsupported global sound operation {other}"),
+            match request.global_stop_bus()? {
+                Some(bus) => self.audio_state.stop_bus(bus),
+                None => self.audio_state.stop_all(),
             }
         }
         let waiting = request.ticket.is_some() && request.flags & 1 != 0;
@@ -96,6 +106,28 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn global_channel_commands_share_device_and_muted_group_mapping() -> Result<()> {
+        let mut request = SoundRequest {
+            ticket: None,
+            source: None,
+            kind: 0,
+            flags: 0,
+            parameters: [4096, 0, 1000],
+        };
+        for (kind, bus) in [
+            (0, Some(Bus::Effect)),
+            (1, Some(Bus::Bgm)),
+            (254, Some(Bus::Effect)),
+            (255, None),
+        ] {
+            request.kind = kind;
+            assert_eq!(request.global_stop_bus()?, bus);
+        }
+        request.kind = 2;
+        assert!(request.global_stop_bus().is_err());
+        Ok(())
+    }
     #[test]
     fn native_play_modes_validate_envelopes_and_do_not_reinterpret_flags() -> Result<()> {
         let mut request = SoundRequest {

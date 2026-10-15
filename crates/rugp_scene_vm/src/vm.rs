@@ -220,6 +220,15 @@ impl Vm {
     pub fn call_depth(&self) -> usize {
         self.stack.len()
     }
+    /// Inspect a failed/suspended host operation without executing another step.
+    pub fn pending_instruction(&self) -> Option<&Instruction> {
+        if !self.pending_host {
+            return None;
+        }
+        self.frame
+            .as_ref()
+            .and_then(|frame| self.program.instruction(&frame.cursor).ok())
+    }
     fn parameter_place(&self, r: &ObjectRef) -> Result<Option<Place>> {
         if r.flags & 7 != 1 {
             return Ok(None);

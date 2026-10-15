@@ -15,6 +15,8 @@ pub struct PostureMotion {
     modes: [u16; 3],
     previous: [[i32; 3]; 3],
     elapsed: i32,
+    time_scale: f64,
+    time_fraction: f64,
 }
 impl PostureMotion {
     pub fn new(fields: &PostureFields, channels: [Option<Motion>; 3]) -> Result<Self> {
@@ -33,6 +35,8 @@ impl PostureMotion {
             modes: [fields.position_mode, fields.angle_mode, fields.other_mode],
             previous: [[0; 3]; 3],
             elapsed: 0,
+            time_scale: 1.0,
+            time_fraction: 0.0,
         })
     }
     /// 1001e070 returns the first non-null channel's duration, not the maximum.
@@ -45,6 +49,39 @@ impl PostureMotion {
     }
     pub fn elapsed_ms(&self) -> i32 {
         self.elapsed
+    }
+    /// Extended activation parameters. Zero scale fields retain the source
+    /// settings; fractional scaled milliseconds accumulate across small ticks.
+    pub fn configure_playback(
+        &mut self,
+        offset_ms: i32,
+        time_scale: f32,
+        scales: [f32; 3],
+    ) -> Result<()> {
+        ensure!(
+            time_scale.is_finite() && time_scale >= 0.0,
+            "invalid posture time scale"
+        );
+        ensure!(
+            scales.iter().all(|s| s.is_finite()),
+            "invalid posture channel multiplier"
+        );
+        let combined = std::array::from_fn(|i| {
+            self.scales[i] * if scales[i] == 0.0 { 1.0 } else { scales[i] }
+        });
+        ensure!(
+            combined.iter().all(|s| s.is_finite()),
+            "posture channel scale overflow"
+        );
+        self.scales = combined;
+        self.time_scale = if time_scale == 0.0 {
+            1.0
+        } else {
+            f64::from(time_scale)
+        };
+        self.elapsed = offset_ms;
+        self.time_fraction = 0.0;
+        Ok(())
     }
     pub fn active(&self) -> bool {
         self.channels
@@ -61,7 +98,10 @@ impl PostureMotion {
     /// Timed sampling uses existing camera values and native wrapping deltas.
     /// The caller applies world bounds *after* all channels have been sampled.
     pub fn advance(&mut self, camera: Camera, dt_ms: u32) -> Camera {
-        self.elapsed = self.elapsed.wrapping_add(dt_ms as i32);
+        let scaled = f64::from(dt_ms) * self.time_scale + self.time_fraction;
+        let whole = scaled.floor();
+        self.time_fraction = scaled - whole;
+        self.elapsed = self.elapsed.wrapping_add(ftol(whole));
         self.apply(camera, false)
     }
     pub fn apply_end(&mut self, camera: Camera) -> Camera {
@@ -143,6 +183,33 @@ mod tests {
             other_mode: 1,
             scales: [0.1, 1.0, 1.0],
         }
+    }
+    #[test]
+    fn extended_offset_rate_and_scales_preserve_fractional_time_and_expiry() -> Result<()> {
+        let mut posture =
+            PostureMotion::new(&fields(), [Some(motion([100, 0, 0], 100)), None, None])?;
+        posture.configure_playback(10, 0.25, [2.0, 0.0, 0.0])?;
+        let camera = posture.advance(Camera::default(), 4);
+        assert_eq!(posture.elapsed_ms(), 11);
+        assert_eq!(camera.position[0], 2);
+        let camera = posture.advance(camera, 1);
+        assert_eq!(posture.elapsed_ms(), 11);
+        let camera = posture.advance(camera, 3);
+        assert_eq!(posture.elapsed_ms(), 12);
+        let camera = posture.advance(camera, 352);
+        assert_eq!(posture.elapsed_ms(), 100);
+        assert_eq!(camera.position[0], 20);
+        assert!(posture.active());
+        posture.advance(camera, 4);
+        assert!(!posture.active());
+        assert!(posture.configure_playback(0, -1.0, [0.0; 3]).is_err());
+        assert!(posture.configure_playback(0, f32::NAN, [0.0; 3]).is_err());
+        assert!(
+            posture
+                .configure_playback(0, 1.0, [f32::INFINITY; 3])
+                .is_err()
+        );
+        Ok(())
     }
     #[test]
     fn start_resets_serialized_history_and_repeated_samples_do_not_accumulate() -> Result<()> {

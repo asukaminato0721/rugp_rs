@@ -258,16 +258,30 @@ above portraits regardless of serialized object-address ordering.
 Script helper functions can initialize local parameter slots not supplied by
 the caller; assignment does not first read an uninitialized destination.
 Region blits now crop/scale between differently sized surfaces and preserve
-pixels outside the destination region. `CFadeShock` currently uses its common
-transition curve/wait without the displacement effect. Standard `0x6` text
+pixels outside the destination region. Known specialized CFade#12 classes
+(rotation, stretch, mosaic, raster and shock effects) currently use their common
+transition curve/wait without native displacement/deformation. Their envelope
+layouts share one decoder table, with prefix/tail and truncation regressions.
+Default-bound mode 0 is supported as well as explicit-region mode 0x11.
+Standard `0x6` text
 packet variants share the portable layout while retaining their explicit text
 control-code waits. The real-host first-choice autoplay probe has advanced
-42 text waits and now reaches `OM_AddPostureMomentumEx` at scene 23, PC `0x0`,
-the next unimplemented boundary; full-game completion is not yet verified.
+more than 54 text waits, including the first character motion and later external
+posture resources; full-game completion is not yet verified.
 Billboard queue parameters, character posture/scaling parameters and character
-material property 100 are retained without exact geometry/deformation. The
+material property 100 and shading packets are retained without exact
+geometry/deformation/tinting. The
 `CLayerSimpleFlush` parameter packets are retained; playback currently completes
 instantly without rendering that layer effect, including wait/query completion.
+`OM_SetUucSaveSwitch` retains the script's save-enable state even when sent to
+the global/unbound system target. This is not a complete save-slot implementation.
+`OM_ParseImageBuild` renders the world and visible portraits into an offscreen
+surface without presenting it; `OM_UpdateAllView` explicitly refreshes the
+logical scene; `OM_AgesRecalc` refreshes the portable geometry/rendered view.
+The native incremental queue-clear property 41 is accepted
+without discarding logical images/motions in the full-scene renderer.
+Null-source sound operations 0/1 stop the effect/music group respectively,
+using the same group mapping for device audio and muted scheduling.
 Its inline `CPostureMoment#4` resources now retain typed numeric fields and
 all five context-bound references during the original archive-reading pass.
 Inner versions 0–2, conditional vectors/modes, signed vectors and finite channel
@@ -285,14 +299,23 @@ pending until natural completion or a supplied timeout, without replaying the
 motion. Mode 32 queries active status and forces the endpoint; timeout callbacks
 likewise distinguish snap-to-end from cancellation. The host regression covers
 inclusive endpoints, actual VM suspension, identity and a timed-out loop.
-Prepared-state option 1 and concurrent screen transitions remain unsupported.
+`OM_AddPostureMomentumEx` accepts character targets as well as backgrounds,
+with offset, positive time scale and channel multipliers. Fractional scaled
+milliseconds are retained between ticks. Portrait placement now uses motion
+position/depth/zoom; native rotations remain approximate. Postures can continue
+while screen transitions redraw, without an exact native backing-cache model.
+Prepared-state option 1 remains unsupported.
+Standalone posture resources now retain all five references with the RIO object
+cache context; stored offsets identify their playback/wait instances independently
+of inline object identities.
 `CMoveAcsOngen#3` now retains sequential segment endpoints, X/Z compact vectors,
 Bezier controls, timing modes, flags and embedded quadratic/Bezier time curves.
 Timing instances and class reuse share the original archive cache. Tests cover
 synthetic truncations, cache reuse and all 146 retail inline motion records.
 Four external motion bodies also parse; two extents have an unexplained 26-byte
-trailer that is retained explicitly for inspection, not accepted as executable
-motion data. No retail coordinates or curve tables are included in the repo.
+trailer that is retained explicitly for inspection. Playback now uses their
+validated curve and ignores those opaque trailing properties. No retail
+coordinates or curve tables are included in the repo.
 Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
@@ -311,8 +334,9 @@ the window backing-cache flag that mode 8 sets, but both receive the same
 ParseScreen progress and easing; neither starts a timer from the camera
 message's duration field. The full-scene renderer rebuilds pixels instead of
 using those incremental window backing caches.
-Alternate mode 12, additive/relative styles and active-camera
-replacement remain explicitly unsupported.
+Mode 12 now uses the portable synchronized absolute interpolation as a
+playability fallback; its native rotation/spatial effect is not reproduced.
+Additive/relative styles and active-camera replacement remain unsupported.
 Absolute XYZ camera positions now apply in instant mode and animated modes 4/8,
 including signed-floor interpolation, captured starts and combined screen-zoom
 commands. World planes subtract the camera position before projecting at their

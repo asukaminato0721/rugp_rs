@@ -75,6 +75,28 @@ fn inline_posture_versions_keep_following_objects_aligned() {
 }
 
 #[test]
+fn standalone_posture_prefix_context_and_every_truncation() {
+    let class = ClassId {
+        name: "CPostureMoment".into(),
+        schema: 4,
+    };
+    for (version, tail) in [(0, 56), (1, 56), (2, 70)] {
+        let mut data = vec![0; 3];
+        data.extend([1, version, 0, 0]);
+        data.extend([0; 10]);
+        data.resize(data.len() + tail, 0);
+        let posture = rugp_assets::posture::Posture::parse(&data, &class, 0).unwrap();
+        assert_eq!(posture.fields.version, version);
+        assert_eq!(posture.references.len(), 5);
+        for length in 0..data.len() {
+            assert!(rugp_assets::posture::Posture::parse(&data[..length], &class, 0).is_err());
+        }
+        data.push(0);
+        assert!(rugp_assets::posture::Posture::parse(&data, &class, 0).is_err());
+    }
+}
+
+#[test]
 fn corrupt_object_headers_and_class_cache_fail_without_panicking() {
     for len in 0..16 {
         let data = vec![0; len];

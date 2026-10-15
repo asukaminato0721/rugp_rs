@@ -58,6 +58,34 @@ fn place_region(
 }
 
 impl Game {
+    pub(super) fn build_parse_image(
+        &mut self,
+        id: u64,
+        fields: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let Some(Value::Reference(destination)) = fields.get("対象ウインドウ") else {
+            bail!("parse image destination missing")
+        };
+        let mut frame = Framebuffer::new(self.frame.width, self.frame.height)?;
+        self.objects
+            .get(&id)
+            .context("parse image source missing")?
+            .render(&mut frame)?;
+        for (&other_id, object) in &self.objects {
+            if other_id != id && object.visible && object.has_character_image() {
+                object.render(&mut frame)?;
+            }
+        }
+        self.write_surface(
+            destination,
+            Texture {
+                width: frame.width,
+                height: frame.height,
+                display_scale: 1.0,
+                rgba: frame.rgba,
+            },
+        )
+    }
     fn surface(&mut self, reference: &ObjectRef) -> Result<Arc<Texture>> {
         let id = reference.offset.context("surface has no bound object")?;
         if id == self.primary_buffer {
@@ -150,16 +178,25 @@ impl Game {
         let [Argument::Bytes(data), source, background, destination] = arguments.as_slice() else {
             bail!("invalid fade reference fields");
         };
-        let fade = Fade::from_inline(&class.name, data)?;
+        let mut fade = Fade::from_inline(&class.name, data)?;
         ensure!(
-            fade.mode == 0x11,
+            matches!(fade.mode, 0 | 0x11),
             "unsupported fade region mode {:#x}",
             fade.mode
         );
-        ensure!(
-            self.vm.evaluate(control)?.integer()? == 0 && self.vm.evaluate(flags)?.integer()? == 0,
-            "unsupported blit control flags"
-        );
+        if fade.mode == 0 {
+            // Default surface bounds. Specialized stretch records also retain
+            // initial strip geometry, which is not their final image crop.
+            fade.rectangles = [[0; 4]; 3];
+        }
+        let control = self.vm.evaluate(control)?.integer()?;
+        let flags = self.vm.evaluate(flags)?.integer()?;
+        if matches!(
+            class.name.as_str(),
+            "CFadeNormal" | "CFadeMergeBlack" | "CFadeMergeWhite" | "CFadeMergeColor"
+        ) {
+            ensure!(control == 0 && flags == 0, "unsupported blit control flags");
+        } // Spatial fallbacks omit their effect-specific control words.
         let blocking = self.vm.evaluate(blocking)?.integer()?;
         ensure!(blocking == 0 || blocking == 1, "invalid blit wait mode");
         let duration = self.vm.evaluate(duration)?.integer()?;

@@ -35,9 +35,49 @@ fn native_curve_interpolation_and_color() -> Result<()> {
     for len in 0..data.len() {
         assert!(Fade::from_inline("CFadeMergeColor", &data[..len]).is_err());
     }
-    assert!(Fade::from_inline("CFadeMozaik", &data).is_err());
+    assert!(Fade::from_inline("CFadeUnknown", &data).is_err());
     let mut data = body(false);
     data[38..40].copy_from_slice(&0u16.to_le_bytes());
     assert!(Fade::from_inline("CFadeNormal", &data).is_err());
+    Ok(())
+}
+
+#[test]
+fn specialized_effects_retain_common_regions_and_clock_with_bounded_envelopes() -> Result<()> {
+    for (class, prefix, extra) in [
+        ("CFadeSdtRatio", 0, 0),
+        ("CFadeRSideCarten", 0, 0),
+        ("CFadeMozaik", 0, 0),
+        ("CFadeMulHorz", 0, 0),
+        ("CFadeInvert", 0, 0),
+        ("CFadeXsRatio", 0, 6),
+        ("CFadeXsMergeBlack", 0, 6),
+        ("CFadeStretchAnti", 0, 17),
+        ("CFadeStretch", 0, 17),
+        ("CFadeOverStretchAnti", 0, 25),
+        ("CFadeXsOverStretchAnti", 0, 30),
+        ("CFadeQubeStretchAnti", 0, 44),
+        ("CFadeXsRasterNoize", 0, 23),
+        ("CFadeCarten", 6, 0),
+        ("CFadeSdtCircleRaster", 15, 0),
+        ("CFadeXsSqrRaster_HRasterV_VRasterH", 0, 17),
+        ("CFadeXsHRasterHOffset", 0, 17),
+        ("CFadeXsSrcRotate", 0, 24),
+        ("CFadeXsCircleRaster", 0, 21),
+    ] {
+        let mut data = vec![0; prefix];
+        data.extend(body(false));
+        data.resize(data.len() + extra, 0);
+        let fade = Fade::from_inline(class, &data)?;
+        assert_eq!(fade.rectangles[0], [0, 0, 1024, 600], "{class}");
+        assert_eq!(fade.curve.alpha(125, 1000), 64, "{class}");
+        assert_eq!(fade.curve.alpha(1000, 1000), 256, "{class}");
+        for end in 0..data.len() {
+            assert!(
+                Fade::from_inline(class, &data[..end]).is_err(),
+                "{class}, end {end}"
+            );
+        }
+    }
     Ok(())
 }

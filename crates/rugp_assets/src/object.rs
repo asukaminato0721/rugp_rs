@@ -358,61 +358,14 @@ impl<'a> ObjectReader<'a> {
                 posture = Some(Box::new(parsed.fields));
             }
             (name, 12) if name.starts_with("CFade") => {
-                ensure!(
-                    [
-                        "CFadeNormal",
-                        "CFadeSdtRatio",
-                        "CFadeRSideCarten",
-                        "CFadeMozaik",
-                        "CFadeMulHorz",
-                        "CFadeInvert",
-                        "CFadeShock",
-                        "CFadeXsRatio",
-                        "CFadeXsMergeBlack",
-                        "CFadeStretchAnti",
-                        "CFadeOverStretchAnti",
-                        "CFadeXsOverStretchAnti",
-                        "CFadeQubeStretchAnti",
-                        "CFadeXsRasterNoize",
-                        "CFadeCarten",
-                        "CFadeXsSqrRaster_HRasterV_VRasterH",
-                        "CFadeXsSrcRotate",
-                        "CFadeXsCircleRaster",
-                        "CFadeXsHRasterHOffset",
-                        "CFadeMergeBlack",
-                        "CFadeMergeWhite",
-                        "CFadeMergeColor",
-                        "CFadeStretch",
-                        "CFadeSdtCircleRaster"
-                    ]
-                    .contains(&name),
-                    "unsupported inline effect {name}"
-                );
-                if name == "CFadeCarten" {
-                    self.input.skip(6)?;
-                }
-                if name == "CFadeSdtCircleRaster" {
-                    self.input.skip(15)?;
-                }
+                let (prefix, tail) = crate::fade::envelope_layout(name)?;
+                self.input.skip(prefix)?;
                 let count = self.input.u16()? as usize;
                 self.input.u16()?;
                 for _ in 0..3 {
                     references.push(self.reference(shift)?);
                 }
                 self.input.skip(24 + count * 4)?;
-                let tail = match name {
-                    "CFadeXsRatio" | "CFadeXsMergeBlack" => 6,
-                    "CFadeStretchAnti" | "CFadeStretch" => 17,
-                    "CFadeOverStretchAnti" => 25,
-                    "CFadeXsOverStretchAnti" => 30,
-                    "CFadeQubeStretchAnti" => 44,
-                    "CFadeXsRasterNoize" => 23,
-                    "CFadeXsSqrRaster_HRasterV_VRasterH" | "CFadeXsHRasterHOffset" => 17,
-                    "CFadeXsSrcRotate" => 24,
-                    "CFadeXsCircleRaster" => 21,
-                    "CFadeMergeWhite" | "CFadeMergeColor" => 4,
-                    _ => 0,
-                };
                 self.input.skip(tail)?;
             }
             (name, schema) => bail!("unsupported inline class {name}#{schema} at {start:#x}"),

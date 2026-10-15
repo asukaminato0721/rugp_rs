@@ -132,7 +132,8 @@ impl ObjectState {
                 Layer::Screen(texture) => frame.blit(texture, self.rect, self.opacity)?,
             }
         }
-        self.character.render(frame, self.rect, self.opacity)?;
+        self.character
+            .render(frame, self.rect, self.opacity, &self.camera)?;
         Ok(())
     }
 }
@@ -173,6 +174,7 @@ pub struct Game {
     pointer_inside: bool,
     dialogue_pressed: bool,
     pub navigation: String,
+    script_save_enabled: bool,
     pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
     ended: bool,
 }
@@ -226,12 +228,17 @@ impl Game {
             pointer_inside: false,
             dialogue_pressed: false,
             navigation: String::new(),
+            script_save_enabled: true,
             settings: BTreeMap::new(),
             ended: false,
         })
     }
     pub fn size(&self) -> (u32, u32) {
         (self.frame.width, self.frame.height)
+    }
+    /// Script permission flag only; complete VM/game save slots are not yet implemented.
+    pub fn script_save_enabled(&self) -> bool {
+        self.script_save_enabled
     }
     /// Desktop sessions use a per-game user-data folder. The ordinary `open`
     /// remains volatile for deterministic diagnostics and tests.
@@ -351,6 +358,15 @@ impl Game {
     }
     fn message(&mut self, message: Message) -> Result<()> {
         let fields = message.fields;
+        if message.class == "OM_SetUucSaveSwitch" {
+            let enabled = number(&fields, "フラグ", 1)?;
+            ensure!(
+                matches!(enabled, 0 | 1),
+                "invalid script save switch {enabled}"
+            );
+            self.script_save_enabled = enabled != 0;
+            return Ok(());
+        }
         if message.class == "OM_SetUucNavigateString" {
             let Some(Value::Text(text)) = fields.get("現在状況説明文") else {
                 bail!("invalid navigation text");
@@ -396,13 +412,17 @@ impl Game {
                     .properties
                     .extend(fields);
             }
-            "OM_AddPostureMomentum" => self.add_posture(&target, &fields)?,
+            "OM_AddPostureMomentum" | "OM_AddPostureMomentumEx" => {
+                self.add_posture(&target, &fields)?
+            }
             "OM_SetVarData" => self.set_var_data(&target, &fields)?,
             "OM_SetDrawRatioAsParseWnd" => self.set_draw_ratio(&target, &fields)?,
             "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
                 self.configure_menu(&target, &message.class, &fields)?
             }
             "OM_LoadImageArea" => self.load_image_area(id, &fields)?,
+            "OM_ParseImageBuild" => self.build_parse_image(id, &fields)?,
+            "OM_UpdateAllView" | "OM_AgesRecalc" => self.present_scene()?,
             "OM_AskUserSelectEx" => self.ask_selection(id, &fields)?,
             "OM_AccessGetValue" | "OM_AccessWrite" => {
                 self.access_profile(&target, &message.class, &fields)?
@@ -438,6 +458,7 @@ impl Game {
             | "OM_SetBBInfoForQueue"
             | "OM_SetDataCPostureMoment"
             | "OM_SetRmtInfoScaling"
+            | "OM_SetShading"
             | "OM_SetExclusiveCamera"
             | "OM_SetWorldSXY"
             | "OM_StoreFrameImage"

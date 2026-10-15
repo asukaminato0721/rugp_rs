@@ -645,7 +645,7 @@ mod tests {
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_camera_parse_clock_zoom_pan_and_opacity_match_inverse_pixel_oracle() -> Result<()> {
-        for mode in [4, 8] {
+        for mode in [4, 8, 12] {
             camera_parse_clock_pixels(mode)?;
         }
         Ok(())
@@ -746,7 +746,10 @@ mod tests {
                 ("ロール角".into(), Value::Integer(1)),
                 ("ピッチ角".into(), Value::Integer(-2)),
                 ("バンク角".into(), Value::Integer(3)),
-                ("フェード方式".into(), Value::Integer(12 - mode)), // combine modes 4/8
+                (
+                    "フェード方式".into(),
+                    Value::Integer(if mode == 4 { 8 } else { 4 }),
+                ),
                 ("スタイル".into(), Value::Integer(1)),
             ]),
         ))?;

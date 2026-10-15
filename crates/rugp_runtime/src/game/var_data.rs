@@ -36,12 +36,23 @@ impl Game {
             class.name
         );
         ensure!(
-            [128, 129].contains(&key),
+            [41, 128, 129].contains(&key),
             "CParseBgBox variable-data identifier {key} is not implemented yet"
         );
         let data = fields
             .get("データ")
             .context("variable-data payload missing")?;
+        if key == 41 {
+            // Vm60 100485d1 clears native queued layer updates/callbacks for
+            // integer zero. The full-scene renderer has no such cached queue;
+            // retain the packet without clearing the logical scene/motions.
+            self.objects
+                .entry(target.offset.context("render object identity missing")?)
+                .or_default()
+                .properties
+                .insert("render.var.41".into(), data.clone());
+            return Ok(());
+        }
         // Native CBasicValue::GetInteger (UnivUI 100230c0) tests the immediate
         // integer tag only. It does not coerce text/reals or dereference data.
         if let Value::Integer(slot) = data {
@@ -174,8 +185,10 @@ mod tests {
             game.message(message(128, data))?;
             assert_eq!(game.objects[&212259].world_layers, state);
         }
-        let unsupported = game.message(message(41, Value::Integer(0))).unwrap_err();
-        assert!(format!("{unsupported:#}").contains("identifier 41"));
+        game.message(message(41, Value::Integer(0)))?;
+        assert_eq!(game.objects[&212259].world_layers, state);
+        let unsupported = game.message(message(42, Value::Integer(0))).unwrap_err();
+        assert!(format!("{unsupported:#}").contains("identifier 42"));
         let mut wrong_class = message(128, Value::Integer(1));
         if let Value::Reference(r) = &mut wrong_class.target {
             r.class.as_mut().unwrap().name = "CImgAreaBox".into();
