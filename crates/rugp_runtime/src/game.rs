@@ -633,9 +633,10 @@ impl Game {
                     number(&fields, "停止モード", 0)? == 0,
                     "unsupported background auto-animation stop mode"
                 );
-                // Native built-in background auto-animation is not started by
-                // this host. This is distinct from explicit posture resources
-                // and ParseScreen camera tweens, which keep their own clocks.
+                // Vm60 10032090 iterates owned character boxes; 10032140
+                // releases their automatic animation/image references. Static
+                // portraits do not start those channels. Explicit posture
+                // resources and ParseScreen cameras keep their own clocks.
                 for (key, value) in fields {
                     self.objects
                         .entry(id)
