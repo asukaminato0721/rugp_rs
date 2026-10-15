@@ -34,6 +34,8 @@ mod sound;
 mod staffroll;
 #[cfg(test)]
 mod sync_tests;
+#[cfg(test)]
+mod test_support;
 mod text_menu;
 mod timer;
 pub mod ui_snapshot;

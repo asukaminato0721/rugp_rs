@@ -187,6 +187,7 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{choose_image as choose, wait_selection};
     use super::*;
     use rugp_assets::{object::ClassId, script::Script};
     use rugp_scene_vm::Scenario;
@@ -422,49 +423,6 @@ mod tests {
         );
         Ok(())
     }
-    fn wait_selection(
-        game: &mut Game,
-        audio: &mut Option<crate::audio::AudioResources>,
-    ) -> Result<()> {
-        for _ in 0..500 {
-            crate::audio::mute_requests(game, audio)?;
-            let state = game.step(1000)?;
-            if game.waiting_for_selection() {
-                return Ok(());
-            }
-            ensure!(
-                state != RunState::Ended,
-                "gallery exited instead of selecting"
-            );
-        }
-        bail!(
-            "gallery selection budget exceeded at {:?}",
-            game.vm.cursor()
-        )
-    }
-    fn choose(game: &mut Game, id: u32) -> Result<()> {
-        let target = game.selection.as_ref().context("selection missing")?.target;
-        let menu = game.objects[&target].menu.context("image menu missing")?;
-        ensure!(
-            game.menus[&menu]
-                .data
-                .selectors
-                .iter()
-                .any(|s| s.id == id && s.status & 1 != 0),
-            "gallery selector {id} is disabled"
-        );
-        for _ in 0..=game.menus[&menu].data.selectors.len() {
-            game.navigate_selection(1)?;
-            if game.menus[&menu]
-                .hover
-                .and_then(|key| game.menus[&menu].result(key))
-                == Some(id)
-            {
-                return game.activate_selection();
-            }
-        }
-        bail!("gallery selector {id} was not reached")
-    }
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_premium_hub_runs_locked_cg_pages_and_returns_without_unlock_bypasses() -> Result<()> {
@@ -554,6 +512,7 @@ mod tests {
             }
         }
         ensure!(game.waiting_for_selection(), "title missing");
+        let title = game.vm.cursor().cloned();
         let native = NativeSchema::from_directory(root.as_ref())?;
         let program = Program::load(&game.archive, &native)?;
         let mut vm = Vm::new(Arc::new(program), 251)?;
@@ -562,8 +521,27 @@ mod tests {
         game.selection = None;
         wait_selection(&mut game, &mut audio)?;
         let hub = game.vm.cursor().cloned();
-        for id in [2, 3, 4] {
+        for id in [2, 3, 4, 5] {
             ensure!(game.vm.cursor() == hub.as_ref(), "hub missing");
+            if id == 5 {
+                let target = game
+                    .selection
+                    .as_ref()
+                    .context("hub selection missing")?
+                    .target;
+                let menu = game.objects[&target]
+                    .menu
+                    .context("hub image menu missing")?;
+                ensure!(
+                    game.menus[&menu]
+                        .data
+                        .selectors
+                        .iter()
+                        .any(|s| s.id == 5 && s.status & 1 == 0),
+                    "fresh profile exposed an unearned bonus selector"
+                );
+                continue;
+            }
             choose(&mut game, id)?;
             if id == 4 {
                 let mut pages = 0;
@@ -635,6 +613,12 @@ mod tests {
                 "submenu did not return to hub"
             );
         }
+        choose(&mut game, 6)?;
+        wait_selection(&mut game, &mut audio)?;
+        ensure!(
+            game.vm.cursor() == title.as_ref(),
+            "premium back did not reach original title"
+        );
         Ok(())
     }
     #[test]

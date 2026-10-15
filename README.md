@@ -113,6 +113,11 @@ title (25,493 confirmations, 73 scenes, 53 selections). These execute real resou
 audio timing and host operations, but omit scene rasterization.
 The default plan has also completed a continuous pixel-rendered run with the
 same counters, including the ending and return to the original title.
+After correcting non-text confirmations, a fresh default host-logic run returned
+to that title at tick 37,201: 24,960 dialogue confirmations, 50 selections,
+1,146 separate non-text confirmations and 74 sampled script scenes. This latest
+run omitted scene rasterization; the historical pixel-rendered run above
+predates that input-wait correction.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
@@ -204,6 +209,13 @@ The music selector issues its original playback request and returns to the hub;
 both fresh-profile replay pages stay locked and can navigate back. The locked
 bonus explanation also returns after normal dialogue confirmations, without
 writing unlock flags. This is isolated menu coverage, not an earned title unlock.
+Separate original-ending regressions now exercise an earned title unlock:
+credit branch 3 writes its own clear state, then enters Premium through the
+previously disabled title selector and returns. The three True End terminal
+scenes each expose exactly their own route plus Cancel in the gated extra-route
+chooser; cancellation returns through the original hub to the title. The first
+chapter's ending does not unlock second-chapter Premium. These tests run native
+ending tails, not their complete story prefixes or the unlocked extra stories.
 
 The Rust-port progress database uses versioned, stable stored-resource keys,
 not Windows' private reference-stream text encoding. Bindings come from the
