@@ -383,7 +383,11 @@ retained separately even though their visual playback is approximated.
 Null body/expression `OM_HumanIn` packets update placement/style without
 replacing the existing texture or reviving a cleared character.
 Plain `CVmImage` now loads or clears a real CImgBox surface, including subsequent
-blits from that surface. Nonzero positioning/specialized modes remain unsupported.
+blits from that surface. Its immediate-presentation boolean refreshes the scene;
+`OM_SetFitImage` makes subsequent image assignments size the box to the source
+while preserving X/Y. A retail-helper regression checks fitting, staged versus
+immediate pixels and null clearing. Nonzero positioning/owner-draw modes remain
+unsupported.
 Ordinary blits accept nonzero auxiliary words while validating blocking, flags,
 regions and duration independently.
 Declaration-only, never-called CRsa objects now provide persistent typed shared

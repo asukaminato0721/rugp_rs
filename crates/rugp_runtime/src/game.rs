@@ -629,6 +629,15 @@ impl Game {
                 object.rect.2 = w as u32;
                 object.rect.3 = h as u32;
             }
+            "OM_SetFitImage" if target.class.as_ref().is_some_and(|c| c.name == "CImgBox") => {
+                // rvmm 1000d7f0 toggles CViewBox's fit flag; the next image
+                // assignment (1002c8af) updates its body/box extent.
+                self.objects
+                    .entry(id)
+                    .or_default()
+                    .properties
+                    .insert("render.image.fit".into(), Value::Integer(1));
+            }
             "OM_BodyScroll" | "OM_BoxScroll" => {
                 scroll::apply(self.objects.entry(id).or_default(), &message.class, fields)?;
             }

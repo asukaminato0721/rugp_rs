@@ -63,12 +63,23 @@ impl Game {
             instruction.arguments.len() == 6,
             "invalid image instruction arguments"
         );
-        for argument in &instruction.arguments[..4] {
+        for argument in [
+            &instruction.arguments[0],
+            &instruction.arguments[1],
+            &instruction.arguments[3],
+        ] {
             ensure!(
                 self.vm.evaluate(argument)?.integer()? == 0,
                 "positioned/specialized CVmImage mode is not implemented"
             );
         }
+        // Vm60 100708d2 forwards the third field as OM_LoadImage's
+        // "スクリーンへすぐに反映？" boolean, not an image composition mode.
+        let immediate = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+        ensure!(
+            [0, 1].contains(&immediate),
+            "invalid image immediate-presentation flag"
+        );
         let Value::Reference(destination) = self.vm.resolve_object(&instruction.arguments[5])?
         else {
             bail!("image destination missing")
@@ -94,7 +105,11 @@ impl Game {
                 display_scale: image.display_scale,
                 rgba: image.rgba.clone(),
             },
-        )
+        )?;
+        if immediate != 0 && destination.offset != Some(self.primary_buffer) {
+            self.present_scene()?;
+        }
+        Ok(())
     }
     pub(super) fn vram_image_in(
         &mut self,
@@ -229,11 +244,20 @@ impl Game {
             );
             let texture = Arc::new(texture);
             self.buffers.insert(id, Arc::clone(&texture));
-            self.objects
-                .entry(id)
-                .or_default()
-                .layers
-                .insert(0, Layer::Screen(texture));
+            let object = self.objects.entry(id).or_default();
+            if reference
+                .class
+                .as_ref()
+                .is_some_and(|c| c.name == "CImgBox")
+                && matches!(
+                    object.properties.get("render.image.fit"),
+                    Some(Value::Integer(1))
+                )
+            {
+                object.rect.2 = texture.width;
+                object.rect.3 = texture.height;
+            }
+            object.layers.insert(0, Layer::Screen(texture));
         }
         Ok(())
     }
@@ -639,9 +663,37 @@ mod tests {
         assert_eq!(&game.frame()[..4], &[255, 0, 0, 255]);
         assert_eq!(&game.frame()[60..], &[255, 255, 255, 255]);
         game.wait_ms = None;
-        game.vm = make_vm(reference(500), 1)?;
+        game.vm = make_vm(reference(500), 2)?;
         assert!(game.step(0).is_err());
         assert_eq!(game.buffers[&501].rgba, pixels);
+        // The retail helper requests fitting followed by an immediate load.
+        // Keep its operation packet, but use the tiny deterministic source
+        // above so the displayed geometry has an independent pixel oracle.
+        let native = super::super::NativeSchema::from_directory(root.as_ref())?;
+        let scene = rugp_scene_vm::Scenario::decode_with_schema(
+            &rugp_assets::script::Script::load(&game.archive, 149)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let command = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x68)
+            .context("retail fit-image packet")?;
+        let mut command = game.vm.message(command)?;
+        command.target = Value::Reference(reference(501));
+        game.objects.get_mut(&501).unwrap().rect = (1, 1, 0, 0);
+        let staged = game.frame().to_vec();
+        game.message(command)?;
+        assert_eq!(game.objects[&501].rect, (1, 1, 0, 0));
+        assert_eq!(game.frame(), staged);
+        game.vm = make_vm(reference(500), 1)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.objects[&501].rect, (1, 1, 2, 2));
+        let mut expected = Framebuffer::new(4, 4)?;
+        expected.blit(&game.buffers[&500], (1, 1, 2, 2), 255)?;
+        assert_eq!(game.frame(), expected.rgba);
+        game.wait_ms = None;
         game.vm = make_vm(null.clone(), 0)?;
         game.step(0)?;
         assert!(game.buffers[&501].rgba.iter().all(|b| *b == 0));
