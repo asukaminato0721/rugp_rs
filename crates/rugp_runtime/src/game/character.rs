@@ -57,6 +57,96 @@ impl CharacterState {
     }
 }
 impl Game {
+    fn character_texture(
+        &mut self,
+        body: &ObjectRef,
+        overlays: &[ObjectRef],
+    ) -> Result<Arc<Texture>> {
+        let body = self.images.load(body)?;
+        let mut canvas = Framebuffer::transparent(body.width, body.height)?;
+        canvas.blit(&body, (0, 0, body.width, body.height), 255)?;
+        for reference in overlays.iter().filter(|r| r.class.is_some()) {
+            let part = self.images.load(reference)?;
+            canvas.blit(&part, (0, 0, body.width, body.height), 255)?;
+        }
+        Ok(Arc::new(Texture {
+            width: canvas.width,
+            height: canvas.height,
+            display_scale: 1.0,
+            rgba: canvas.rgba,
+        }))
+    }
+    pub(super) fn set_character_core(
+        &mut self,
+        id: u64,
+        fields: &BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let key = number(fields, "データ識別値", -1)?;
+        ensure!(
+            key == 20,
+            "unsupported character reference-data identifier {key}"
+        );
+        let reference = match fields.get("参照") {
+            Some(Value::Null) => {
+                let object = self.objects.entry(id).or_default();
+                object.character.remove(0);
+                object.character.face.clear();
+                object
+                    .properties
+                    .insert("character.core".into(), Value::Null);
+                return Ok(());
+            }
+            Some(Value::Reference(reference)) => reference,
+            _ => bail!("character core reference missing"),
+        };
+        let class = reference
+            .class
+            .as_ref()
+            .context("character core class missing")?;
+        ensure!(
+            class.name == "CChar2CompleteDataCore" && class.schema == 1,
+            "unsupported character core class"
+        );
+        let core = reference
+            .inline
+            .as_ref()
+            .context("external character core is not implemented")?;
+        // ObjectReader already bounded and validated this record in its original
+        // shared reference context. Do not reparse the copied body independently.
+        let version = *core.data.first().context("empty character core")?;
+        ensure!(
+            (1..=6).contains(&version),
+            "unsupported character core version {version}"
+        );
+        let body_index = if version >= 5 { 2 } else { 1 };
+        ensure!(
+            core.references.len() == body_index + 14,
+            "invalid character core references"
+        );
+        let body = &core.references[body_index];
+        if body.class.is_none() {
+            let object = self.objects.entry(id).or_default();
+            object.character.remove(0);
+            object.character.face.clear();
+            object
+                .properties
+                .insert("character.core".into(), Value::Reference(reference.clone()));
+            return Ok(());
+        }
+        // Static expression fallback: all supplied transparent face canvases.
+        // Native core pose/deformation and eye/mouth animation remain deferred.
+        let texture = self.character_texture(body, &core.references[body_index + 1..])?;
+        self.buffers.remove(&id);
+        let object = self.objects.entry(id).or_default();
+        object.layers.clear();
+        object.menu = None;
+        object.character.texture = Some(texture);
+        object.character.face.clear();
+        object
+            .properties
+            .insert("character.core".into(), Value::Reference(reference.clone()));
+        Ok(())
+    }
     pub(super) fn show_character(
         &mut self,
         id: u64,
@@ -65,25 +155,21 @@ impl Game {
         let Some(Value::Reference(body)) = fields.get("ベース画像") else {
             bail!("character message has no bound body");
         };
-        let body = self.images.load(body)?;
-        let mut canvas = Framebuffer::transparent(body.width, body.height)?;
-        canvas.blit(&body, (0, 0, body.width, body.height), 255)?;
         let face = self
             .objects
             .get(&id)
             .map(|o| o.character.face.clone())
             .unwrap_or_default();
+        let mut overlays = Vec::new();
         for name in ["眼ベース", "左眼", "右眼", "眼", "眉", "口", "頬", "その他"] {
             if let Some(Value::Reference(part)) = face.get(name) {
-                let part = self.images.load(part)?;
-                // Retail CRmt parts share the complete transparent body canvas.
-                canvas.blit(&part, (0, 0, body.width, body.height), 255)?;
+                overlays.push(part.clone());
             }
         }
         if let Some(Value::Reference(expression)) = fields.get("表情画像") {
-            let expression = self.images.load(expression)?;
-            canvas.blit(&expression, (0, 0, body.width, body.height), 255)?;
+            overlays.push(expression.clone());
         }
+        let texture = self.character_texture(body, &overlays)?;
         let position = [
             number(fields, "３ＤＸ", 0)?,
             number(fields, "３ＤＹ", 0)?,
@@ -95,12 +181,7 @@ impl Game {
         object.menu = None;
         self.buffers.remove(&id);
         let character = &mut object.character;
-        character.texture = Some(Arc::new(Texture {
-            width: canvas.width,
-            height: canvas.height,
-            display_scale: 1.0,
-            rgba: canvas.rgba,
-        }));
+        character.texture = Some(texture);
         character.position = position;
         character.style = style;
         Ok(())
@@ -151,6 +232,71 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_complete_core_composes_and_clears_without_resetting_live_placement() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let scene = rugp_scene_vm::Scenario::decode_with_schema(
+            &rugp_assets::script::Script::load(&game.archive, 483)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let instruction = scene
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x79f8)
+            .context("core instruction missing")?;
+        let message = game.vm.message(instruction)?;
+        let Value::Reference(target) = &message.target else {
+            bail!("core target missing")
+        };
+        let target = target.clone();
+        let id = target.offset.context("target identity missing")?;
+        let Some(Value::Reference(core)) = message.fields.get("参照") else {
+            bail!("core missing")
+        };
+        let body_ref = &core
+            .inline
+            .as_ref()
+            .context("inline core missing")?
+            .references[2];
+        let body = game.images.load(body_ref)?;
+        game.frame = Framebuffer::new(16, 16)?;
+        let object = game.objects.entry(id).or_default();
+        object.rect = (0, 0, 16, 16);
+        object.character.position = [1, 0, 1120];
+        let before = game.frame().to_vec();
+        game.message(message)?;
+        assert_eq!(game.frame(), before); // application is staged until presentation
+        let character = &game.objects[&id].character;
+        assert_eq!(character.position, [1, 0, 1120]);
+        let texture = character.texture.as_ref().context("core image missing")?;
+        assert_eq!((texture.width, texture.height), (body.width, body.height));
+        assert_ne!(texture.rgba, body.rgba); // real transparent face parts were composited
+        game.present_scene()?;
+        assert_ne!(game.frame(), before);
+        let pixels = game.frame().to_vec();
+        let call = |key| Message {
+            class: "OM_SetRefData".into(),
+            target: Value::Reference(target.clone()),
+            fields: BTreeMap::from([
+                ("データ識別値".into(), Value::Integer(key)),
+                ("参照".into(), Value::Null),
+            ]),
+        };
+        assert!(game.message(call(21)).is_err());
+        assert_eq!(game.frame(), pixels);
+        game.message(call(20))?;
+        assert!(matches!(
+            game.objects[&id].properties["character.core"],
+            Value::Null
+        ));
+        game.present_scene()?;
+        assert_eq!(game.frame(), before);
+        Ok(())
+    }
     #[test]
     fn static_portraits_keep_depth_placement_removal_and_ui_order() -> Result<()> {
         let texture = Arc::new(Texture {

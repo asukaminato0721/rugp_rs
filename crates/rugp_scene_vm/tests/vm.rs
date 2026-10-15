@@ -412,6 +412,144 @@ fn labels_invalid_pc_and_unknown_operations_are_not_skipped() {
 }
 
 #[test]
+fn inert_scene_declarations_share_typed_slots_without_borrowing_caller_arguments() {
+    let Argument::Reference(owner) = reference("CRsa", 300) else {
+        unreachable!()
+    };
+    let Argument::Reference(mut slot) = reference("整数", 700) else {
+        unreachable!()
+    };
+    slot.flags |= 1;
+    slot.owner = Some(Box::new(owner));
+    slot.selector = 4;
+    let shared = Argument::Reference(slot.clone());
+    slot.offset = Some(701); // aliases resolve by owning scope and selector
+    let alias = Argument::Reference(slot);
+    let mut program = Program::default();
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![
+                    instruction(
+                        "CVmCall",
+                        0,
+                        32,
+                        vec![reference("CRsa", 200), immediate(99)],
+                    ),
+                    instruction(
+                        "CVmCall",
+                        32,
+                        64,
+                        vec![reference("CRsa", 400), immediate(17)],
+                    ),
+                    instruction("CVmRet", 64, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    program
+        .insert(
+            200,
+            scene(
+                2,
+                vec![
+                    instruction(
+                        "CVmFlagOp",
+                        0,
+                        32,
+                        flag(1, immediate(5), shared.clone(), 32),
+                    ),
+                    instruction("CVmRet", 32, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    program
+        .insert(
+            300,
+            scene(3, vec![instruction("CVmRet", 0, u32::MAX, vec![])]),
+        )
+        .unwrap();
+    program
+        .insert(
+            400,
+            scene(
+                4,
+                vec![
+                    instruction("CVmFlagOp", 0, 32, flag(1, immediate(2), alias.clone(), 32)),
+                    instruction("CVmRet", 32, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    let program = Arc::new(program);
+    let mut vm = Vm::new(Arc::clone(&program), 1).unwrap();
+    assert_eq!(vm.evaluate(&shared).unwrap().integer().unwrap(), 0);
+    vm.step().unwrap();
+    assert_eq!(vm.arguments()[0].integer().unwrap(), 99);
+    vm.step().unwrap();
+    assert_eq!(vm.evaluate(&alias).unwrap().integer().unwrap(), 5);
+    assert_eq!(vm.arguments()[0].integer().unwrap(), 99);
+    vm.step().unwrap();
+    vm.step().unwrap();
+    assert_eq!(vm.arguments()[0].integer().unwrap(), 17);
+    vm.step().unwrap();
+    assert_eq!(vm.evaluate(&shared).unwrap().integer().unwrap(), 7);
+    assert_eq!(vm.arguments()[0].integer().unwrap(), 17);
+    vm.step().unwrap();
+    assert_eq!(vm.evaluate(&alias).unwrap().integer().unwrap(), 7);
+    assert!(vm.arguments().is_empty());
+    let fresh = Vm::new(program, 1).unwrap();
+    assert_eq!(fresh.evaluate(&shared).unwrap().integer().unwrap(), 0);
+}
+
+#[test]
+fn callable_empty_scenes_do_not_turn_function_arguments_into_shared_defaults() {
+    let Argument::Reference(owner) = reference("CRsa", 300) else {
+        unreachable!()
+    };
+    let Argument::Reference(mut slot) = reference("整数", 700) else {
+        unreachable!()
+    };
+    slot.flags |= 1;
+    slot.owner = Some(Box::new(owner));
+    slot.selector = 0;
+    let parameter = Argument::Reference(slot);
+    let mut program = Program::default();
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![
+                    instruction(
+                        "CVmCall",
+                        0,
+                        32,
+                        vec![reference("CRsa", 300), immediate(17)],
+                    ),
+                    instruction("CVmRet", 32, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    program
+        .insert(
+            300,
+            scene(3, vec![instruction("CVmRet", 0, u32::MAX, vec![])]),
+        )
+        .unwrap();
+    let mut vm = Vm::new(Arc::new(program), 1).unwrap();
+    assert!(vm.evaluate(&parameter).is_err());
+    vm.step().unwrap();
+    assert_eq!(vm.evaluate(&parameter).unwrap().integer().unwrap(), 17);
+    vm.step().unwrap();
+    assert!(vm.evaluate(&parameter).is_err());
+}
+
+#[test]
 fn scoped_arguments_and_message_overrides() {
     let Argument::Reference(owner) = reference("CRsa", 200) else {
         unreachable!()

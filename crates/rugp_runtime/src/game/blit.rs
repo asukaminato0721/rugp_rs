@@ -58,6 +58,44 @@ fn place_region(
 }
 
 impl Game {
+    pub(super) fn load_vm_image(&mut self, instruction: &Instruction) -> Result<()> {
+        ensure!(
+            instruction.arguments.len() == 6,
+            "invalid image instruction arguments"
+        );
+        for argument in &instruction.arguments[..4] {
+            ensure!(
+                self.vm.evaluate(argument)?.integer()? == 0,
+                "positioned/specialized CVmImage mode is not implemented"
+            );
+        }
+        let Value::Reference(destination) = self.vm.resolve_object(&instruction.arguments[5])?
+        else {
+            bail!("image destination missing")
+        };
+        let image = match self.vm.evaluate(&instruction.arguments[4])? {
+            Value::Reference(source) => self.surface(&source)?,
+            Value::Null => {
+                let frame = Framebuffer::transparent(self.frame.width, self.frame.height)?;
+                Arc::new(Texture {
+                    width: frame.width,
+                    height: frame.height,
+                    display_scale: 1.0,
+                    rgba: frame.rgba,
+                })
+            }
+            _ => bail!("image source is not an object"),
+        };
+        self.write_surface(
+            &destination,
+            Texture {
+                width: image.width,
+                height: image.height,
+                display_scale: image.display_scale,
+                rgba: image.rgba.clone(),
+            },
+        )
+    }
     pub(super) fn vram_image_in(
         &mut self,
         id: u64,
@@ -109,6 +147,9 @@ impl Game {
         )
     }
     fn surface(&mut self, reference: &ObjectRef) -> Result<Arc<Texture>> {
+        if reference.inline.is_some() {
+            return self.images.load(reference);
+        }
         let id = reference.offset.context("surface has no bound object")?;
         if id == self.primary_buffer {
             return Ok(Arc::new(Texture {
@@ -124,7 +165,7 @@ impl Game {
         if reference
             .class
             .as_ref()
-            .is_some_and(|c| ["CImgAreaBox", "CParseBgBox"].contains(&c.name.as_str()))
+            .is_some_and(|c| ["CImgBox", "CImgAreaBox", "CParseBgBox"].contains(&c.name.as_str()))
         {
             let size = self
                 .objects
@@ -154,14 +195,17 @@ impl Game {
             .offset
             .context("destination surface has no bound object")?;
         if id == self.primary_buffer {
+            ensure!(
+                texture.width == self.frame.width && texture.height == self.frame.height,
+                "primary surface dimensions do not match framebuffer"
+            );
             self.frame.rgba = texture.rgba;
             self.transition = None;
         } else {
             ensure!(
-                reference
-                    .class
-                    .as_ref()
-                    .is_some_and(|c| ["CImgAreaBox", "CParseBgBox"].contains(&c.name.as_str())),
+                reference.class.as_ref().is_some_and(
+                    |c| ["CImgBox", "CImgAreaBox", "CParseBgBox"].contains(&c.name.as_str())
+                ),
                 "unsupported destination surface"
             );
             let old_size = self.buffers.get(&id).map_or(0, |b| b.rgba.len());
@@ -211,14 +255,11 @@ impl Game {
             // initial strip geometry, which is not their final image crop.
             fade.rectangles = [[0; 4]; 3];
         }
-        let control = self.vm.evaluate(control)?.integer()?;
+        // The auxiliary word is nonzero in ordinary retail copies too. It
+        // does not replace the separately decoded blocking/time parameters.
+        let _control = self.vm.evaluate(control)?.integer()?;
         let flags = self.vm.evaluate(flags)?.integer()?;
-        if matches!(
-            class.name.as_str(),
-            "CFadeNormal" | "CFadeMergeBlack" | "CFadeMergeWhite" | "CFadeMergeColor"
-        ) {
-            ensure!(control == 0 && flags == 0, "unsupported blit control flags");
-        } // Spatial fallbacks omit their effect-specific control words.
+        ensure!(flags == 0, "unsupported blit flags {flags:#x}");
         let blocking = self.vm.evaluate(blocking)?.integer()?;
         ensure!(blocking == 0 || blocking == 1, "invalid blit wait mode");
         let duration = self.vm.evaluate(duration)?.integer()?;
@@ -301,6 +342,126 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn vm_image_stages_real_image_box_surfaces_and_null_clears_them() -> Result<()> {
+        use crate::game::{ObjectState, RunState};
+        use rugp_assets::object::ClassId;
+        use rugp_scene_vm::{
+            Scenario,
+            vm::{Program, Vm},
+        };
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        game.frame = Framebuffer::new(4, 4)?;
+        let reference = |offset| ObjectRef {
+            class: Some(ClassId {
+                name: "CImgBox".into(),
+                schema: 15,
+            }),
+            cache_index: None,
+            flags: 0xc108,
+            offset: Some(offset),
+            size: Some(3),
+            owner: None,
+            selector: 0,
+            inline: None,
+        };
+        let mut null = reference(0);
+        null.class = None;
+        null.offset = None;
+        null.cache_index = Some(0);
+        let make_vm = |source: ObjectRef, mode| -> Result<Vm> {
+            let instruction = |name: &str, address, next_address, arguments| Instruction {
+                index: 0,
+                stream_offset: 0,
+                class: ClassId {
+                    name: name.into(),
+                    schema: 17,
+                },
+                address,
+                next_address,
+                flags: 0,
+                arguments,
+            };
+            let mut program = Program::default();
+            program.insert(
+                0,
+                Scenario {
+                    object_id: 1,
+                    memory_size: 80,
+                    null_records: vec![],
+                    trailing_bytes: 0,
+                    instructions: vec![
+                        instruction(
+                            "CVmImage",
+                            0,
+                            28,
+                            vec![
+                                Argument::Number(0),
+                                Argument::Number(0),
+                                Argument::Number(mode),
+                                Argument::Number(0),
+                                Argument::Reference(source),
+                                Argument::Reference(reference(501)),
+                            ],
+                        ),
+                        instruction(
+                            "CVmSync",
+                            28,
+                            52,
+                            vec![
+                                Argument::Reference(null.clone()),
+                                Argument::Number(0),
+                                Argument::Number(1000000),
+                            ],
+                        ),
+                        instruction("CVmRet", 52, u32::MAX, vec![]),
+                    ],
+                },
+            )?;
+            Vm::new(Arc::new(program), 1)
+        };
+        let pixels = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        game.buffers.insert(
+            500,
+            Arc::new(Texture {
+                width: 2,
+                height: 2,
+                display_scale: 1.0,
+                rgba: pixels.clone(),
+            }),
+        );
+        game.objects.insert(
+            501,
+            ObjectState {
+                visible: false,
+                rect: (0, 0, 4, 4),
+                ..ObjectState::default()
+            },
+        );
+        let before = game.frame().to_vec();
+        game.vm = make_vm(reference(500), 0)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.buffers[&501].rgba, pixels);
+        assert_eq!(game.frame(), before);
+        game.objects.get_mut(&501).unwrap().visible = true;
+        game.present_scene()?;
+        assert_eq!(&game.frame()[..4], &[255, 0, 0, 255]);
+        assert_eq!(&game.frame()[60..], &[255, 255, 255, 255]);
+        game.wait_ms = None;
+        game.vm = make_vm(reference(500), 1)?;
+        assert!(game.step(0).is_err());
+        assert_eq!(game.buffers[&501].rgba, pixels);
+        game.vm = make_vm(null.clone(), 0)?;
+        game.step(0)?;
+        assert!(game.buffers[&501].rgba.iter().all(|b| *b == 0));
+        game.present_scene()?;
+        assert_eq!(game.frame(), before);
+        Ok(())
+    }
     #[test]
     fn crop_scale_and_clipped_destination_preserve_other_pixels() -> Result<()> {
         let source = Texture {

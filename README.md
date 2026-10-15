@@ -266,13 +266,33 @@ Default-bound mode 0 is supported as well as explicit-region mode 0x11.
 Standard `0x6` text
 packet variants share the portable layout while retaining their explicit text
 control-code waits. The real-host first-choice autoplay probe has advanced
-109 text waits, including the first character motion and later external
+319 text waits, including the first character motion and later external
 posture resources; full-game completion is not yet verified.
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
 geometry/deformation/tinting. The
 `CLayerSimpleFlush` parameter packets are retained; playback currently completes
 instantly without rendering that layer effect, including wait/query completion.
+Complete-character `OM_SetRefData` identifier 20 now composites the supplied
+body/expression parts from the original inline reference context. Null clears
+the character core; current placement is retained rather than reproducing the
+native saved pose/deformation. A retail regression checks actual part pixels,
+staging, replacement and clearing. Flash-layer color and scalar packets are
+retained separately even though their visual playback is approximated.
+Plain `CVmImage` now loads or clears a real CImgBox surface, including subsequent
+blits from that surface. Nonzero positioning/specialized modes remain unsupported.
+Ordinary blits accept nonzero auxiliary words while validating blocking, flags,
+regions and duration independently.
+Declaration-only, never-called CRsa objects now provide persistent typed shared
+slots. They are separate from active function arguments: the chapter's shared
+scope in scene 208 can be accessed by helper 211 without borrowing caller 482's
+arguments. VM tests cover aliases, persistence across helpers, fresh-VM reset,
+and continued rejection of out-of-scope callable arguments. `control_flow`
+accepts an optional project node ID to report only metadata cross-references.
+Sound operation 6 adjusts an existing instance's gain without replaying it or
+changing its completion deadline. Device output ramps from current gain to the
+target (rather than reproducing the native initial-gain reset); zero duration
+uses the packet's start gain. Kira mock samples verify the live looping handle.
 `OM_SetUucSaveSwitch` retains the script's save-enable state even when sent to
 the global/unbound system target. This is not a complete save-slot implementation.
 `OM_ParseImageBuild` renders the world and visible portraits into an offscreen
@@ -422,8 +442,10 @@ alpha oracle at two camera positions, in both the native initial visibility
 state and an explicitly exposed all-layer test state, and checks staging and
 replacement. Native layer-activation messages are not yet implemented.
 All 321 directly referenced backgrounds' legacy planes were also re-decoded.
-Non-default extension color/range/properties, general legacy canvas
-composition, sprite interleaving and full-matrix modes remain unsupported.
+Non-default extension color/range/properties currently leave the basic image
+projection unchanged; they no longer reject otherwise valid background images.
+General legacy canvas composition, sprite interleaving and full-matrix modes
+remain unsupported.
 For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.

@@ -3,7 +3,10 @@
 use crate::{Argument, Instruction, Scenario};
 use anyhow::{Context, Result, bail, ensure};
 use rugp_assets::{RioArchive, native_schema::NativeSchema, object::ObjectRef, script::Script};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -41,6 +44,8 @@ pub struct Program {
     scene_offsets: BTreeMap<u64, usize>,
     labels: BTreeMap<u64, Cursor>,
     initial: BTreeMap<u64, Value>,
+    declaration_scenes: BTreeSet<usize>,
+    called_scene_offsets: BTreeSet<u64>,
 }
 impl Program {
     pub fn insert(&mut self, offset: u64, scene: Scenario) -> Result<()> {
@@ -49,7 +54,17 @@ impl Program {
             !self.scenes.contains_key(&id) && !self.scene_offsets.contains_key(&offset),
             "duplicate scene identity"
         );
+        if scene.instructions.iter().all(|i| i.class.name == "CVmRet") {
+            self.declaration_scenes.insert(id);
+        }
         for (index, ins) in scene.instructions.iter().enumerate() {
+            if matches!(ins.class.name.as_str(), "CVmCall" | "CVmJump")
+                && let Some(Argument::Reference(r)) = ins.arguments.first()
+                && r.class.as_ref().is_some_and(|c| c.name == "CRsa")
+                && let Some(offset) = r.offset
+            {
+                self.called_scene_offsets.insert(offset);
+            }
             ensure!(
                 self.addresses.insert((id, ins.address), index).is_none(),
                 "duplicate command address"
@@ -167,7 +182,15 @@ struct Frame {
 }
 enum Place {
     Global(u64),
-    Parameter { depth: usize, index: usize },
+    Parameter {
+        depth: usize,
+        index: usize,
+    },
+    SharedParameter {
+        scene: usize,
+        index: usize,
+        default: Box<Value>,
+    },
 }
 pub struct Message {
     pub class: String,
@@ -189,6 +212,7 @@ pub struct Vm {
     stack: Vec<Frame>,
     pub variables: BTreeMap<u64, Value>,
     pending_host: bool,
+    shared_parameters: BTreeMap<(usize, usize), Value>,
     /// Native process status written by CVmSync's nonblocking query mode.
     pub synchronization_status: Option<bool>,
 }
@@ -208,6 +232,7 @@ impl Vm {
             }),
             stack: Vec::new(),
             pending_host: false,
+            shared_parameters: BTreeMap::new(),
             synchronization_status: None,
         })
     }
@@ -246,12 +271,54 @@ impl Vm {
             .context("parameter owner scene is not loaded")?;
         let depth = std::iter::once(self.frame.as_ref())
             .chain(self.stack.iter().rev().map(Some))
-            .position(|f| f.is_some_and(|f| f.cursor.scene == scene))
-            .context("parameter owner has no active call frame")?;
+            .position(|f| f.is_some_and(|f| f.cursor.scene == scene));
+        // Empty, never-called CRsa objects also declare shared typed slots.
+        // Retail helper 211 accesses slots owned by inert declaration 208;
+        // these are not arguments belonging to its active caller (482).
+        if depth.is_none()
+            && self.program.declaration_scenes.contains(&scene)
+            && !self
+                .program
+                .called_scene_offsets
+                .contains(&owner.offset.unwrap())
+        {
+            let default = match r.class.as_ref().map(|c| c.name.as_str()) {
+                Some(
+                    "フラグ" | "バイト" | "短整数" | "短正整数" | "整数" | "正整数" | "色" | "CInt"
+                    | "CUInt" | "CShort" | "CUShort" | "CFlag" | "CBool" | "CByte",
+                ) => Value::Integer(0),
+                Some("低精度実数" | "実数" | "高精度実数") => Value::Real(0.0),
+                Some("文字列") => Value::Text(String::new()),
+                _ => Value::Null,
+            };
+            ensure!(r.selector < 65536, "shared parameter slot exceeds limit");
+            return Ok(Some(Place::SharedParameter {
+                scene,
+                index: r.selector as usize,
+                default: Box::new(default),
+            }));
+        }
+        let depth = depth.with_context(|| format!("parameter owner scene {scene}, slot {} has no active call frame; active scenes {:?}", r.selector,
+                self.frame.iter().chain(self.stack.iter().rev()).map(|f| f.cursor.scene).collect::<Vec<_>>()))?;
         Ok(Some(Place::Parameter {
             depth,
             index: r.selector as usize,
         }))
+    }
+    fn read_parameter_place(&self, place: Place) -> Result<Value> {
+        match place {
+            Place::Parameter { depth, index } => self.parameter(depth, index).cloned(),
+            Place::SharedParameter {
+                scene,
+                index,
+                default,
+            } => Ok(self
+                .shared_parameters
+                .get(&(scene, index))
+                .cloned()
+                .unwrap_or(*default)),
+            Place::Global(_) => bail!("global place is not a parameter"),
+        }
     }
     fn parameter(&self, depth: usize, index: usize) -> Result<&Value> {
         let frame = if depth == 0 {
@@ -273,6 +340,9 @@ impl Vm {
     }
     fn assign(&mut self, place: Place, value: Value) -> Result<()> {
         match place {
+            Place::SharedParameter { scene, index, .. } => {
+                self.shared_parameters.insert((scene, index), value);
+            }
             Place::Global(offset) => {
                 self.variables.insert(offset, value);
             }
@@ -307,8 +377,8 @@ impl Vm {
             Argument::Bytes(bytes) => Value::Bytes(bytes.clone()),
             Argument::Field { argument, .. } => return self.evaluate(argument),
             Argument::Reference(r) => {
-                if let Some(Place::Parameter { depth, index }) = self.parameter_place(r)? {
-                    return self.parameter(depth, index).cloned();
+                if let Some(place) = self.parameter_place(r)? {
+                    return self.read_parameter_place(place);
                 }
                 if let Some(offset) = r.offset {
                     self.variables
@@ -380,8 +450,8 @@ impl Vm {
     pub fn resolve_object(&self, arg: &Argument) -> Result<Value> {
         let value = match arg {
             Argument::Reference(reference) => {
-                if let Some(Place::Parameter { depth, index }) = self.parameter_place(reference)? {
-                    self.parameter(depth, index)?.clone()
+                if let Some(place) = self.parameter_place(reference)? {
+                    self.read_parameter_place(place)?
                 } else if reference.offset.is_none() && reference.cache_index == Some(0) {
                     Value::Null
                 } else {

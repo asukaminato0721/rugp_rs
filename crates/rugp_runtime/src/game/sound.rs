@@ -24,7 +24,7 @@ impl SoundRequest {
         );
         match self.kind {
             2 => Ok(GainEnvelope::UNITY),
-            4 => GainEnvelope::from_native(self.parameters),
+            4 | 6 => GainEnvelope::from_native(self.parameters),
             other => bail!("sound operation {other} is not playback"),
         }
     }
@@ -58,6 +58,15 @@ impl Game {
                     );
                     self.audio_state
                         .fade_stop_source(id, u32::from(request.parameters[2]));
+                }
+                6 => {
+                    ensure!(
+                        request.flags & 1 == 0,
+                        "cannot wait directly on sound gain motion"
+                    );
+                    request.gain_envelope()?;
+                    // Adjust the existing playback; do not allocate a new
+                    // ticket or change its PCM completion deadline.
                 }
                 other => bail!("unsupported sound operation {other}"),
             }

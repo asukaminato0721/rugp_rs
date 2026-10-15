@@ -143,6 +143,25 @@ impl<B: Backend> Mixer<B> {
             });
         }
     }
+    pub fn set_source_gain(&mut self, source: u64, envelope: GainEnvelope) {
+        let amplitude = if envelope.duration_ms() == 0 {
+            envelope.start_amplitude()
+        } else {
+            envelope.end_amplitude()
+        };
+        for playing in self.playing.values_mut().filter(|p| p.source == source) {
+            // Playback-first approximation: ramp from the current device gain
+            // instead of resetting to the packet's initial amplitude.
+            playing.handle.set_volume(
+                Volume::Amplitude(amplitude),
+                Tween {
+                    duration: std::time::Duration::from_millis(u64::from(envelope.duration_ms())),
+                    easing: kira::tween::Easing::Linear,
+                    ..Tween::default()
+                },
+            );
+        }
+    }
 }
 pub struct DeviceAudio {
     mixer: Mixer<DefaultBackend>,
@@ -166,7 +185,7 @@ impl DeviceAudio {
         } else {
             None
         };
-        let Some(source) = request.source else {
+        let Some(ref source) = request.source else {
             match request.global_stop_bus()? {
                 Some(bus) => self.mixer.stop_bus(bus),
                 None => self.mixer.stop_all(),
@@ -180,6 +199,10 @@ impl DeviceAudio {
         }
         if request.kind == 5 {
             self.mixer.fade_stop_source(offset, request.parameters[2]);
+            return Ok(None);
+        }
+        if request.kind == 6 {
+            self.mixer.set_source_gain(offset, request.gain_envelope()?);
             return Ok(None);
         }
         ensure!(
@@ -209,7 +232,7 @@ impl DeviceAudio {
             !looped || request.flags & 1 == 0,
             "cannot wait for a looping sound"
         );
-        let data = self.resources.load(&source)?;
+        let data = self.resources.load(source)?;
         let ticket = self.mixer.play_with_envelope(
             offset,
             bus,
@@ -230,6 +253,44 @@ impl DeviceAudio {
 mod tests {
     use super::*;
     use kira::manager::backend::mock::{MockBackend, MockBackendSettings};
+    #[test]
+    fn gain_motion_keeps_the_same_looping_instance_and_does_not_stop_it() -> Result<()> {
+        let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {
+            backend_settings: MockBackendSettings { sample_rate: 1000 },
+            ..Default::default()
+        })
+        .map_err(|_| anyhow::anyhow!("mock init"))?;
+        let mut mixer = Mixer::new(manager);
+        let data = SoundData {
+            sample_rate: 1000,
+            channels: 1,
+            pcm: vec![8192; 32],
+        };
+        let ticket = mixer.play(7, Bus::Bgm, &data, true)?;
+        mixer.manager.backend_mut().on_start_processing();
+        let mut baseline = 0f32;
+        for _ in 0..100 {
+            baseline = baseline.max(mixer.manager.backend_mut().process().left.abs());
+        }
+        let next_ticket = mixer.next;
+        mixer.set_source_gain(7, GainEnvelope::from_native([4096, 2048, 200])?);
+        mixer.manager.backend_mut().on_start_processing();
+        let mut samples = Vec::new();
+        for _ in 0..500 {
+            samples.push(mixer.manager.backend_mut().process().left);
+        }
+        assert!(samples[50] > samples[150]);
+        assert!((samples[400] / baseline - 0.5).abs() < 0.03);
+        assert_eq!(mixer.next, next_ticket);
+        assert!(!mixer.finished(ticket));
+        mixer.set_source_gain(7, GainEnvelope::from_native([0, 0, 0])?);
+        mixer.manager.backend_mut().on_start_processing();
+        for _ in 0..100 {
+            let _ = mixer.manager.backend_mut().process();
+        }
+        assert!(!mixer.finished(ticket)); // silence is not completion
+        Ok(())
+    }
     #[test]
     fn fade_stop_does_not_restart_looping_audio_and_finishes_after_the_ramp() -> Result<()> {
         let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {

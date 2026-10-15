@@ -16,7 +16,7 @@ impl Game {
             .context("variable-data identifier missing")?
             .integer()?;
         if (matches!(class.name.as_str(), "CCharBox" | "CCharBox2") && key == 100)
-            || (class.name == "CLayerSimpleFlush" && matches!(key, 0..=5 | 15))
+            || class.name == "CLayerSimpleFlush"
         {
             // Preserve opaque sprite/layer rendering parameters. The current
             // static presentation does not reproduce the native material.
@@ -221,6 +221,22 @@ mod tests {
             game.objects[&1014184].properties["render.var.1"].integer()?,
             12
         );
+        game.message(Message {
+            class: "OM_SetColorData".into(),
+            target: Value::Reference(effect.clone()),
+            fields: BTreeMap::from([
+                ("識別値".into(), Value::Integer(0)),
+                ("データ".into(), Value::Integer(0x123456)),
+            ]),
+        })?;
+        assert_eq!(
+            game.objects[&1014184].properties["render.color.0"].integer()?,
+            0x123456
+        );
+        assert!(matches!(
+            game.objects[&1014184].properties["render.var.0"],
+            Value::Reference(_)
+        ));
         game.message(Message {
             class: "OM_PlayMedia".into(),
             target: Value::Reference(effect.clone()),

@@ -5,6 +5,13 @@ fn main() -> Result<()> {
     let root = std::env::args_os().nth(1).expect("game root");
     let archive = RioArchive::open(&root)?;
     let native = NativeSchema::from_directory(root.as_ref())?;
+    let target = std::env::args()
+        .nth(2)
+        .map(|s| s.parse::<usize>())
+        .transpose()?;
+    let target_offset = target
+        .and_then(|id| archive.nodes.get(id))
+        .and_then(|n| n.offset);
     let mut counts = std::collections::BTreeMap::new();
     for node in archive.nodes.iter().filter(|n| n.class.name == "CRsa") {
         let scene = Scenario::decode_with_schema(
@@ -13,6 +20,33 @@ fn main() -> Result<()> {
             Some(&native),
         )?;
         for ins in &scene.instructions {
+            if let Some(offset) = target_offset {
+                let mut matched = false;
+                for arg in &ins.arguments {
+                    arg.visit_references(&mut |r| matched |= r.offset == Some(offset));
+                }
+                if matched {
+                    let operation = if ins.class.name == "CVmFlagOp" {
+                        ins.arguments.get(3).and_then(|a| {
+                            if let Argument::Number(n) = a {
+                                Some(*n)
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    println!(
+                        "xref scene={} pc={:#x} class={} arguments={} operation={operation:?}",
+                        node.id,
+                        ins.address,
+                        ins.class.name,
+                        ins.arguments.len()
+                    );
+                }
+                continue;
+            }
             if ["CVmCall", "CVmJump", "CVmLabel"].contains(&ins.class.name.as_str())
                 && let Argument::Reference(r) = &ins.arguments[0]
             {

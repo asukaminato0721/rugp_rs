@@ -413,6 +413,14 @@ impl Game {
                 }
             }
             "OM_QueueFace2Data" => self.queue_character_face(id, &fields)?,
+            "OM_SetRefData"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| matches!(c.name.as_str(), "CCharBox" | "CCharBox2")) =>
+            {
+                self.set_character_core(id, &fields)?
+            }
             "OM_SetLayerData2D" => self.set_character_layer(id, &fields)?,
             "OM_PlayMedia"
                 if target
@@ -427,6 +435,20 @@ impl Game {
                     .or_default()
                     .properties
                     .extend(fields);
+            }
+            "OM_SetColorData"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CLayerSimpleFlush") =>
+            {
+                let key = number(&fields, "識別値", 0)?;
+                let data = fields.get("データ").context("color data missing")?;
+                self.objects
+                    .entry(id)
+                    .or_default()
+                    .properties
+                    .insert(format!("render.color.{key}"), data.clone());
             }
             "OM_AddPostureMomentum" | "OM_AddPostureMomentumEx" => {
                 self.add_posture(&target, &fields)?
@@ -578,6 +600,7 @@ impl Game {
     }
     fn host(&mut self, instruction: &Instruction) -> Result<()> {
         match instruction.class.name.as_str() {
+            "CVmImage" => self.load_vm_image(instruction)?,
             "CVmMsg" => return self.begin_dialogue(instruction),
             "CVmGenericMsg" => {
                 let message = self.vm.message(instruction)?;

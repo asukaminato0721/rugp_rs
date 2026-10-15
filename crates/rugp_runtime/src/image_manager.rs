@@ -45,13 +45,9 @@ impl ImageManager {
                 reference.class.as_ref().unwrap().schema,
                 self.archive.address_shift,
             )?;
-            ensure!(
-                scene.color == 0
-                    && scene.screen == [0; 2]
-                    && scene.range == [0; 2]
-                    && scene.background.properties.is_none(),
-                "extended background color/range/properties are not implemented yet"
-            );
+            // The bounded asset parser preserves extended color/range/property
+            // packets. Use the actual image planes and basic projection for now;
+            // those additional presentation modifiers must not stop the story.
             let boundary = crate::world::Plane::scene_background(&scene)?;
             let mut planes = Vec::new();
             if scene.layers.is_empty() {
