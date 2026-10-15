@@ -273,10 +273,11 @@ Default-bound mode 0 is supported as well as explicit-region mode 0x11.
 Standard `0x6` text
 packet variants share the portable layout while retaining their explicit text
 control-code waits. Normal-render and raster-suppressed real-host autoplay
-probes both reach the first story text selection at scene 470, PC `0x5dd4`,
-after 689 text confirmations with matching cursor/counter checkpoints. This
-includes the first character motion and later external posture resources;
-full-game completion is not yet verified.
+probes match through 1202 text confirmations and two story selections,
+including the first character motion and later external posture resources.
+Choosing the alternate first story option follows a different script branch
+and reaches the same weather helper after 1160 confirmations. These are
+playability checkpoints, not full-game completion verification.
 `CMsgSelBox` story selectors now use actual labels, wrapped portable rows,
 hover/pressed feedback and keyboard/mouse input. Confirmation writes the
 zero-based ordinal into the script's integer destination and consumes the
@@ -285,6 +286,10 @@ framebuffer changes, blocking without input and canceled pointer clicks.
 Non-null object-valued selector IDs/results and native selector markup remain
 unsupported. `OM_SetSpecifyCmdLighting` on background boxes retains its settings
 but currently omits the lighting/pulse effect without introducing a host wait.
+Rain/snow packets and the named scalar members of their independent
+`CNormalCamera` objects are retained without drawing weather particles or
+interpolating their intensity. Explicit script waits still run; non-null
+weather completion handles remain unsupported rather than being abandoned.
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
 geometry/deformation/tinting. The

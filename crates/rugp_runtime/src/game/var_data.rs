@@ -218,6 +218,57 @@ mod tests {
         assert!(game.wait_ms.is_none() && game.parse_transition.is_none());
         game.present_scene()?;
         assert_eq!(game.frame(), pixels);
+        let weather = BTreeMap::from([
+            ("非同期ハンドル".into(), Value::Null),
+            ("変化時間".into(), Value::Integer(500)),
+            ("対象ウインドウ".into(), Value::Reference(target.clone())),
+        ]);
+        game.set_weather(212259, weather.clone())?;
+        assert!(matches!(
+            game.objects[&212259].properties["render.weather.変化時間"],
+            Value::Integer(500)
+        ));
+        let mut invalid = weather;
+        invalid.insert("非同期ハンドル".into(), Value::Reference(target.clone()));
+        invalid.insert("変化時間".into(), Value::Integer(0));
+        assert!(game.set_weather(212259, invalid).is_err());
+        assert!(matches!(
+            game.objects[&212259].properties["render.weather.変化時間"],
+            Value::Integer(500)
+        ));
+        let field = |name: &str, value| {
+            BTreeMap::from([
+                ("メンバ名".into(), Value::Text(name.into())),
+                ("値".into(), value),
+            ])
+        };
+        for (name, value) in [("X", Value::Integer(123)), ("screen", Value::Real(720.0))] {
+            game.set_effect_camera_member(6472019, &field(name, value))?;
+        }
+        assert!(matches!(
+            game.objects[&6472019].properties["member.X"],
+            Value::Integer(123)
+        ));
+        assert!(
+            game.set_effect_camera_member(6472019, &field("unknown", Value::Integer(0)))
+                .is_err()
+        );
+        assert!(
+            game.set_effect_camera_member(6472019, &field("X", Value::Null))
+                .is_err()
+        );
+        assert!(
+            game.set_effect_camera_member(6472019, &field("X", Value::Real(f64::NAN)))
+                .is_err()
+        );
+        assert!(matches!(
+            game.objects[&6472019].properties["member.X"],
+            Value::Integer(123)
+        ));
+        assert_eq!(game.vm.cursor(), cursor.as_ref());
+        assert!(game.wait_ms.is_none() && game.parse_transition.is_none());
+        game.present_scene()?;
+        assert_eq!(game.frame(), pixels);
         let mut effect = target.clone();
         effect.class.as_mut().unwrap().name = "CLayerSimpleFlush".into();
         effect.offset = Some(1014184);

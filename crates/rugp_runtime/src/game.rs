@@ -499,6 +499,22 @@ impl Game {
                 self.add_posture(&target, &fields)?
             }
             "OM_SetVarData" => self.set_var_data(&target, &fields)?,
+            "ONM_SetMenberAsName"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CNormalCamera") =>
+            {
+                self.set_effect_camera_member(id, &fields)?;
+            }
+            "OM_SetWeatherRainSnow"
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CParseBgBox") =>
+            {
+                self.set_weather(id, fields)?;
+            }
             "OM_SetDrawRatioAsParseWnd" => self.set_draw_ratio(&target, &fields)?,
             "OM_SetSpecifyCmdLighting"
                 if target

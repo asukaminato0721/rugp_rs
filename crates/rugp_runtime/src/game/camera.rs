@@ -34,6 +34,58 @@ impl ObjectState {
     }
 }
 impl Game {
+    /// Independent cameras used by omitted weather effects retain their named
+    /// scalar settings. They are not the background's live ParseScreen camera.
+    pub(super) fn set_effect_camera_member(
+        &mut self,
+        id: u64,
+        fields: &BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let Some(Value::Text(name)) = fields.get("メンバ名") else {
+            bail!("camera member name is not text");
+        };
+        ensure!(
+            [
+                "X",
+                "Y",
+                "Z",
+                "ロール角",
+                "ピッチ角",
+                "バンク角",
+                "screen",
+                "プレイヤー身長補正",
+                "SX",
+                "SY"
+            ]
+            .contains(&name.as_str()),
+            "unsupported independent camera member {name}"
+        );
+        let value = fields.get("値").context("camera member value missing")?;
+        ensure!(
+            matches!(value, Value::Integer(_)) || matches!(value, Value::Real(n) if n.is_finite()),
+            "camera member value is not a finite number"
+        );
+        self.objects
+            .entry(id)
+            .or_default()
+            .properties
+            .insert(format!("member.{name}"), value.clone());
+        Ok(())
+    }
+    pub(super) fn set_weather(&mut self, id: u64, fields: BTreeMap<String, Value>) -> Result<()> {
+        // Omit particles, masks and their intensity interpolation. The packet
+        // does not block its caller; explicit VM timer waits still execute.
+        // Callback handles need a completion implementation, not a silent ACK.
+        ensure!(
+            matches!(fields.get("非同期ハンドル"), None | Some(Value::Null)),
+            "weather completion handles are not implemented"
+        );
+        let properties = &mut self.objects.entry(id).or_default().properties;
+        for (key, value) in fields {
+            properties.insert(format!("render.weather.{key}"), value);
+        }
+        Ok(())
+    }
     pub(super) fn set_camera(
         &mut self,
         id: u64,
