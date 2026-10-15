@@ -132,3 +132,65 @@ fn resolves_bgm_wrapper_to_cached_pcm() -> Result<()> {
     println!("BGM: {} stereo PCM frames", pcm.pcm.len() / 2);
     Ok(())
 }
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn startup_movie_uses_real_sync_and_fractional_frame_clock() -> Result<()> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+    let mut game = Game::open(root.as_ref())?;
+    let mut audio = None;
+    game.step(0)?;
+    for _ in 0..150 {
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        if game.video().is_some() {
+            break;
+        }
+        game.step(100)?;
+    }
+    let movie_pc = game.vm.cursor().cloned();
+    assert_eq!(
+        movie_pc.as_ref().map(|pc| (pc.scene, pc.address)),
+        Some((252, 0xd30))
+    );
+    let player = game.video().context("startup movie missing")?;
+    assert_eq!(player.frame_index(), 0);
+    assert_eq!(player.duration_ms(), 117034);
+    assert_eq!(game.frame(), player.image().rgba);
+    assert_eq!(game.step(33)?, RunState::Waiting);
+    assert_eq!(game.video().unwrap().frame_index(), 0);
+    assert_eq!(game.step(1)?, RunState::Waiting);
+    assert_eq!(game.video().unwrap().frame_index(), 1);
+    assert_eq!(game.step(33)?, RunState::Waiting);
+    assert_eq!(game.video().unwrap().frame_index(), 2); // temporal frame
+    assert_eq!(game.vm.cursor(), movie_pc.as_ref());
+    let stream = rugp_assets::crsi::Crsi::read(&game.archive, 0xd0ba5f, 234130539)?;
+    let mut previous = None;
+    for i in 0..=2 {
+        previous = Some(rugp_assets::crsi::codec::decode_frame(
+            stream.width,
+            stream.height,
+            &stream.frames[i],
+            &stream.frame_data(&game.archive, 0xd0ba5f, i)?,
+            previous.as_ref(),
+        )?);
+    }
+    assert_eq!(game.frame(), previous.unwrap().rgba);
+    // Catch up without decoding the whole two-minute movie into memory, then
+    // keep the synchronization instruction pending until its exact end.
+    assert_eq!(game.step(116966)?, RunState::Waiting);
+    assert_eq!(game.video().unwrap().frame_index(), 3510);
+    assert!(!game.video().unwrap().finished());
+    assert_eq!(game.vm.cursor(), movie_pc.as_ref());
+    let resumed = game.step(1);
+    assert!(game.video().unwrap().finished());
+    assert_ne!(game.vm.cursor(), movie_pc.as_ref());
+    // The next currently unsupported host request is after movie completion;
+    // it must not leave the VM parked on its synchronization instruction.
+    if let Err(error) = resumed {
+        anyhow::ensure!(
+            format!("{error:#}").contains("OM_AccessGetValue"),
+            "unexpected post-movie failure: {error:#}"
+        );
+    }
+    Ok(())
+}

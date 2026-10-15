@@ -1,8 +1,64 @@
 //! CRsi#1 stream-image index. Frame payloads remain in the split RIO archive.
-use crate::{RioArchive, binary::Reader};
+use crate::{
+    RioArchive,
+    binary::Reader,
+    object::{ObjectReader, ObjectRef},
+};
 use anyhow::{Context, Result, ensure};
 
 pub mod codec;
+
+/// Stored CVideoSeq schema 4 defaults. Play messages replace source, target,
+/// style, frame/loop counters; position and rate override remain on the object.
+pub struct VideoSequence {
+    pub source: ObjectRef,
+    pub target: ObjectRef,
+    pub rect: [i16; 4],
+    pub frame: u32,
+    pub style: u32,
+    pub loop_iteration: u32,
+    pub loops: i32,
+    pub x: i32,
+    pub y: i32,
+    pub rate: u32,
+    pub restore_auto_update: bool,
+}
+impl VideoSequence {
+    pub fn parse(data: &[u8], shift: u32) -> Result<Self> {
+        let mut r = ObjectReader::new(data);
+        r.input.skip(3)?;
+        r.scrambled = true;
+        r.pad(3)?;
+        let source = r.reference(shift)?;
+        let target = r.reference(shift)?;
+        let mut rect = [0; 4];
+        for value in &mut rect {
+            *value = r.input.u16()? as i16;
+        }
+        let frame = r.input.u32()?;
+        let style = r.input.u32()?;
+        let loop_iteration = r.input.u32()?;
+        let loops = r.input.u32()? as i32;
+        let x = r.input.u32()? as i32;
+        let y = r.input.u32()? as i32;
+        let rate = r.input.u32()?;
+        let restore_auto_update = r.input.u8()? != 0;
+        ensure!(r.input.remaining() == 0, "trailing CVideoSeq bytes");
+        Ok(Self {
+            source,
+            target,
+            rect,
+            frame,
+            style,
+            loop_iteration,
+            loops,
+            x,
+            y,
+            rate,
+            restore_auto_update,
+        })
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FrameIndex {
@@ -37,6 +93,7 @@ pub struct Crsi {
     pub width: u16,
     pub height: u16,
     pub parameter: u32,
+    /// Hundredths of a frame per second (3000 means 30 fps).
     pub rate: u16,
     pub frames: Vec<FrameIndex>,
     /// Relative to the complete CRsi extent, including its three-byte prefix.

@@ -6,7 +6,7 @@ work, along with Cr6Ti/CRip007/CRip008, CRmt mipmaps, CBg2d image planes,
 and OOR/Vorbis audio decoding. A first vertical slice runs the real startup VM
 through logo loading, timed waits, and crossfades into a software framebuffer.
 The full game is **not yet playable**: 3D rendering, effects, interactive UI,
-movies, and save/load remain incomplete. An optional Kira audio-device adapter
+and save/load remain incomplete. An optional Kira audio-device adapter
 handles ordinary sample playback; specialized sound operations remain incomplete.
 
 The workspace follows `../siglus_rs`'s separation between asset formats,
@@ -22,7 +22,7 @@ scene VM, and application/platform hosts:
   integer branches, and native message-field overrides.
   Display/audio/UI operations yield until a host explicitly handles them.
 - `crates/rugp_runtime`: game/object state, bounded resource caches, software
-  RGBA composition, and initial startup-message handling, independent of a
+  RGBA composition, archive-backed movie playback, and startup-message handling, independent of a
   window or audio device.
 - Root `rugp_rs` binary: inspection, extraction, disassembly, and validation.
   Its optional desktop host uses winit and presents the same RGBA buffer.
@@ -118,7 +118,11 @@ run coding, and temporal RGB residuals. All 7,386 frames (3,152 independent and
 4,234 temporal) decode with checked row boundaries and zero-padding validation.
 The 17-byte resource trailers are retained. `video-frame` starts at the nearest
 preceding keyframe; neither inspection nor extraction loads a whole movie.
-Playback integration remains under development.
+The runtime plays full-screen non-looping movies on a fractional frame clock,
+honors the script's CVideoSeq synchronization, and holds the final frame.
+Catch-up decoding starts at a preceding keyframe without dropping a temporal
+frame's dependencies. Movie sound remains a separate scripted sound source.
+Positioned/scaled output, looping, and other playback styles remain unsupported.
 
 The VM's retail startup regression resolves its entry through the process
 ocean, executes the initial scalar assignments, and follows the jump from
@@ -138,6 +142,10 @@ following startup screen's 0.5 bitmap scale and 1440 camera focal length now
 project to the full viewport, covered by a retail pixel-equality regression.
 Camera rotation, translated view targets, and general 3D geometry remain incomplete.
 Desktop presentation and automatic exit have also been exercised under Xvfb.
+The startup movie regression checks frame-clock boundaries, actual temporal
+pixels, a large clock jump, and synchronization through the end of the opening.
+The current subsequent runtime boundary is the persistent-value lookup
+`OM_AccessGetValue`; unsupported host messages are still never skipped.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.

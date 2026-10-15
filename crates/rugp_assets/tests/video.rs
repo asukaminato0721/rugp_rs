@@ -199,6 +199,11 @@ fn retail_movie_indexes_and_temporal_prefixes() -> Result<()> {
     use anyhow::Context;
     let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
     let archive = rugp_assets::RioArchive::open(root)?;
+    let sequence = rugp_assets::crsi::VideoSequence::parse(
+        &archive.read_at(0x3c423, 45)?,
+        archive.address_shift,
+    )?;
+    assert_eq!((sequence.x, sequence.y, sequence.rate), (0, 0, 0));
     for (offset, size, count, keyframes) in [
         (0xd0ba5f, 234130539, 3511, 1487),
         (0x7c67b686, 202725217, 3875, 1665),
@@ -228,5 +233,24 @@ fn retail_movie_indexes_and_temporal_prefixes() -> Result<()> {
             previous = Some(image);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn video_sequence_defaults_and_truncations() -> Result<()> {
+    let mut data = vec![0; 45];
+    data[3] = 2; // object-reference cache padding count
+    data[32..36].copy_from_slice(&(-20i32).to_le_bytes());
+    data[36..40].copy_from_slice(&25i32.to_le_bytes());
+    data[40..44].copy_from_slice(&3000u32.to_le_bytes());
+    let sequence = rugp_assets::crsi::VideoSequence::parse(&data, 0)?;
+    assert_eq!((sequence.x, sequence.y, sequence.rate), (-20, 25, 3000));
+    assert!(sequence.source.class.is_none());
+    assert!(sequence.target.class.is_none());
+    for len in 0..data.len() {
+        assert!(rugp_assets::crsi::VideoSequence::parse(&data[..len], 0).is_err());
+    }
+    data.push(0);
+    assert!(rugp_assets::crsi::VideoSequence::parse(&data, 0).is_err());
     Ok(())
 }

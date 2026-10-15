@@ -12,6 +12,7 @@ use rugp_scene_vm::{
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
+mod video;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
@@ -88,6 +89,8 @@ pub struct Game {
     wait_ms: Option<u32>,
     audio_wait: bool,
     sounds: Vec<SoundRequest>,
+    video: Option<(u64, crate::video::VideoPlayer)>,
+    video_wait: bool,
     pub navigation: String,
     pub settings: BTreeMap<(String, i32), BTreeMap<String, Value>>,
     ended: bool,
@@ -125,6 +128,8 @@ impl Game {
             wait_ms: None,
             audio_wait: false,
             sounds: Vec::new(),
+            video: None,
+            video_wait: false,
             navigation: String::new(),
             settings: BTreeMap::new(),
             ended: false,
@@ -135,6 +140,9 @@ impl Game {
     }
     pub fn frame(&self) -> &[u8] {
         &self.frame.rgba
+    }
+    pub fn video(&self) -> Option<&crate::video::VideoPlayer> {
+        self.video.as_ref().map(|(_, player)| player)
     }
     pub fn title(&self) -> &str {
         &self.archive.manifest.title
@@ -213,6 +221,7 @@ impl Game {
             .offset
             .context("message target is not bound to a stored object")?;
         match message.class.as_str() {
+            "OM_PlayDeviceStreamVideo" => self.play_video(&target, &fields)?,
             "OM_Enable" => self.objects.entry(id).or_default().enabled = true,
             "OM_Disable" => self.objects.entry(id).or_default().enabled = false,
             "OM_Visible" => self.objects.entry(id).or_default().visible = true,
@@ -377,9 +386,39 @@ impl Game {
                 }
             }
             "CVmSync" => {
+                let target = self.vm.evaluate(&instruction.arguments[0])?;
+                if let Value::Reference(reference) = target {
+                    ensure!(
+                        reference
+                            .class
+                            .as_ref()
+                            .is_some_and(|c| c.name == "CVideoSeq"),
+                        "unsupported synchronization target"
+                    );
+                    let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                    let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+                    ensure!(
+                        mode == 16 && timeout == 0,
+                        "unsupported video synchronization mode/timeout"
+                    );
+                    let (id, player) = self
+                        .video
+                        .as_ref()
+                        .context("no video for synchronization target")?;
+                    ensure!(
+                        reference.offset == Some(*id),
+                        "video synchronization target mismatch"
+                    );
+                    if !player.finished() {
+                        self.video_wait = true;
+                        return Ok(());
+                    }
+                    self.vm.acknowledge_host()?;
+                    return Ok(());
+                }
                 ensure!(
-                    matches!(self.vm.evaluate(&instruction.arguments[0])?, Value::Null),
-                    "object/video synchronization is not implemented yet"
+                    matches!(target, Value::Null),
+                    "invalid synchronization target"
                 );
                 let duration = self
                     .vm
@@ -402,6 +441,18 @@ impl Game {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }
         self.update_frame();
+        if let Some((_, player)) = &mut self.video {
+            if player.advance(dt_ms)? {
+                self.frame.rgba.copy_from_slice(&player.image().rgba);
+            }
+            if self.video_wait && player.finished() {
+                self.video_wait = false;
+                self.vm.acknowledge_host()?;
+            }
+        }
+        if self.video_wait {
+            return Ok(RunState::Waiting);
+        }
         if self.audio_wait {
             return Ok(RunState::Waiting);
         }
@@ -431,7 +482,7 @@ impl Game {
                     self.host(&instruction).with_context(|| {
                         format!("runtime at {}:{:#x}", cursor.scene, cursor.address)
                     })?;
-                    if self.wait_ms.is_some() || self.audio_wait {
+                    if self.wait_ms.is_some() || self.audio_wait || self.video_wait {
                         return Ok(RunState::Waiting);
                     }
                 }
