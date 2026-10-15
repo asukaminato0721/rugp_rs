@@ -3,9 +3,12 @@ pub mod archive;
 pub mod binary;
 pub mod crypto;
 pub mod ici;
+pub mod image;
 pub mod native_schema;
 pub mod object;
 pub mod project;
+pub mod rip;
+mod rip_quant;
 pub mod script;
 
 pub use archive::RioArchive;

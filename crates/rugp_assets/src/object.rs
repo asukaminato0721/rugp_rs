@@ -146,6 +146,12 @@ impl<'a> ObjectReader<'a> {
             inline: None,
         };
         if class.is_none() {
+            ensure!(
+                (self.last_tag as usize) < self.cache.len(),
+                "object cache reference {} out of range at {:#x}",
+                self.last_tag,
+                self.input.position
+            );
             if let Some(CacheEntry::Object(cached)) = self.cache.get(self.last_tag as usize) {
                 object = cached.clone();
             }

@@ -2,6 +2,8 @@
 
 RIO/ICI decryption, serialized class names, and address transforms were ported
 from [GARbro ArcRIO.cs](https://github.com/morkt/GARbro/blob/master/ArcFormats/rUGP/ArcRIO.cs).
+CRip007 decoding and quantization tables are ported from
+[GARbro ImageRIP.cs](https://github.com/morkt/GARbro/blob/master/ArcFormats/rUGP/ImageRIP.cs).
 
 Copyright (C) 2016 by morkt
 
@@ -27,3 +29,8 @@ Additional format research:
 [osmium76/rugptools](https://github.com/osmium76/rugptools), especially the
 object prefix, object-reference cache, and CRsa serialization notes. Its
 hardcoded Muv-Luv archive position is not used here.
+
+[AgeReVerse's format research](https://github.com/RepressedAlliance/AgeReVerse/tree/main/rUGP/formats)
+provided cross-checks for native descriptor field kinds, typed VM literals,
+Cr6Ti channel order, and CRip008 predictor and surface conventions. Its newer
+Photon archive profiles are not substituted for the 2008 disc's headers.

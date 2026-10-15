@@ -38,8 +38,10 @@ pub struct Instruction {
     pub index: u32,
     pub stream_offset: usize,
     pub class: ClassId,
-    /// Offset in the engine's in-memory instruction array (not a file offset).
+    /// Offset of this command in the engine's in-memory instruction array.
     pub address: u32,
+    /// Serialized link to the next command, or u32::MAX for the end of a chain.
+    pub next_address: u32,
     pub flags: u32,
     pub arguments: Vec<Argument>,
 }
@@ -85,6 +87,7 @@ impl Scenario {
         };
         let mut instructions = Vec::new();
         let mut null_records = Vec::new();
+        let mut address = 0u32;
         for index in 0..script.instruction_count {
             let stream_offset = decoder.r.input.position;
             let Some(class) = decoder.r.class().with_context(|| {
@@ -99,7 +102,17 @@ impl Scenario {
                 null_records.push(index);
                 continue;
             };
-            let address = decoder.r.input.u32()?;
+            let next_address = decoder.r.input.u32()?;
+            ensure!(
+                address < script.memory_size,
+                "instruction address outside scene allocation"
+            );
+            ensure!(
+                next_address == u32::MAX
+                    || (next_address >= address.saturating_add(8)
+                        && next_address < script.memory_size),
+                "invalid next command link {address:#x} -> {next_address:#x}"
+            );
             let flags = decoder.r.input.u32()?;
             let arguments = decoder.instruction(&class, flags).with_context(|| {
                 format!(
@@ -112,9 +125,11 @@ impl Scenario {
                 stream_offset,
                 class,
                 address,
+                next_address,
                 flags,
                 arguments,
             });
+            address = next_address;
         }
         ensure!(
             decoder.r.input.remaining() == 0,

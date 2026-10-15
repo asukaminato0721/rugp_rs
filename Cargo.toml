@@ -23,6 +23,7 @@ rugp_scene_vm = { path = "crates/rugp_scene_vm" }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+png = "0.18"
 
 [profile.release]
 strip = true
