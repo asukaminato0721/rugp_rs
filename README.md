@@ -225,14 +225,24 @@ extended background at scene 88, PC `0x7c`, and synchronized camera setup
 at scene 79, PC `0x428`. Correct synchronous ParseScreen waits now allow
 later camera setup. Native default angular boundary correction now passes
 the translated target at scene 79, PC `0x60`, and mode-4 camera setup
-at scene 79, PC `0x3a8`. The chapter now reaches the next unsupported
-`OM_AddPostureMomentum` request at scene 64, PC `0x0`.
+at scene 79, PC `0x3a8`. Posture motion now passes scene 64, PC `0x0`,
+including object assignment and the later query/cancel through `CVmVarObj`.
+The chapter now reaches voiced dialogue at scene 483, PC `0xc28`, whose
+resource callback is the next unimplemented boundary.
 Its inline `CPostureMoment#4` resources now retain typed numeric fields and
 all five context-bound references during the original archive-reading pass.
 Inner versions 0–2, conditional vectors/modes, signed vectors and finite channel
 scales have synthetic truncation/alignment tests, and all retail scenes validate
-their 152 typed inline posture records. Motion-curve sampling and posture execution
-remain unsupported; recognizing the resource does not acknowledge the message.
+their 152 typed inline posture records. Background posture execution now samples
+position, Q4 angles and zoom on an independent VM clock, with per-moment bounds,
+channel scaling, absolute/delta modes, inclusive endpoints and loop handling.
+Time modes use sequential, equal-share or duration-weighted segments. Spatial
+Bezier uses Bernstein sums; timing Bezier uses the native 40-segment crossing
+approximation. Floating-point sampling uses f64 rather than x87 precision.
+Synthetic tests and a host/pixel regression cover elapsed time, distinct identical
+instances, cached identity, stacking, restart, natural completion and mode-33
+query/cancel without snapping to the endpoint. Other synchronization modes,
+prepared-state option 1 and concurrent screen transitions remain unsupported.
 `CMoveAcsOngen#3` now retains sequential segment endpoints, X/Z compact vectors,
 Bezier controls, timing modes, flags and embedded quadratic/Bezier time curves.
 Timing instances and class reuse share the original archive cache. Tests cover

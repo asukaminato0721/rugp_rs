@@ -479,7 +479,20 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     // Follow real page input through sound status queries to the next boundary.
     let mut boundary = None;
     let mut saw_ramp = false;
+    let mut saw_posture = false;
+    let mut saw_posture_stop = false;
+    let mut posture_start = None;
+    let mut saw_posture_camera_change = false;
     for _ in 0..1000 {
+        if let Some(object) = game.objects.get(&212259) {
+            if object.active_posture_count() > 0 {
+                saw_posture = true;
+                let start = posture_start.get_or_insert(object.camera);
+                saw_posture_camera_change |= *start != object.camera;
+            } else if saw_posture {
+                saw_posture_stop = true;
+            }
+        }
         if game.dialogue_waits_for_input() {
             game.activate_selection()?;
         }
@@ -513,15 +526,24 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         .get(&212259)
         .context("chapter background missing")?
         .camera;
-    assert_eq!(camera.focal_length, 1505, "{boundary:#}");
-    assert_eq!(camera.angles_q4, [-3632, -1104, 0], "{boundary:#}");
+    assert!(saw_posture, "chapter must activate the real posture");
+    assert!(
+        saw_posture_camera_change,
+        "posture must change the camera on elapsed time"
+    );
+    assert!(
+        saw_posture_stop,
+        "native query/cancel must remove the active posture"
+    );
+    assert_eq!(camera.focal_length, 624, "{boundary:#}");
+    assert_eq!(camera.angles_q4, [-164, -1216, 0], "{boundary:#}");
     assert_eq!(
         camera.position, [0; 3],
-        "rejected target must not mutate state"
+        "rejected dialogue must not mutate camera"
     );
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((64, 0)),
+        Some((483, 0xc28)),
         "{boundary:#}"
     );
     let layers = game.objects[&212259].world_layers;
@@ -537,28 +559,18 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("unimplemented runtime message OM_AddPostureMomentum"),
+        format!("{boundary:#}").contains("dialogue resource callback is not implemented"),
         "{boundary:#}"
     );
     assert!(saw_ramp, "chapter must queue the real ramped playback");
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
-        assert_eq!(instruction.class.name, "CVmGenericMsg");
-        let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_AddPostureMomentum");
-        let Some(rugp_scene_vm::vm::Value::Reference(media)) =
-            message.fields.get("姿勢運動メディア")
-        else {
-            panic!("posture request did not bind its media reference");
-        };
-        let class = media
-            .class
-            .as_ref()
-            .context("posture media class missing")?;
-        assert_eq!(class.name, "CPostureMoment");
-        assert_eq!(class.schema, 4);
-        assert!(media.inline.is_some());
+        assert_eq!(instruction.class.name, "CVmMsg");
+        assert!(matches!(
+            game.vm.evaluate(&instruction.arguments[2])?,
+            rugp_scene_vm::vm::Value::Reference(_)
+        ));
     } else {
-        panic!("unimplemented posture momentum was acknowledged");
+        panic!("unimplemented dialogue callback was acknowledged");
     }
     Ok(())
 }

@@ -107,6 +107,100 @@ fn flag(operation: u32, src: Argument, dst: Argument, branch: u32) -> Vec<Argume
         Argument::Number(branch),
     ]
 }
+
+#[test]
+fn object_assignment_copies_values_without_integer_coercion_and_preserves_scope() {
+    let Argument::Reference(owner) = reference("CRsa", 200) else {
+        unreachable!()
+    };
+    let Argument::Reference(mut r) = reference("CPostureMoment", 700) else {
+        unreachable!()
+    };
+    r.flags |= 1;
+    r.owner = Some(Box::new(owner));
+    let parameter = Argument::Reference(r);
+    let mut program = Program::default();
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![
+                    instruction(
+                        "CVmCall",
+                        0,
+                        32,
+                        vec![reference("CRsa", 200), reference("CPostureMoment", 900)],
+                    ),
+                    instruction("CVmRet", 32, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    let null = Argument::Reference(
+        rugp_assets::object::ObjectReader::new(&[0; 3])
+            .reference(0)
+            .unwrap(),
+    );
+    program
+        .insert(
+            200,
+            scene(
+                2,
+                vec![
+                    instruction(
+                        "CVmFlagOp",
+                        0,
+                        32,
+                        flag(0x50, parameter.clone(), reference("CVmVarObj", 600), 32),
+                    ),
+                    instruction(
+                        "CVmFlagOp",
+                        32,
+                        64,
+                        flag(
+                            0x50,
+                            reference("CVmVarObj", 600),
+                            reference("CVmVarObj", 601),
+                            64,
+                        ),
+                    ),
+                    instruction("CVmFlagOp", 64, 96, flag(0x50, null, parameter.clone(), 96)),
+                    instruction(
+                        "CVmFlagOp",
+                        96,
+                        128,
+                        flag(0x50, parameter, reference("CVmVarObj", 602), 128),
+                    ),
+                    instruction(
+                        "CVmFlagOp",
+                        128,
+                        160,
+                        flag(0x50, immediate(7), reference("CVmVarObj", 600), 160),
+                    ),
+                    instruction("CVmRet", 160, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    let mut vm = Vm::new(Arc::new(program), 1).unwrap();
+    for _ in 0..5 {
+        assert!(matches!(vm.step().unwrap(), Step::Advanced));
+    }
+    for offset in [600, 601] {
+        let Value::Reference(r) = &vm.variables[&offset] else {
+            panic!("lost object value");
+        };
+        assert_eq!(r.offset, Some(900));
+        assert_eq!(r.class.as_ref().unwrap().name, "CPostureMoment");
+    }
+    assert!(matches!(vm.variables[&602], Value::Null));
+    assert!(matches!(vm.arguments()[0], Value::Null));
+    assert!(!vm.variables.contains_key(&700));
+    assert!(vm.step().is_err());
+    assert_eq!(vm.cursor().unwrap().address, 128);
+    assert!(matches!(vm.variables[&600], Value::Reference(_)));
+}
 #[test]
 fn calls_returns_values_and_host_acknowledgement() {
     let mut program = Program::default();

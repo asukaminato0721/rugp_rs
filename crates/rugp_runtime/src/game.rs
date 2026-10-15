@@ -16,6 +16,7 @@ mod camera;
 mod dialogue;
 mod menu;
 mod parse_screen;
+mod posture;
 mod profile;
 mod sound;
 mod var_data;
@@ -58,6 +59,7 @@ pub struct ObjectState {
     /// Native camera command style 0x800 records a start without applying it.
     camera_start: Option<Camera>,
     pending_camera: Option<crate::world::CameraTween>,
+    postures: Vec<posture::PostureInstance>,
     /// Native first slot's cached projected center (+56), updated on render.
     camera_center_y: Cell<i16>,
     pub world_layers: crate::world::WorldLayerFlags,
@@ -80,6 +82,7 @@ impl Default for ObjectState {
             camera: Camera::default(),
             camera_start: None,
             pending_camera: None,
+            postures: Vec::new(),
             camera_center_y: Cell::new(0),
             world_layers: crate::world::WorldLayerFlags::default(),
             opacity: 255,
@@ -91,6 +94,9 @@ impl Default for ObjectState {
     }
 }
 impl ObjectState {
+    pub fn active_posture_count(&self) -> usize {
+        self.postures.len()
+    }
     fn render(&self, frame: &mut Framebuffer) -> Result<()> {
         if let Some(backdrop) = self.backdrop {
             backdrop.paint(frame, self.rect);
@@ -355,6 +361,7 @@ impl Game {
             self.ensure_message_window(&target)?;
         }
         match message.class.as_str() {
+            "OM_AddPostureMomentum" => self.add_posture(&target, &fields)?,
             "OM_SetVarData" => self.set_var_data(&target, &fields)?,
             "OM_SetDrawRatioAsParseWnd" => self.set_draw_ratio(&target, &fields)?,
             "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
@@ -526,6 +533,15 @@ impl Game {
             "CVmSync" => {
                 let target = self.vm.evaluate(&instruction.arguments[0])?;
                 if let Value::Reference(reference) = target {
+                    if reference
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "CPostureMoment")
+                    {
+                        let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                        let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+                        return self.synchronize_posture(&reference, mode, timeout);
+                    }
                     if reference.class.as_ref().is_some_and(|c| {
                         ["CPmBgm", "CPmEffect", "COptimizedObs"].contains(&c.name.as_str())
                     }) {
@@ -584,6 +600,7 @@ impl Game {
         }
         self.audio_state.advance(dt_ms);
         self.advance_parse_transition(dt_ms)?;
+        self.advance_postures(dt_ms)?;
         if let Some(t) = &mut self.transition {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }

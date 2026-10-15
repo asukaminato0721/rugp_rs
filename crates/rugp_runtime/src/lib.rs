@@ -11,6 +11,8 @@ pub mod image_manager;
 pub mod input;
 pub mod menu;
 pub mod message_window;
+pub mod motion;
+pub mod posture;
 pub mod profile_store;
 pub mod render;
 pub mod video;

@@ -2,6 +2,7 @@ use crate::binary::{Bits, Reader};
 use crate::crypto::{decode_offset, decode_size};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
+use std::sync::Arc;
 
 pub const ENCRYPTED_SIGNATURE: u32 = 0x1edb927c;
 pub const OBJECT_SIGNATURE: u32 = 0x29f6cba4;
@@ -49,7 +50,21 @@ pub struct InlineObject {
     pub posture: Option<Box<crate::posture::PostureFields>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motion: Option<Box<crate::motion::MotionCurve>>,
+    #[serde(skip)]
+    identity: InlineIdentity,
 }
+
+/// Runtime identity of an inline instance, independent of byte equality.
+/// Cloned/cached references retain it; a separately read identical body does not.
+/// Never serialized: allocation addresses are not archive identifiers.
+#[derive(Debug, Clone)]
+pub struct InlineIdentity(Arc<()>);
+impl PartialEq for InlineIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for InlineIdentity {}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InlineBitmap {
@@ -62,6 +77,9 @@ pub enum BitmapHeader {
     Rip(crate::rip::RipHeader),
 }
 impl InlineObject {
+    pub fn identity(&self) -> InlineIdentity {
+        self.identity.clone()
+    }
     pub fn decode_bitmap(&self) -> Result<crate::image::Image> {
         let bitmap = self
             .bitmap
@@ -405,6 +423,7 @@ impl<'a> ObjectReader<'a> {
             bitmap,
             posture,
             motion,
+            identity: InlineIdentity(Arc::new(())),
         })
     }
     pub fn header(&mut self) -> Result<ClassId> {

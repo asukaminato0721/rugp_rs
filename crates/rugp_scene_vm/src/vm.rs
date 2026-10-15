@@ -18,7 +18,14 @@ impl Value {
     pub fn integer(&self) -> Result<i32> {
         match self {
             Self::Integer(v) => Ok(*v),
-            _ => bail!("expected integer, got {self:?}"),
+            Self::Null => bail!("expected integer, got null"),
+            Self::Real(_) => bail!("expected integer, got real"),
+            Self::Text(_) => bail!("expected integer, got text"),
+            Self::Bytes(_) => bail!("expected integer, got bytes"),
+            Self::Reference(r) => bail!(
+                "expected integer, got {} reference",
+                r.class.as_ref().map_or("null", |c| c.name.as_str())
+            ),
         }
     }
 }
@@ -544,6 +551,21 @@ impl Vm {
                 let operation = self.evaluate(&ins.arguments[3])?.integer()?;
                 let mode = self.evaluate(&ins.arguments[4])?.integer()?;
                 ensure!(mode == 1, "unsupported flag branch mode {mode}");
+                // Vm60 100720c2 separates object operations at 0x50 before
+                // scalar evaluation. 10072280..1007230e assigns the resolved
+                // object to CVmVarObj (or the selected parameter slot), without
+                // first converting either object pointer to an integer.
+                if operation == 0x50 {
+                    let source = self.evaluate(&ins.arguments[0])?;
+                    ensure!(
+                        matches!(source, Value::Reference(_) | Value::Null),
+                        "object assignment source is not a reference"
+                    );
+                    let destination = self.destination(&ins.arguments[1])?;
+                    self.assign(destination, source)?;
+                    self.advance()?;
+                    return Ok(Step::Advanced);
+                }
                 let source = if operation == 0x40 || operation == 0x41 {
                     0
                 } else {

@@ -128,3 +128,31 @@ fn malformed_metadata_is_rejected() {
     inline.posture = None;
     assert!(Posture::from_inline(&inline, &class()).is_err());
 }
+
+#[test]
+fn identical_bodies_are_distinct_instances_but_cached_copies_keep_identity() {
+    let bytes = body(2, true);
+    let first = ObjectReader::new(&bytes).read_inline(&class(), 0).unwrap();
+    let copied = first.clone();
+    let separate = ObjectReader::new(&bytes).read_inline(&class(), 0).unwrap();
+    assert_eq!(first.identity(), copied.identity());
+    assert_ne!(first.identity(), separate.identity());
+    assert_eq!(first.data, separate.data);
+    // Also exercise the real ObjectReader cache rather than only Clone.
+    let mut bytes = vec![0]; // first RIO reference ancestry count
+    bytes.extend(0xffffu16.to_le_bytes());
+    bytes.extend(4u16.to_le_bytes());
+    bytes.extend(14u16.to_le_bytes());
+    bytes.extend(b"CPostureMoment");
+    bytes.extend(0x40u16.to_le_bytes());
+    bytes.extend(body(2, false));
+    bytes.extend(3u16.to_le_bytes()); // class at 2, object at 3
+    let mut reader = ObjectReader::new(&bytes);
+    let first = reader.reference(0).unwrap();
+    let cached = reader.reference(0).unwrap();
+    assert_eq!(
+        first.inline.unwrap().identity(),
+        cached.inline.unwrap().identity()
+    );
+    assert_eq!(reader.input.remaining(), 0);
+}
