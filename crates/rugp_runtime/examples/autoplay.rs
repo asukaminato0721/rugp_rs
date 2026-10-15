@@ -105,7 +105,7 @@ fn main() -> Result<()> {
         if let Some(pc) = game.vm.cursor() {
             scenes.insert(pc.scene);
         }
-        if tick % 100 == 0 {
+        if tick.is_multiple_of(100) {
             println!(
                 "tick={tick} pc={:?} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds}",
                 game.vm.cursor(),
