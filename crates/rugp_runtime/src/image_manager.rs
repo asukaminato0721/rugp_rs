@@ -52,6 +52,7 @@ impl ImageManager {
             "Cr6Ti" => decode_r6ti(&bytes, shift)?,
             "CRip007" => decode_rip007(&bytes, class.schema, shift)?,
             "CRip008" => decode_rip008(&bytes, class.schema, shift)?,
+            "CS5i" => rugp_assets::s5i::decode_s5i(&bytes, class.schema)?,
             "CRmt" => Crmt::parse(&bytes, shift)?
                 .levels
                 .first()

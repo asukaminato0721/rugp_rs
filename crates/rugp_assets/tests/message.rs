@@ -91,7 +91,7 @@ fn eight_frame_pieces_and_signed_geometry_are_bounded() -> Result<()> {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
-fn retail_message_window_and_eight_border_references() -> Result<()> {
+fn retail_message_window_and_eight_border_bitmaps() -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
     let archive = rugp_assets::RioArchive::open(root)?;
     let node = archive
@@ -115,14 +115,32 @@ fn retail_message_window_and_eight_border_references() -> Result<()> {
         archive.address_shift,
     )?;
     assert_eq!(&frame.geometry[12..], &[6, 6, 5, 5]);
-    for piece in &frame.pieces {
+    for (i, piece) in frame.pieces.iter().enumerate() {
         let class = piece.class.as_ref().context("frame piece class")?;
         assert_eq!((class.name.as_str(), class.schema), ("CS5i", 2));
         let bytes = archive.read_at(
             piece.offset.context("piece offset")?,
             piece.size.context("piece size")? as usize,
         )?;
-        assert!(bytes.len() >= 3);
+        let image = rugp_assets::s5i::decode_s5i(&bytes, class.schema)?;
+        let expected = [
+            (6, 6),
+            (7, 7),
+            (6, 6),
+            (6, 6),
+            (16, 6),
+            (6, 16),
+            (6, 16),
+            (16, 6),
+        ];
+        assert_eq!((image.width, image.height), expected[i]);
+        if i == 0 {
+            assert_eq!(image.rgba[3], 0);
+            assert_eq!(
+                image.rgba[((image.height - 1) * image.width) as usize * 4 + 3],
+                83
+            );
+        }
     }
     Ok(())
 }

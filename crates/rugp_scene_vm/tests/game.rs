@@ -2,6 +2,32 @@ use anyhow::{Result, ensure};
 use rugp_assets::{RioArchive, native_schema::NativeSchema, script::Script};
 use rugp_scene_vm::Scenario;
 
+#[test]
+#[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
+fn message_border_expansion_is_explicit_and_idempotent() -> Result<()> {
+    use rugp_scene_vm::resources::ResourceIndex;
+    let root = std::env::var_os("RUGP_TEST_GAME")
+        .ok_or_else(|| anyhow::anyhow!("RUGP_TEST_GAME missing"))?;
+    let archive = RioArchive::open(&root)?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let mut index = ResourceIndex::scan(&archive, &native)?;
+    assert_eq!(index.resources.len(), 34993);
+    assert!(!index.resources.contains_key(&13493870));
+    index.expand_message_sources(&archive)?;
+    assert_eq!(index.resources[&13493708].class.name, "CFrameImage");
+    for offset in [
+        13493870, 13494041, 13494264, 13494435, 13494606, 13495017, 13495428, 13495839,
+    ] {
+        let resource = &index.resources[&offset];
+        assert_eq!(resource.class.name, "CS5i");
+        rugp_assets::s5i::decode_s5i(&index.read(&archive, offset)?, resource.class.schema)?;
+    }
+    let count = index.resources.len();
+    index.expand_message_sources(&archive)?;
+    assert_eq!(index.resources.len(), count);
+    Ok(())
+}
+
 /// Uses the user's own game; no retail assets or dialogue are committed.
 #[test]
 #[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]

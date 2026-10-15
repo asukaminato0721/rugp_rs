@@ -121,6 +121,52 @@ impl ResourceIndex {
             .context("resource offset not in scene reference index")?;
         archive.read_at(resource.offset, resource.size as usize)
     }
+    /// Resolve message-window borders without changing the direct-reference
+    /// coverage counts reported by the normal scan.
+    pub fn expand_message_sources(&mut self, archive: &RioArchive) -> Result<()> {
+        let windows: Vec<_> = self
+            .resources
+            .values()
+            .filter(|r| r.class.name == "CMsgSelBox")
+            .cloned()
+            .collect();
+        for resource in windows {
+            ensure!(
+                resource.size <= 16 * 1024 * 1024,
+                "oversized message window"
+            );
+            let window = rugp_assets::message::MessageBox::parse(
+                &archive.read_at(resource.offset, resource.size as usize)?,
+                resource.class.schema,
+                archive.address_shift,
+            )?;
+            window.visit_references(&mut |r| self.add(r));
+        }
+        let frames: Vec<_> = self
+            .resources
+            .values()
+            .filter(|r| r.class.name == "CFrameImage")
+            .cloned()
+            .collect();
+        for resource in frames {
+            ensure!(resource.size <= 16 * 1024 * 1024, "oversized frame image");
+            let frame = rugp_assets::message::FrameImage::parse(
+                &archive.read_at(resource.offset, resource.size as usize)?,
+                resource.class.schema,
+                archive.address_shift,
+            )?;
+            frame.visit_references(&mut |r| self.add(r));
+        }
+        for r in self.resources.values() {
+            ensure!(
+                r.offset
+                    .checked_add(u64::from(r.size))
+                    .is_some_and(|end| end <= archive.len()),
+                "expanded message resource outside archive"
+            );
+        }
+        Ok(())
+    }
     /// Include sources stored inside BGM/effect wrappers, rather than only
     /// the direct scene references. Voice OOR extents are already direct.
     pub fn expand_sound_sources(&mut self, archive: &RioArchive) -> Result<()> {

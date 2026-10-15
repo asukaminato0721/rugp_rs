@@ -422,6 +422,9 @@ fn main() -> Result<()> {
             if !index.resources.contains_key(&offset) {
                 index.expand_menu_sources(&archive)?;
             }
+            if !index.resources.contains_key(&offset) {
+                index.expand_message_sources(&archive)?;
+            }
             let resource = index
                 .resources
                 .get(&offset)
@@ -690,6 +693,7 @@ fn decode_image(
     let bytes = archive.read_at(resource.offset, resource.size as usize)?;
     match resource.class.name.as_str() {
         "Cr6Ti" => rugp_assets::image::decode_r6ti(&bytes, archive.address_shift),
+        "CS5i" => rugp_assets::s5i::decode_s5i(&bytes, resource.class.schema),
         "CRip007" => {
             rugp_assets::rip::decode_rip007(&bytes, resource.class.schema, archive.address_shift)
         }

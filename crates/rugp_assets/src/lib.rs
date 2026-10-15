@@ -18,6 +18,7 @@ pub mod profile;
 pub mod project;
 pub mod rip;
 mod rip_quant;
+pub mod s5i;
 pub mod script;
 pub mod sound;
 
