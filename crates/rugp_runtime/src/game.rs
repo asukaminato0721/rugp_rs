@@ -105,6 +105,30 @@ impl ObjectState {
     pub fn active_posture_count(&self) -> usize {
         self.postures.len()
     }
+    fn cache_world_center(&self, image: &WorldImage) -> Result<()> {
+        if let Some(first) = image.planes.first() {
+            self.camera_center_y.set(
+                first
+                    .plane
+                    .projected_camera_center_y(&self.camera, self.rect)?,
+            );
+        }
+        Ok(())
+    }
+    fn validate_projection(&self) -> Result<()> {
+        for layer in self.layers.values() {
+            if let Layer::World(image) = layer {
+                self.cache_world_center(image)?;
+                for plane in image.planes.iter().filter(|p| p.draw_flags & 2 == 0) {
+                    plane.texture.validate()?;
+                    plane.plane.quad(&self.camera, self.rect)?;
+                }
+            } else if let Layer::Screen(texture) = layer {
+                texture.validate()?;
+            }
+        }
+        self.character.validate_texture()
+    }
     fn render(&self, frame: &mut Framebuffer) -> Result<()> {
         if let Some(backdrop) = self.backdrop {
             backdrop.paint(frame, self.rect);
@@ -112,13 +136,7 @@ impl ObjectState {
         for layer in self.layers.values() {
             match layer {
                 Layer::World(image) => {
-                    if let Some(first) = image.planes.first() {
-                        self.camera_center_y.set(
-                            first
-                                .plane
-                                .projected_camera_center_y(&self.camera, self.rect)?,
-                        );
-                    }
+                    self.cache_world_center(image)?;
                     for layer in &image.planes {
                         if layer.draw_flags & 2 != 0 {
                             continue;
@@ -152,6 +170,7 @@ pub struct Game {
     pub objects: BTreeMap<u64, ObjectState>,
     images: ImageManager,
     frame: Framebuffer,
+    rasterize_scene: bool,
     primary_buffer: u64,
     buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
@@ -207,6 +226,7 @@ impl Game {
             vm,
             objects: BTreeMap::new(),
             frame: Framebuffer::new(1024, 600)?,
+            rasterize_scene: true,
             primary_buffer,
             buffers: BTreeMap::new(),
             transition: None,
@@ -281,6 +301,12 @@ impl Game {
     pub fn frame(&self) -> &[u8] {
         &self.frame.rgba
     }
+    /// Diagnostic only: omit scene pixel composition, not host execution,
+    /// projection/cache updates, resource decoding, input or media clocks.
+    /// Applies to future compositions; this mode is not visual verification.
+    pub fn set_scene_rasterization(&mut self, enabled: bool) {
+        self.rasterize_scene = enabled;
+    }
     pub fn video(&self) -> Option<&crate::video::VideoPlayer> {
         self.video.as_ref().map(|(_, player)| player)
     }
@@ -301,7 +327,21 @@ impl Game {
         self.audio_state.set_duration(ticket, duration_ms);
     }
     fn scene_frame(&self) -> Result<Framebuffer> {
-        Self::render_objects(&self.objects, self.size())
+        Self::render_objects_mode(&self.objects, self.size(), self.rasterize_scene)
+    }
+    fn render_objects_mode(
+        objects: &BTreeMap<u64, ObjectState>,
+        size: (u32, u32),
+        rasterize: bool,
+    ) -> Result<Framebuffer> {
+        if rasterize {
+            return Self::render_objects(objects, size);
+        }
+        let frame = Framebuffer::new(size.0, size.1)?;
+        for object in objects.values().filter(|o| o.visible) {
+            object.validate_projection()?;
+        }
+        Ok(frame)
     }
     fn render_objects(
         objects: &BTreeMap<u64, ObjectState>,
@@ -339,13 +379,15 @@ impl Game {
                     )
                 },
             );
-            for (out, (from, to)) in self
-                .frame
-                .rgba
-                .iter_mut()
-                .zip(transition.from.iter().zip(&transition.to))
-            {
-                *out = ((*from as u64 * (d - a) + *to as u64 * a + d / 2) / d) as u8;
+            if self.rasterize_scene {
+                for (out, (from, to)) in self
+                    .frame
+                    .rgba
+                    .iter_mut()
+                    .zip(transition.from.iter().zip(&transition.to))
+                {
+                    *out = ((*from as u64 * (d - a) + *to as u64 * a + d / 2) / d) as u8;
+                }
             }
             if transition.elapsed >= transition.duration {
                 let parse = transition.curve.is_none();

@@ -11,6 +11,9 @@ pub(super) struct CharacterState {
     style: i32,
 }
 impl CharacterState {
+    pub(super) fn validate_texture(&self) -> Result<()> {
+        self.texture.as_deref().map_or(Ok(()), Texture::validate)
+    }
     pub(super) fn has_image(&self) -> bool {
         self.texture.is_some()
     }
@@ -152,6 +155,24 @@ impl Game {
         id: u64,
         fields: &BTreeMap<String, Value>,
     ) -> Result<()> {
+        let position = [
+            number(fields, "３ＤＸ", 0)?,
+            number(fields, "３ＤＹ", 0)?,
+            number(fields, "３ＤＺ", 0)?,
+        ];
+        let style = number(fields, "スタイル", 0)?;
+        if matches!(fields.get("ベース画像"), None | Some(Value::Null)) {
+            ensure!(
+                matches!(fields.get("表情画像"), None | Some(Value::Null)),
+                "expression-only character update is not implemented"
+            );
+            // A null image packet can reposition the current actor without
+            // replacing or reviving its image (including an empty actor).
+            let character = &mut self.objects.entry(id).or_default().character;
+            character.position = position;
+            character.style = style;
+            return Ok(());
+        }
         let Some(Value::Reference(body)) = fields.get("ベース画像") else {
             bail!("character message has no bound body");
         };
@@ -170,12 +191,6 @@ impl Game {
             overlays.push(expression.clone());
         }
         let texture = self.character_texture(body, &overlays)?;
-        let position = [
-            number(fields, "３ＤＸ", 0)?,
-            number(fields, "３ＤＹ", 0)?,
-            number(fields, "３ＤＺ", 0)?,
-        ];
-        let style = number(fields, "スタイル", 0)?;
         let object = self.objects.entry(id).or_default();
         object.layers.clear();
         object.menu = None;
@@ -277,6 +292,19 @@ mod tests {
         assert_ne!(texture.rgba, body.rgba); // real transparent face parts were composited
         game.present_scene()?;
         assert_ne!(game.frame(), before);
+        let image = Arc::clone(game.objects[&id].character.texture.as_ref().unwrap());
+        game.show_character(
+            id,
+            &BTreeMap::from([
+                ("ベース画像".into(), Value::Null),
+                ("３ＤＺ".into(), Value::Integer(2240)),
+            ]),
+        )?;
+        assert!(Arc::ptr_eq(
+            &image,
+            game.objects[&id].character.texture.as_ref().unwrap()
+        ));
+        assert_eq!(game.objects[&id].character.position, [0, 0, 2240]);
         let pixels = game.frame().to_vec();
         let call = |key| Message {
             class: "OM_SetRefData".into(),

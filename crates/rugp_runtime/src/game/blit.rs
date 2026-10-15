@@ -123,17 +123,26 @@ impl Game {
             bail!("parse image destination missing")
         };
         let mut frame = Framebuffer::new(self.frame.width, self.frame.height)?;
-        self.objects
+        let source = self
+            .objects
             .get(&id)
-            .context("parse image source missing")?
-            .render(&mut frame)?;
+            .context("parse image source missing")?;
+        if self.rasterize_scene {
+            source.render(&mut frame)?;
+        } else {
+            source.validate_projection()?;
+        }
         for (&other_id, object) in &self.objects {
             if other_id != id
                 && object.parent == Some(id)
                 && object.visible
                 && object.has_character_image()
             {
-                object.render(&mut frame)?;
+                if self.rasterize_scene {
+                    object.render(&mut frame)?;
+                } else {
+                    object.validate_projection()?;
+                }
             }
         }
         self.write_surface(
@@ -179,7 +188,11 @@ impl Game {
                 });
             let mut frame = Framebuffer::new(size.0, size.1)?;
             if let Some(object) = self.objects.get(&id) {
-                object.render(&mut frame)?;
+                if self.rasterize_scene {
+                    object.render(&mut frame)?;
+                } else {
+                    object.validate_projection()?;
+                }
             }
             return Ok(Arc::new(Texture {
                 width: frame.width,
@@ -459,6 +472,80 @@ mod tests {
         game.step(0)?;
         assert!(game.buffers[&501].rgba.iter().all(|b| *b == 0));
         game.present_scene()?;
+        assert_eq!(game.frame(), before);
+        // Diagnostic raster suppression must still suspend and release the VM
+        // on the effect's real blocking clock.
+        game.wait_ms = None;
+        game.set_scene_rasterization(false);
+        let mut data = Vec::new();
+        for word in [2u16, 0, 0, 0, 0] {
+            data.extend(word.to_le_bytes());
+        }
+        data.extend([0; 24]);
+        for word in [0u16, 0, 256, 8192] {
+            data.extend(word.to_le_bytes());
+        }
+        let mut primary = reference(game.primary_buffer);
+        primary.class.as_mut().unwrap().name = "CFrameBuffer".into();
+        let mut program = Program::default();
+        program.insert(
+            0,
+            Scenario {
+                object_id: 1,
+                memory_size: 48,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    Instruction {
+                        index: 0,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmBlt".into(),
+                            schema: 17,
+                        },
+                        address: 0,
+                        next_address: 24,
+                        flags: 0,
+                        arguments: vec![
+                            Argument::Message {
+                                class: ClassId {
+                                    name: "CFadeNormal".into(),
+                                    schema: 12,
+                                },
+                                arguments: vec![
+                                    Argument::Bytes(data),
+                                    Argument::Reference(reference(500)),
+                                    Argument::Reference(primary.clone()),
+                                    Argument::Reference(primary),
+                                ],
+                            },
+                            Argument::Number(53032),
+                            Argument::Number(1),
+                            Argument::Number(0),
+                            Argument::Number(400),
+                        ],
+                    },
+                    Instruction {
+                        index: 1,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmRet".into(),
+                            schema: 17,
+                        },
+                        address: 24,
+                        next_address: u32::MAX,
+                        flags: 0,
+                        arguments: vec![],
+                    },
+                ],
+            },
+        )?;
+        game.vm = Vm::new(Arc::new(program), 1)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.step(199)?, RunState::Waiting);
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        assert_eq!(game.step(201)?, RunState::Ended);
+        assert!(game.transition.is_none());
         assert_eq!(game.frame(), before);
         Ok(())
     }

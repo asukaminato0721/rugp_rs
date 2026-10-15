@@ -90,6 +90,10 @@ ticks and milliseconds per tick; failures identify the next missing operation:
 cargo run --release -p rugp_runtime --no-default-features --example autoplay -- /run/media/w/KIMINOZO_LE 10000 1000
 ```
 
+For faster host-logic diagnostics, append `--no-scene-raster`. This still decodes
+resources, lays out text and advances real host/media clocks and projection
+caches, but omits scene pixel composition. It is not visual verification.
+
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
 `~/.local/share/rugp_rs` on Linux). Use `play --user-data-dir PATH` to choose
@@ -265,9 +269,11 @@ layouts share one decoder table, with prefix/tail and truncation regressions.
 Default-bound mode 0 is supported as well as explicit-region mode 0x11.
 Standard `0x6` text
 packet variants share the portable layout while retaining their explicit text
-control-code waits. The real-host first-choice autoplay probe has advanced
-319 text waits, including the first character motion and later external
-posture resources; full-game completion is not yet verified.
+control-code waits. Normal-render and raster-suppressed real-host autoplay
+probes both reach the first story text selection at scene 470, PC `0x5dd4`,
+after 689 text confirmations with matching cursor/counter checkpoints. This
+includes the first character motion and later external posture resources;
+full-game completion is not yet verified.
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
 geometry/deformation/tinting. The
@@ -279,6 +285,8 @@ the character core; current placement is retained rather than reproducing the
 native saved pose/deformation. A retail regression checks actual part pixels,
 staging, replacement and clearing. Flash-layer color and scalar packets are
 retained separately even though their visual playback is approximated.
+Null body/expression `OM_HumanIn` packets update placement/style without
+replacing the existing texture or reviving a cleared character.
 Plain `CVmImage` now loads or clears a real CImgBox surface, including subsequent
 blits from that surface. Nonzero positioning/specialized modes remain unsupported.
 Ordinary blits accept nonzero auxiliary words while validating blocking, flags,

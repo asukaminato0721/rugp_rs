@@ -11,7 +11,7 @@ pub struct Texture {
     pub rgba: Vec<u8>,
 }
 impl Texture {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.width > 0
                 && self.height > 0

@@ -36,6 +36,15 @@ fn main() -> Result<()> {
         .nth(3)
         .map_or(Ok(1000), |s| s.parse::<u32>())?;
     let mut game = Game::open(root.as_ref())?;
+    if std::env::args()
+        .skip(4)
+        .any(|arg| arg == "--no-scene-raster")
+    {
+        eprintln!(
+            "Diagnostic: scene rasterization disabled; host logic/resources/timing still run. Not visual verification."
+        );
+        game.set_scene_rasterization(false);
+    }
     let mut audio = None;
     let mut scenes = BTreeSet::new();
     let mut dialogue_pages = 0;

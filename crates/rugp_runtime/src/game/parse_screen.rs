@@ -162,7 +162,7 @@ impl Game {
                 object.opacity = opacity;
             }
         }
-        let next = Self::render_objects(&parse.scene, size)?;
+        let next = Self::render_objects_mode(&parse.scene, size, self.rasterize_scene)?;
         for (&id, snapshot) in &parse.scene {
             if let Some(object) = self.objects.get(&id) {
                 object.camera_center_y.set(snapshot.camera_center_y.get());
@@ -271,6 +271,25 @@ mod tests {
         object.render(&mut frame)?;
         assert_eq!(object.camera_center_y.get(), 2);
         assert_eq!(snapshot.camera_center_y.get(), 7);
+        let mut objects = BTreeMap::from([(1, snapshot)]);
+        objects.get_mut(&1).unwrap().camera.angles_q4 = [0; 3];
+        let normal = Game::render_objects_mode(&objects, (4, 4), true)?;
+        let center = objects[&1].camera_center_y.get();
+        objects[&1].camera_center_y.set(0);
+        let diagnostic = Game::render_objects_mode(&objects, (4, 4), false)?;
+        assert_eq!(objects[&1].camera_center_y.get(), center);
+        assert_ne!(normal.rgba, diagnostic.rgba);
+        assert!(
+            diagnostic
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == [0, 0, 0, 255])
+        );
+        objects.get_mut(&1).unwrap().camera.position[2] = 720;
+        assert!(Game::render_objects_mode(&objects, (4, 4), false).is_err());
+        assert!(Game::render_objects_mode(&objects, (4, 4), true).is_err());
         Ok(())
     }
     #[test]
