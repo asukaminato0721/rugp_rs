@@ -46,3 +46,6 @@ MIT/Apache-2.0 licenses through Cargo.
 The 2008 CRmt and CBg2d parent layouts and core VM operation semantics were
 cross-checked against static disassembly of the user's `rvmm.dll` and
 `Vm60.dll`. Those binaries are never executed or redistributed.
+The CRsi index and paired-row YUV movie codec were independently reconstructed
+from the same static serialization/decoder routines; adaptive tables are
+generated from formulas rather than copied from the original binary.

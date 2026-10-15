@@ -3,6 +3,7 @@ pub mod archive;
 pub mod background;
 pub mod binary;
 pub mod crmt;
+pub mod crsi;
 pub mod crypto;
 pub mod fade;
 pub mod ici;

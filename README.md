@@ -46,6 +46,8 @@ cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-images
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE audio 0xf4800c9 voice.wav
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-audio
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-audio --decode
+cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-video --decode
+cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE video-frame 0xd0ba5f 200 movie.png
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE frame startup.png --time-ms 1000
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE play --mute
 ```
@@ -108,6 +110,15 @@ wrappers and handles inline/fragmented setup payloads. Use
 `check-audio --decode --additional-only` to validate just the additional sources.
 The Kira adapter has a mock-backend regression that checks real nonzero output
 samples and stop commands without requiring or playing audio through a device.
+
+Both scene-referenced CRsi movie indexes are range-checked and read directly
+from the split archive, one compressed frame at a time. Their CRip008 paired-row
+YUV profile has a scalar Rust decoder, including adaptive luma interpolation,
+run coding, and temporal RGB residuals. All 7,386 frames (3,152 independent and
+4,234 temporal) decode with checked row boundaries and zero-padding validation.
+The 17-byte resource trailers are retained. `video-frame` starts at the nearest
+preceding keyframe; neither inspection nor extraction loads a whole movie.
+Playback integration remains under development.
 
 The VM's retail startup regression resolves its entry through the process
 ocean, executes the initial scalar assignments, and follows the jump from

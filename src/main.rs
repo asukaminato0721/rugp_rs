@@ -52,6 +52,20 @@ enum Command {
     },
     /// Decode all referenced bitmaps and report format coverage.
     CheckImages,
+    /// Validate native CRsi movie indexes; optionally decode their frames.
+    CheckVideo {
+        #[arg(long)]
+        keyframes: bool,
+        #[arg(long, conflicts_with = "keyframes")]
+        decode: bool,
+    },
+    /// Decode one video frame to PNG, starting from its nearest preceding keyframe.
+    VideoFrame {
+        #[arg(value_parser = parse_offset)]
+        offset: u64,
+        frame: usize,
+        output: PathBuf,
+    },
     /// Decode a referenced bitmap to PNG (offset accepts decimal or 0x-prefixed hex).
     Image {
         #[arg(value_parser = parse_offset)]
@@ -238,6 +252,92 @@ fn main() -> Result<()> {
                 pcm.len() as f64 / (rate as f64 * channels as f64 * 2.0),
                 output.display()
             );
+        }
+        Command::CheckVideo { keyframes, decode } => {
+            let native = rugp_assets::native_schema::NativeSchema::from_directory(game_root)?;
+            let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let mut total = 0;
+            let mut decoded = 0;
+            for resource in index.resources.values().filter(|r| r.class.name == "CRsi") {
+                anyhow::ensure!(resource.class.schema == 1, "unsupported video schema");
+                let stream =
+                    rugp_assets::crsi::Crsi::read(&archive, resource.offset, resource.size)?;
+                let mut previous = None;
+                for (i, frame) in stream.frames.iter().enumerate() {
+                    let data = stream.frame_data(&archive, resource.offset, i)?;
+                    if decode || (keyframes && frame.is_keyframe()) {
+                        previous = Some(
+                            rugp_assets::crsi::codec::decode_frame(
+                                stream.width,
+                                stream.height,
+                                frame,
+                                &data,
+                                previous.as_ref(),
+                            )
+                            .with_context(|| format!("video {:#x}, frame {i}", resource.offset))?,
+                        );
+                        decoded += 1;
+                    }
+                }
+                total += stream.frames.len();
+                println!(
+                    "{:#x}: {}x{}, {} indexed frames, rate {}, {} trailer bytes",
+                    resource.offset,
+                    stream.width,
+                    stream.height,
+                    stream.frames.len(),
+                    stream.rate,
+                    stream.trailing_data.len()
+                );
+            }
+            println!("{total} frame payloads read; {decoded} frames decoded");
+        }
+        Command::VideoFrame {
+            offset,
+            frame,
+            output,
+        } => {
+            let native = rugp_assets::native_schema::NativeSchema::from_directory(game_root)?;
+            let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let resource = index
+                .resources
+                .get(&offset)
+                .context("unknown resource offset")?;
+            anyhow::ensure!(
+                resource.class.name == "CRsi" && resource.class.schema == 1,
+                "resource is not a supported CRsi movie"
+            );
+            let stream = rugp_assets::crsi::Crsi::read(&archive, offset, resource.size)?;
+            anyhow::ensure!(frame < stream.frames.len(), "video frame out of range");
+            let start = (0..=frame)
+                .rev()
+                .find(|&i| stream.frames[i].is_keyframe())
+                .context("video has no preceding keyframe")?;
+            let mut image = None;
+            for i in start..=frame {
+                let data = stream.frame_data(&archive, offset, i)?;
+                image = Some(
+                    rugp_assets::crsi::codec::decode_frame(
+                        stream.width,
+                        stream.height,
+                        &stream.frames[i],
+                        &data,
+                        image.as_ref(),
+                    )
+                    .with_context(|| format!("decode video frame {i}"))?,
+                );
+            }
+            let image = image.context("no decoded video frame")?;
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)?;
+            let mut encoder =
+                png::Encoder::new(std::io::BufWriter::new(file), image.width, image.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header()?.write_image_data(&image.rgba)?;
+            println!("Decoded video frame {frame} to {}", output.display());
         }
         Command::Image { offset, output } => {
             let root = archive.volumes[0]
