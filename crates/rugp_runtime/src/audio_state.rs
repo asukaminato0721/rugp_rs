@@ -1,20 +1,61 @@
 //! Host-independent playback identities and virtual deadlines. Device output
 //! reports the same identities when a real handle stops; muting supplies a
 //! decoded duration instead. Source identities are wrapper objects, not PCM keys.
+use crate::audio_envelope::GainEnvelope;
 use anyhow::{Context, Result, ensure};
+use rugp_assets::object::ObjectRef;
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub mod snapshot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Bus {
     Bgm,
     Effect,
     Voice,
 }
+impl Bus {
+    pub fn for_source(source: &ObjectRef) -> Self {
+        match source.class.as_ref().map(|c| c.name.as_str()) {
+            Some("CPmBgm") => Self::Bgm,
+            Some("COptimizedObs") => Self::Voice,
+            _ => Self::Effect,
+        }
+    }
+}
+struct GainMotion {
+    envelope: GainEnvelope,
+    started: u64,
+}
+impl GainMotion {
+    fn remaining(&self, now: u64) -> GainEnvelope {
+        let elapsed = now.saturating_sub(self.started);
+        let current = self.envelope.control_at_ms(elapsed);
+        let remaining = u64::from(self.envelope.duration_ms()).saturating_sub(elapsed) as u16;
+        GainEnvelope::from_native([
+            current,
+            if remaining == 0 {
+                current
+            } else {
+                self.envelope.native_parameters()[1]
+            },
+            remaining,
+        ])
+        .expect("validated gain motion")
+    }
+}
+struct FadeStop {
+    started: u64,
+    duration_ms: u32,
+}
 struct Playing {
     source: u64,
+    source_ref: Option<ObjectRef>,
     bus: Bus,
     started: u64,
     deadline: Option<u64>,
+    gain: GainMotion,
+    fade_stop: Option<FadeStop>,
 }
 #[derive(Default)]
 pub struct PlaybackRegistry {
@@ -37,12 +78,48 @@ impl PlaybackRegistry {
             ticket,
             Playing {
                 source,
+                source_ref: None,
                 bus,
                 started: self.clock,
                 deadline: None,
+                gain: GainMotion {
+                    envelope: GainEnvelope::UNITY,
+                    started: self.clock,
+                },
+                fade_stop: None,
             },
         );
         Ok(ticket)
+    }
+    /// Production playbacks retain their original wrapper and gain state after
+    /// the output queue is drained. PCM/cache keys alone cannot resume a sound.
+    pub fn play_sound(&mut self, source: &ObjectRef, envelope: GainEnvelope) -> Result<u64> {
+        let offset = source.offset.context("sound source identity missing")?;
+        let ticket = self.play(offset, Bus::for_source(source))?;
+        let playing = self.playing.get_mut(&ticket).unwrap();
+        playing.source_ref = Some(source.clone());
+        playing.gain.envelope = envelope;
+        Ok(ticket)
+    }
+    pub fn set_source_gain(&mut self, source: u64, envelope: GainEnvelope) {
+        for playing in self.playing.values_mut().filter(|p| p.source == source) {
+            // Match the output adapter: timed motions start at the current
+            // amplitude; instantaneous packets use their first word.
+            let next = if envelope.duration_ms() == 0 {
+                envelope
+            } else {
+                let current = playing
+                    .gain
+                    .envelope
+                    .control_at_ms(self.clock.saturating_sub(playing.gain.started));
+                let [_, end, duration] = envelope.native_parameters();
+                GainEnvelope::from_native([current, end, duration]).expect("validated gain motion")
+            };
+            playing.gain = GainMotion {
+                envelope: next,
+                started: self.clock,
+            };
+        }
     }
     pub fn advance(&mut self, dt_ms: u32) {
         self.clock = self.clock.saturating_add(u64::from(dt_ms));
@@ -78,6 +155,10 @@ impl PlaybackRegistry {
         let end = self.clock.saturating_add(u64::from(duration_ms));
         for p in self.playing.values_mut().filter(|p| p.source == source) {
             p.deadline = Some(p.deadline.map_or(end, |old| old.min(end)));
+            p.fade_stop = Some(FadeStop {
+                started: self.clock,
+                duration_ms,
+            });
         }
         self.advance(0);
     }

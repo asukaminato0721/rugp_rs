@@ -36,6 +36,9 @@ impl GainEnvelope {
     pub fn duration_ms(self) -> u16 {
         self.duration_ms
     }
+    pub fn native_parameters(self) -> [u16; 3] {
+        [self.start, self.end, self.duration_ms]
+    }
     /// Reference native control value, before the legacy mixer's block-based
     /// sample interpolation. Vm60 0x1007ed84 uses MulDiv on Q12 values and an
     /// arithmetic shift. A zero-duration packet uses its start, not its end

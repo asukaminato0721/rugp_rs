@@ -282,6 +282,18 @@ Kira's current-gain stop tween rather than reproducing the packet's initial
 gain/reset and native mixing curve exactly. Late PCM-duration reporting cannot
 overwrite a pending fade-stop deadline.
 
+Audio snapshot foundations now retain original source wrappers, playback epochs,
+gain motions, and fade-stop deadlines after the output queue is drained.
+Restored tickets are allocated above both saved and live high-water marks;
+old completion callbacks cannot finish restored sounds. Muted restoration
+reconstructs original PCM deadlines, including a tail that already ended before
+its device callback. Device reconstruction resumes the decoded PCM frame/loop
+phase and remaining gain motion rather than replaying from the beginning.
+Fade-stop reconstruction preserves current attenuation and its remaining stop
+time, but Kira's restarted decibel tween remains a presentation approximation.
+Synthetic output samples and a real retail PCM/VM-wait round trip verify these
+components. They are not yet a coordinated full-game save or save-slot UI.
+
 The chapter regression now reaches actual character dialogue at scene 483,
 PC `0xea4`, instead of asserting an expected unsupported-operation error.
 `OM_QueueFace2Data` retains the face parts, `OM_SetLayerData2D` retains layer

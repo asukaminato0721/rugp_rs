@@ -2,6 +2,7 @@
 use crate::{
     audio::{AudioResources, SoundData},
     audio_envelope::GainEnvelope,
+    audio_state::snapshot::PlaybackResume,
     game::SoundRequest,
 };
 use anyhow::{Context, Result, ensure};
@@ -12,7 +13,7 @@ use kira::{
         backend::{Backend, DefaultBackend},
     },
     sound::{
-        PlaybackState,
+        PlaybackPosition, PlaybackState,
         static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings},
     },
     tween::Tween,
@@ -25,6 +26,13 @@ struct Playing {
     source: u64,
     bus: Bus,
     handle: StaticSoundHandle,
+    gain_scale: f64,
+}
+struct PlaybackStart {
+    position: usize,
+    envelope: GainEnvelope,
+    gain_scale: f64,
+    stop_after_ms: Option<u32>,
 }
 pub struct Mixer<B: Backend> {
     manager: AudioManager<B>,
@@ -50,11 +58,68 @@ impl<B: Backend> Mixer<B> {
         looped: bool,
         envelope: GainEnvelope,
     ) -> Result<u64> {
-        ensure!(
-            [1, 2].contains(&data.channels)
-                && data.pcm.len().is_multiple_of(data.channels as usize),
-            "unsupported output channel layout"
-        );
+        self.play_config(
+            source,
+            bus,
+            data,
+            looped,
+            PlaybackStart {
+                position: 0,
+                envelope,
+                gain_scale: 1.0,
+                stop_after_ms: None,
+            },
+        )
+    }
+    /// Resume at a PCM frame offset. Loop phase uses the decoded frame count,
+    /// not rounded duration milliseconds; an expired one-shot is not replayed.
+    pub fn resume_playback(
+        &mut self,
+        playback: &PlaybackResume,
+        data: &SoundData,
+        looped: bool,
+    ) -> Result<Option<u64>> {
+        playback.validate()?;
+        let Some(position) = resume_frame(data, looped, playback.elapsed_ms)? else {
+            return Ok(None);
+        };
+        // Preserve current audibility and the remaining stop deadline. Kira's
+        // stop tween is decibel-based; restarting its remaining segment is a
+        // presentation approximation, not an extension of the VM wait.
+        let gain_scale = playback.fade_stop.map_or(1.0, |fade| {
+            Volume::Decibels(
+                Volume::MIN_DECIBELS * f64::from(fade.elapsed_ms) / f64::from(fade.duration_ms),
+            )
+            .as_amplitude()
+        });
+        self.play_config(
+            playback
+                .source
+                .offset
+                .context("resumed sound offset missing")?,
+            playback.bus,
+            data,
+            looped,
+            PlaybackStart {
+                position,
+                envelope: playback.envelope,
+                gain_scale,
+                stop_after_ms: playback.fade_stop.map(|f| f.remaining_ms),
+            },
+        )
+        .map(Some)
+    }
+    fn play_config(
+        &mut self,
+        source: u64,
+        bus: Bus,
+        data: &SoundData,
+        looped: bool,
+        start: PlaybackStart,
+    ) -> Result<u64> {
+        validate_data(data)?;
+        let ticket = self.next;
+        let next = self.next.checked_add(1).context("sound ticket overflow")?;
         self.playing
             .retain(|_, v| v.handle.state() != PlaybackState::Stopped);
         if bus != Bus::Effect {
@@ -71,7 +136,12 @@ impl<B: Backend> Mixer<B> {
         } else {
             StaticSoundSettings::default()
         };
-        let settings = settings.volume(Volume::Amplitude(envelope.start_amplitude()));
+        let envelope = start.envelope;
+        let settings = settings
+            .start_position(PlaybackPosition::Samples(start.position))
+            .volume(Volume::Amplitude(
+                envelope.start_amplitude() * start.gain_scale,
+            ));
         let sound = StaticSoundData {
             sample_rate: data.sample_rate,
             frames: frames.into(),
@@ -84,7 +154,7 @@ impl<B: Backend> Mixer<B> {
             .map_err(|e| anyhow::anyhow!("queue audio: {e}"))?;
         if envelope.duration_ms() > 0 {
             handle.set_volume(
-                Volume::Amplitude(envelope.end_amplitude()),
+                Volume::Amplitude(envelope.end_amplitude() * start.gain_scale),
                 Tween {
                     duration: std::time::Duration::from_millis(u64::from(envelope.duration_ms())),
                     easing: kira::tween::Easing::Linear,
@@ -92,14 +162,21 @@ impl<B: Backend> Mixer<B> {
                 },
             );
         }
-        let ticket = self.next;
-        self.next = self.next.checked_add(1).context("sound ticket overflow")?;
+        if let Some(duration) = start.stop_after_ms {
+            handle.stop(Tween {
+                duration: std::time::Duration::from_millis(u64::from(duration)),
+                easing: kira::tween::Easing::Linear,
+                ..Tween::default()
+            });
+        }
+        self.next = next;
         self.playing.insert(
             ticket,
             Playing {
                 source,
                 bus,
                 handle,
+                gain_scale: start.gain_scale,
             },
         );
         Ok(ticket)
@@ -153,7 +230,7 @@ impl<B: Backend> Mixer<B> {
             // Playback-first approximation: ramp from the current device gain
             // instead of resetting to the packet's initial amplitude.
             playing.handle.set_volume(
-                Volume::Amplitude(amplitude),
+                Volume::Amplitude(amplitude * playing.gain_scale),
                 Tween {
                     duration: std::time::Duration::from_millis(u64::from(envelope.duration_ms())),
                     easing: kira::tween::Easing::Linear,
@@ -162,6 +239,31 @@ impl<B: Backend> Mixer<B> {
             );
         }
     }
+}
+fn validate_data(data: &SoundData) -> Result<()> {
+    ensure!(
+        data.sample_rate > 0
+            && [1, 2].contains(&data.channels)
+            && data.pcm.len().is_multiple_of(usize::from(data.channels)),
+        "unsupported output sample rate/channel layout"
+    );
+    Ok(())
+}
+fn resume_frame(data: &SoundData, looped: bool, elapsed_ms: u64) -> Result<Option<usize>> {
+    validate_data(data)?;
+    let frames = data.pcm.len() / usize::from(data.channels);
+    ensure!(
+        frames > 0 || !looped,
+        "cannot resume an empty looping sound"
+    );
+    let position = u128::from(elapsed_ms) * u128::from(data.sample_rate) / 1000;
+    Ok(if looped {
+        Some((position % frames as u128) as usize)
+    } else if position >= frames as u128 {
+        None
+    } else {
+        Some(position as usize)
+    })
 }
 pub struct DeviceAudio {
     mixer: Mixer<DefaultBackend>,
@@ -250,12 +352,207 @@ impl DeviceAudio {
     pub fn finished(&self, ticket: u64) -> bool {
         self.mixer.finished(ticket)
     }
+    /// A coordinated game restore must stop the old output before rebuilding
+    /// its runtime/device ticket mapping. Decoded resource caches may survive.
+    pub fn reset(&mut self) {
+        self.mixer.stop_all();
+    }
+    pub fn resume(&mut self, playback: &PlaybackResume) -> Result<Option<u64>> {
+        playback.validate()?;
+        let looped = self.resources.looped(&playback.source)?;
+        let data = self.resources.load(&playback.source)?;
+        self.mixer.resume_playback(playback, &data, looped)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use kira::manager::backend::mock::{MockBackend, MockBackendSettings};
+    fn continuation(bus: Bus, elapsed_ms: u64, envelope: GainEnvelope) -> PlaybackResume {
+        use rugp_assets::object::{ClassId, ObjectRef};
+        let name = match bus {
+            Bus::Bgm => "CPmBgm",
+            Bus::Voice => "COptimizedObs",
+            Bus::Effect => "CPmEffect",
+        };
+        PlaybackResume {
+            ticket: 19,
+            source: ObjectRef {
+                class: Some(ClassId {
+                    name: name.into(),
+                    schema: 1,
+                }),
+                cache_index: None,
+                flags: 0xc108,
+                offset: Some(7),
+                size: Some(7),
+                owner: None,
+                selector: 0,
+                inline: None,
+            },
+            bus,
+            elapsed_ms,
+            envelope,
+            fade_stop: None,
+        }
+    }
+    fn mock_mixer(rate: u32) -> Result<Mixer<MockBackend>> {
+        let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {
+            backend_settings: MockBackendSettings { sample_rate: rate },
+            ..Default::default()
+        })
+        .map_err(|_| anyhow::anyhow!("mock init"))?;
+        Ok(Mixer::new(manager))
+    }
+    #[test]
+    fn resumed_pcm_plays_the_tail_not_the_beginning_and_finishes_at_its_tail() -> Result<()> {
+        for looped in [false, true] {
+            let mut mixer = mock_mixer(1000)?;
+            let data = SoundData {
+                sample_rate: 1000,
+                channels: 1,
+                pcm: (0..1000)
+                    .map(|i| if i < 500 { 8192 } else { -8192 })
+                    .collect(),
+            };
+            let playback = continuation(
+                Bus::Effect,
+                if looped { 1500 } else { 500 },
+                GainEnvelope::UNITY,
+            );
+            let ticket = mixer.resume_playback(&playback, &data, looped)?.unwrap();
+            mixer.manager.backend_mut().on_start_processing();
+            let samples = (0..400)
+                .map(|_| mixer.manager.backend_mut().process().left)
+                .collect::<Vec<_>>();
+            assert!(samples[10..400].iter().all(|s| *s < -0.1));
+            assert!(!mixer.finished(ticket));
+            for _ in 0..200 {
+                let _ = mixer.manager.backend_mut().process();
+            }
+            assert_eq!(mixer.finished(ticket), !looped);
+        }
+        Ok(())
+    }
+    #[test]
+    fn resumed_gain_continues_from_current_amplitude_and_only_runs_remaining_motion() -> Result<()>
+    {
+        fn render(envelope: GainEnvelope) -> Result<Vec<f32>> {
+            let mut mixer = mock_mixer(1000)?;
+            let data = SoundData {
+                sample_rate: 1000,
+                channels: 1,
+                pcm: vec![8192; 32],
+            };
+            mixer
+                .resume_playback(&continuation(Bus::Bgm, 512, envelope), &data, true)?
+                .unwrap();
+            mixer.manager.backend_mut().on_start_processing();
+            Ok((0..700)
+                .map(|_| mixer.manager.backend_mut().process().left)
+                .collect())
+        }
+        let unity = render(GainEnvelope::UNITY)?;
+        let resumed = render(GainEnvelope::from_native([2048, 4096, 500])?)?;
+        for at in [10, 100, 250, 450] {
+            let expected = 0.5 + at as f32 / 1000.0;
+            assert!((resumed[at] / unity[at] - expected).abs() < 0.03);
+        }
+        assert!((resumed[600] / unity[600] - 1.0).abs() < 0.001);
+        Ok(())
+    }
+    #[test]
+    fn resumed_fade_stop_keeps_attenuation_and_finishes_on_remaining_deadline() -> Result<()> {
+        use crate::audio_state::snapshot::FadeResume;
+        let data = SoundData {
+            sample_rate: 1000,
+            channels: 1,
+            pcm: vec![16384; 32],
+        };
+        let mut mixer = mock_mixer(1000)?;
+        let mut playback = continuation(Bus::Bgm, 1200, GainEnvelope::UNITY);
+        playback.fade_stop = Some(FadeResume {
+            elapsed_ms: 200,
+            duration_ms: 1000,
+            remaining_ms: 800,
+        });
+        let ticket = mixer.resume_playback(&playback, &data, true)?.unwrap();
+        mixer.manager.backend_mut().on_start_processing();
+        let samples = (0..500)
+            .map(|_| mixer.manager.backend_mut().process().left)
+            .collect::<Vec<_>>();
+        assert!(samples[10] > 0.01 && samples[10] < 0.15);
+        assert!(samples[10] > samples[300]);
+        assert!(!mixer.finished(ticket));
+        for _ in 0..400 {
+            let _ = mixer.manager.backend_mut().process();
+        }
+        assert!(mixer.finished(ticket));
+        Ok(())
+    }
+    #[test]
+    fn pcm_resume_position_uses_exact_frames_for_stereo_fractional_loops_and_large_epochs()
+    -> Result<()> {
+        let data = SoundData {
+            sample_rate: 3000,
+            channels: 2,
+            pcm: vec![0; 2002],
+        }; // 1001 frames, NOT 334ms loops
+        assert_eq!(resume_frame(&data, true, 334)?, Some(1));
+        assert_eq!(resume_frame(&data, false, 333)?, Some(999));
+        assert_eq!(resume_frame(&data, false, 334)?, None);
+        assert_eq!(
+            resume_frame(&data, true, u64::MAX)?,
+            Some(((u128::from(u64::MAX) * 3) % 1001) as usize)
+        );
+        let data = SoundData {
+            sample_rate: 44100,
+            channels: 1,
+            pcm: vec![0; 44100],
+        };
+        assert_eq!(resume_frame(&data, false, 1)?, Some(44));
+        assert_eq!(resume_frame(&data, false, 999)?, Some(44055));
+        assert_eq!(resume_frame(&data, false, 1000)?, None);
+        assert_eq!(resume_frame(&data, true, 1001)?, Some(44));
+        Ok(())
+    }
+    #[test]
+    fn expired_or_invalid_resumes_never_allocate_a_device_ticket_or_replace_a_bus() -> Result<()> {
+        use crate::audio_state::snapshot::FadeResume;
+        let mut mixer = mock_mixer(1000)?;
+        let data = SoundData {
+            sample_rate: 1000,
+            channels: 1,
+            pcm: vec![8192; 100],
+        };
+        let original = mixer.play(7, Bus::Voice, &data, true)?;
+        let next = mixer.next;
+        let mut playback = continuation(Bus::Voice, 100, GainEnvelope::UNITY);
+        assert!(mixer.resume_playback(&playback, &data, false)?.is_none());
+        assert_eq!(mixer.next, next);
+        assert!(!mixer.finished(original));
+        playback.elapsed_ms = 0;
+        playback.fade_stop = Some(FadeResume {
+            elapsed_ms: 100,
+            duration_ms: 100,
+            remaining_ms: 1,
+        });
+        assert!(mixer.resume_playback(&playback, &data, false).is_err());
+        assert_eq!(mixer.next, next);
+        assert!(!mixer.finished(original));
+        playback.fade_stop = None;
+        let invalid = SoundData {
+            sample_rate: 0,
+            channels: 1,
+            pcm: vec![0; 1],
+        };
+        assert!(mixer.resume_playback(&playback, &invalid, false).is_err());
+        mixer.next = u64::MAX;
+        assert!(mixer.resume_playback(&playback, &data, false).is_err());
+        assert!(!mixer.finished(original));
+        Ok(())
+    }
     #[test]
     fn gain_motion_keeps_the_same_looping_instance_and_does_not_stop_it() -> Result<()> {
         let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {

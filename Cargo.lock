@@ -1818,6 +1818,8 @@ dependencies = [
  "kira",
  "rugp_assets",
  "rugp_scene_vm",
+ "serde",
+ "serde_json",
  "sha1",
 ]
 

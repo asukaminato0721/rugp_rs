@@ -45,13 +45,10 @@ impl Game {
             let id = source.offset.context("sound source identity missing")?;
             match request.kind {
                 2 | 4 => {
-                    request.gain_envelope()?;
-                    let bus = match source.class.as_ref().map(|c| c.name.as_str()) {
-                        Some("CPmBgm") => Bus::Bgm,
-                        Some("COptimizedObs") => Bus::Voice,
-                        _ => Bus::Effect,
-                    };
-                    request.ticket = Some(self.audio_state.play(id, bus)?);
+                    request.ticket = Some(
+                        self.audio_state
+                            .play_sound(source, request.gain_envelope()?)?,
+                    );
                 }
                 3 => {
                     self.audio_state.stop_source(id);
@@ -73,7 +70,8 @@ impl Game {
                         request.flags & 1 == 0,
                         "cannot wait directly on sound gain motion"
                     );
-                    request.gain_envelope()?;
+                    self.audio_state
+                        .set_source_gain(id, request.gain_envelope()?);
                     // Adjust the existing playback; do not allocate a new
                     // ticket or change its PCM completion deadline.
                 }
@@ -124,6 +122,152 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_audio_and_vm_snapshots_resume_a_real_pcm_wait_without_replay_or_stale_completion()
+    -> Result<()> {
+        use crate::{
+            audio::{AudioResources, mute_requests},
+            audio_state::snapshot::PlaybackSnapshot,
+        };
+        use rugp_assets::object::{
+            ClassId, ObjectRef,
+            snapshot::{ReferenceSnapshot, ReferenceSnapshotWriter},
+        };
+        use rugp_scene_vm::{Argument, Scenario, vm::snapshot::VmSnapshot};
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let source = ObjectRef {
+            class: Some(ClassId {
+                name: "CPmEffect".into(),
+                schema: 0,
+            }),
+            cache_index: None,
+            flags: 0xc108,
+            offset: Some(251819724),
+            size: Some(60),
+            owner: None,
+            selector: 0,
+            inline: None,
+        };
+        for already_expired in [false, true] {
+            let mut game = Game::open(root.as_ref())?;
+            let mut resources = AudioResources::new(Arc::clone(&game.archive))?;
+            let duration = resources
+                .muted_duration(&source)?
+                .context("expected nonlooping sound")?;
+            ensure!(
+                duration > 3,
+                "retail PCM too short for resume boundary test"
+            );
+            let elapsed = if already_expired {
+                duration + 10
+            } else {
+                duration / 3
+            };
+            let mut program = Program::default();
+            program.insert(
+                10,
+                Scenario {
+                    object_id: 1,
+                    memory_size: 48,
+                    null_records: Vec::new(),
+                    trailing_bytes: 0,
+                    instructions: vec![
+                        Instruction {
+                            index: 0,
+                            stream_offset: 0,
+                            class: ClassId {
+                                name: "CVmSound".into(),
+                                schema: 17,
+                            },
+                            address: 0,
+                            next_address: 24,
+                            flags: 0,
+                            arguments: vec![
+                                Argument::Reference(source.clone()),
+                                Argument::Number(4),
+                                Argument::Number(1),
+                                Argument::Number(0),
+                                Argument::Number(4096),
+                                Argument::Number(100),
+                            ],
+                        },
+                        Instruction {
+                            index: 1,
+                            stream_offset: 0,
+                            class: ClassId {
+                                name: "CVmRet".into(),
+                                schema: 17,
+                            },
+                            address: 24,
+                            next_address: u32::MAX,
+                            flags: 0,
+                            arguments: Vec::new(),
+                        },
+                    ],
+                },
+            )?;
+            let program = Arc::new(program);
+            game.vm = Vm::new(Arc::clone(&program), 1)?;
+            assert_eq!(game.step(0)?, RunState::Waiting);
+            let original_ticket = game.pending_sounds()[0].ticket.context("play ticket")?;
+            // Device-owned playback has no virtual PCM deadline until output
+            // finishes. Draining must not discard source/gain information.
+            assert_eq!(game.take_sounds().len(), 1);
+            assert_eq!(game.step(elapsed)?, RunState::Waiting);
+            let mut writer = ReferenceSnapshotWriter::default();
+            let vm = game.vm.snapshot(&mut writer)?;
+            let audio = game.audio_state.snapshot(&mut writer)?;
+            let graph = writer.finish()?;
+            let wait = game.audio_wait.clone();
+            let wire = serde_json::to_vec(&(vm, audio, graph, wait))?;
+            let (vm, audio, graph, wait): (
+                VmSnapshot,
+                PlaybackSnapshot,
+                ReferenceSnapshot,
+                Option<Vec<u64>>,
+            ) = serde_json::from_slice(&wire)?;
+            game.queue_sound(SoundRequest {
+                ticket: None,
+                source: Some(source.clone()),
+                kind: 2,
+                flags: 0,
+                parameters: [0; 3],
+            })?;
+            let future_ticket = game.pending_sounds()[0]
+                .ticket
+                .context("future play ticket")?;
+            let (vm, roots) = vm.restore(program, &graph)?;
+            let mut audio = audio.restore(&roots, &game.audio_state)?;
+            let wait = audio.remap_wait(wait.as_deref().context("saved wait")?)?;
+            assert!(wait[0] > future_ticket);
+            audio.prepare_muted(&mut resources)?;
+            assert_eq!(audio.playbacks.len(), usize::from(!already_expired));
+            if !already_expired {
+                assert_eq!(audio.playbacks[0].elapsed_ms, u64::from(elapsed));
+            }
+            // Candidate states are complete before touching the live game.
+            game.vm = vm;
+            game.audio_state = audio.registry;
+            game.audio_wait = Some(wait.clone());
+            game.sounds.clear(); // reset/rebuild output, never redrain old commands
+            game.finish_audio_ticket(original_ticket);
+            game.finish_audio_ticket(future_ticket);
+            if !already_expired {
+                assert!(!game.audio_state.finished(wait[0]));
+                assert_eq!(game.step(duration - elapsed - 1)?, RunState::Waiting);
+                assert_eq!(game.vm.cursor().map(|c| c.address), Some(0));
+                assert_eq!(game.step(1)?, RunState::Ended);
+            } else {
+                assert!(game.audio_state.finished(wait[0]));
+                assert_eq!(game.step(0)?, RunState::Ended);
+            }
+            let mut resources = Some(resources);
+            mute_requests(&mut game, &mut resources)?;
+            assert!(game.pending_sounds().is_empty() && game.audio_wait.is_none());
+        }
+        Ok(())
+    }
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_null_sound_play_is_a_native_noop_not_a_global_stop_or_wait() -> Result<()> {

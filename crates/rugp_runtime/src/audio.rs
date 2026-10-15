@@ -54,6 +54,20 @@ impl AudioResources {
         )?;
         Ok(Sample::parse(&bytes, self.archive.address_shift)?.mode & 1 != 0)
     }
+    /// Full duration from the original play epoch, not a new remaining-time
+    /// timer. Looping sources intentionally have no natural completion.
+    pub fn muted_duration(&mut self, reference: &ObjectRef) -> Result<Option<u32>> {
+        if self.looped(reference)? {
+            return Ok(None);
+        }
+        let data = self.load(reference)?;
+        let frames = data.pcm.len() as u64 / u64::from(data.channels);
+        let ms = (frames * 1000).div_ceil(u64::from(data.sample_rate));
+        Ok(Some(
+            ms.try_into()
+                .context("audio duration exceeds runtime clock")?,
+        ))
+    }
     fn load_at_depth(&mut self, reference: &ObjectRef, depth: usize) -> Result<Arc<SoundData>> {
         ensure!(depth < 8, "cyclic or over-nested sound source");
         let offset = reference
@@ -124,19 +138,15 @@ pub fn mute_requests(
                 *resources = Some(AudioResources::new(Arc::clone(&game.archive))?);
             }
             let resources = resources.as_mut().unwrap();
-            if resources.looped(source)? {
+            let Some(duration) = resources.muted_duration(source)? else {
                 ensure!(request.flags & 1 == 0, "cannot wait for a looping sound");
                 continue;
-            }
-            let data = resources.load(source)?;
-            let frames = data.pcm.len() as u64 / data.channels as u64;
-            let ms = (frames * 1000).div_ceil(data.sample_rate as u64);
+            };
             game.time_audio_ticket(
                 request
                     .ticket
                     .context("play request has no runtime ticket")?,
-                ms.try_into()
-                    .context("audio duration exceeds runtime clock")?,
+                duration,
             );
         }
     }
