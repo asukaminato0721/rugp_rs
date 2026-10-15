@@ -102,6 +102,28 @@ impl InlineObject {
 }
 
 impl ObjectRef {
+    /// Host-created in-memory object, with no archive extent or serialized
+    /// payload. Only the owning host may interpret its class/identity.
+    /// Clones retain instance identity just like decoded inline objects.
+    pub fn transient(class: ClassId) -> Self {
+        Self {
+            class: Some(class),
+            cache_index: None,
+            flags: 0x40,
+            offset: None,
+            size: None,
+            owner: None,
+            selector: 0,
+            inline: Some(InlineObject {
+                data: Vec::new(),
+                references: Vec::new(),
+                bitmap: None,
+                posture: None,
+                motion: None,
+                identity: InlineIdentity(Arc::new(())),
+            }),
+        }
+    }
     pub fn visit(&self, visitor: &mut impl FnMut(&Self)) {
         visitor(self);
         if let Some(owner) = &self.owner {

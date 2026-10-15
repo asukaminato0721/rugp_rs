@@ -12,6 +12,7 @@ use rugp_scene_vm::{
 use std::{cell::Cell, collections::BTreeMap, path::Path, sync::Arc};
 
 mod alpha;
+mod async_image;
 mod blit;
 mod camera;
 mod character;
@@ -193,6 +194,8 @@ pub struct Game {
     staffroll_wait: bool,
     timers: BTreeMap<u64, timer::Timer>,
     timer_wait: Option<u64>,
+    async_images: Vec<async_image::ImageFade>,
+    image_wait: Option<rugp_assets::object::InlineIdentity>,
     profiles: crate::profile_store::ProfileStore,
     menus: BTreeMap<u64, crate::menu::MenuState>,
     selection: Option<menu::SelectionWait>,
@@ -253,6 +256,8 @@ impl Game {
             staffroll_wait: false,
             timers: BTreeMap::new(),
             timer_wait: None,
+            async_images: Vec::new(),
+            image_wait: None,
             profiles: crate::profile_store::ProfileStore::default(),
             menus: BTreeMap::new(),
             selection: None,
@@ -605,6 +610,7 @@ impl Game {
             "OM_PlayDeviceStreamVideo" => self.play_video(&target, &fields)?,
             "OM_PlayTextStaffrollVideo" => self.play_staffroll(&target, &fields)?,
             "OM_EmbedAlpherChannel" => self.embed_alpha(&target, fields)?,
+            "OM_ImageASyncFadeinout" => self.fade_image(&target, &fields)?,
             "OM_Enable" => self.objects.entry(id).or_default().enabled = true,
             "OM_Disable" => self.objects.entry(id).or_default().enabled = false,
             "OM_Visible" => self.objects.entry(id).or_default().visible = true,
@@ -937,6 +943,15 @@ impl Game {
                         let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
                         return self.synchronize_timer(&reference, mode, timeout);
                     }
+                    if reference
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "CGenericUso")
+                    {
+                        let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                        let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+                        return self.synchronize_image(&reference, mode, timeout);
+                    }
                     ensure!(
                         reference
                             .class
@@ -988,6 +1003,7 @@ impl Game {
         }
         self.audio_state.advance(dt_ms);
         self.advance_timers(dt_ms)?;
+        self.advance_async_images(dt_ms)?;
         self.advance_parse_transition(dt_ms)?;
         self.advance_postures(dt_ms)?;
         if let Some(t) = &mut self.transition {
@@ -1017,6 +1033,7 @@ impl Game {
         if self.video_wait
             || self.staffroll_wait
             || self.timer_wait.is_some()
+            || self.image_wait.is_some()
             || self.selection.is_some()
         {
             return Ok(RunState::Waiting);
@@ -1070,6 +1087,7 @@ impl Game {
                         || self.video_wait
                         || self.staffroll_wait
                         || self.timer_wait.is_some()
+                        || self.image_wait.is_some()
                         || self.selection.is_some()
                         || self.dialogue.is_some()
                     {

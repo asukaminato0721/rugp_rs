@@ -108,3 +108,20 @@ fn corrupt_object_headers_and_class_cache_fail_without_panicking() {
         assert!(ObjectReader::new(&data[..len]).class().is_err());
     }
 }
+
+#[test]
+fn transient_objects_preserve_only_runtime_instance_identity() {
+    let class = ClassId {
+        name: "CGenericUso".into(),
+        schema: 1,
+    };
+    let first = rugp_assets::object::ObjectRef::transient(class.clone());
+    let alias = first.clone();
+    let other = rugp_assets::object::ObjectRef::transient(class);
+    assert!(first.offset.is_none() && first.size.is_none() && first.owner.is_none());
+    let body = first.inline.as_ref().unwrap();
+    assert!(body.data.is_empty() && body.references.is_empty());
+    assert_eq!(body.identity(), alias.inline.as_ref().unwrap().identity());
+    assert_ne!(body.identity(), other.inline.as_ref().unwrap().identity());
+    assert!(body.decode_bitmap().is_err());
+}

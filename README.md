@@ -374,6 +374,15 @@ mode-0/16 waits and mode-32 active-state queries. Threshold updates keep the
 original playback epoch, including updates after an earlier threshold has
 elapsed; the clock uses native unsigned wrapping. A real ending timer packet
 regression verifies exact waits, nonblocking queries and no audio/frame changes.
+`OM_ImageASyncFadeinout` supports the retail helper's display-0/mode-1
+image-window fade with its native Q8 opacity envelope and exact duration.
+The returned `CGenericUso` is a distinct in-memory object written to the real
+script destination; copies retain identity, mode-0/16 synchronization waits,
+and mode-32 queries report activity. Completion hides and zero-sizes the window
+while preserving its image and restoring opacity. A real helper packet tests
+variable writeback, framebuffer blending, query and exact cleanup. Concurrent
+fades on the same window, other display/mode combinations and cancellation
+remain unsupported.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact
