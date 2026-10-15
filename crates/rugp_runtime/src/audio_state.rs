@@ -2,6 +2,7 @@
 //! reports the same identities when a real handle stops; muting supplies a
 //! decoded duration instead. Source identities are wrapper objects, not PCM keys.
 use crate::audio_envelope::GainEnvelope;
+use crate::audio_spatial::StereoGains;
 use anyhow::{Context, Result, ensure};
 use rugp_assets::object::ObjectRef;
 use std::collections::BTreeMap;
@@ -55,6 +56,7 @@ struct Playing {
     started: u64,
     deadline: Option<u64>,
     gain: GainMotion,
+    stereo: StereoGains,
     fade_stop: Option<FadeStop>,
 }
 #[derive(Default)]
@@ -87,6 +89,7 @@ impl PlaybackRegistry {
                     started: self.clock,
                 },
                 fade_stop: None,
+                stereo: Default::default(),
             },
         );
         Ok(ticket)
@@ -94,11 +97,21 @@ impl PlaybackRegistry {
     /// Production playbacks retain their original wrapper and gain state after
     /// the output queue is drained. PCM/cache keys alone cannot resume a sound.
     pub fn play_sound(&mut self, source: &ObjectRef, envelope: GainEnvelope) -> Result<u64> {
+        self.play_sound_spatial(source, envelope, StereoGains::UNITY)
+    }
+    pub fn play_sound_spatial(
+        &mut self,
+        source: &ObjectRef,
+        envelope: GainEnvelope,
+        stereo: StereoGains,
+    ) -> Result<u64> {
+        stereo.validate()?;
         let offset = source.offset.context("sound source identity missing")?;
         let ticket = self.play(offset, Bus::for_source(source))?;
         let playing = self.playing.get_mut(&ticket).unwrap();
         playing.source_ref = Some(source.clone());
         playing.gain.envelope = envelope;
+        playing.stereo = stereo;
         Ok(ticket)
     }
     pub fn set_source_gain(&mut self, source: u64, envelope: GainEnvelope) {

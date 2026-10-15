@@ -21,13 +21,9 @@ impl SoundRequest {
         }
     }
     pub fn gain_envelope(&self) -> Result<GainEnvelope> {
-        // The native execution path does not inspect bit 1. Bit 0 waits for
-        // playback; bit 2 enables a different, extended acoustic packet.
-        ensure!(
-            self.flags & !3 == 0,
-            "unsupported sound play flags {:#x}",
-            self.flags
-        );
+        // Bit 0 waits; native placement flags are resolved by the VM host.
+        // Placement is independent of gain motion and the native unused bits.
+        self.stereo.validate()?;
         match self.kind {
             2 => Ok(GainEnvelope::UNITY),
             4 | 6 => GainEnvelope::from_native(self.parameters),
@@ -45,10 +41,11 @@ impl Game {
             let id = source.offset.context("sound source identity missing")?;
             match request.kind {
                 2 | 4 => {
-                    request.ticket = Some(
-                        self.audio_state
-                            .play_sound(source, request.gain_envelope()?)?,
-                    );
+                    request.ticket = Some(self.audio_state.play_sound_spatial(
+                        source,
+                        request.gain_envelope()?,
+                        request.stereo,
+                    )?);
                 }
                 3 => {
                     self.audio_state.stop_source(id);
@@ -122,6 +119,155 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_literal_inline_spatial_packets_produce_bounded_channel_gains() -> Result<()> {
+        use rugp_scene_vm::Argument;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let archive = RioArchive::open(Path::new(&root))?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let program = Program::load(&archive, &native)?;
+        let mut counts = BTreeMap::new();
+        let mut references = 0;
+        for scene in program.scenes.values() {
+            for i in &scene.instructions {
+                if i.class.name != "CVmSound" {
+                    continue;
+                }
+                let (Argument::Number(kind), Argument::Number(flags)) =
+                    (&i.arguments[1], &i.arguments[2])
+                else {
+                    bail!("nonliteral sound controls");
+                };
+                if !matches!(kind, 2 | 4) || flags & 4 == 0 {
+                    continue;
+                }
+                let Argument::Reference(source) = &i.arguments[0] else {
+                    continue;
+                };
+                if !source.class.as_ref().is_some_and(|c| c.name == "CPmEffect") {
+                    continue;
+                }
+                if flags & 8 != 0 {
+                    references += 1;
+                    continue;
+                }
+                let Argument::Bytes(bytes) = &i.arguments[6] else {
+                    bail!("inline acoustic bytes missing");
+                };
+                crate::audio_spatial::StereoGains::from_position(*flags as u8, bytes)?
+                    .validate()?;
+                *counts.entry((*flags, bytes.len())).or_insert(0usize) += 1;
+            }
+        }
+        ensure!(
+            !counts.is_empty(),
+            "no original inline spatial packets checked"
+        );
+        eprintln!(
+            "inline spatial packets {counts:?}; separate referenced-motion packets={references}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_spatial_sound_wait_and_full_restore_keep_channel_gains_and_fresh_tickets()
+    -> Result<()> {
+        use rugp_assets::{object::ClassId, script::Script};
+        use rugp_scene_vm::{Argument, Scenario};
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let code = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 202)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let mut play = code
+            .instructions
+            .iter()
+            .find(|i| i.address == 652)
+            .context("original spatial play missing")?
+            .clone();
+        let Argument::Reference(source) = play.arguments[0].clone() else {
+            bail!("spatial source missing");
+        };
+        play.address = 0;
+        play.next_address = 24;
+        let mut program = Program::default();
+        program.insert(
+            1,
+            Scenario {
+                object_id: 1,
+                memory_size: 72,
+                null_records: vec![],
+                trailing_bytes: 0,
+                instructions: vec![
+                    play,
+                    Instruction {
+                        index: 1,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmSync".into(),
+                            schema: 17,
+                        },
+                        address: 24,
+                        next_address: 48,
+                        flags: 0,
+                        arguments: vec![
+                            Argument::Reference(source.clone()),
+                            Argument::Number(16),
+                            Argument::Number(0),
+                        ],
+                    },
+                    Instruction {
+                        index: 2,
+                        stream_offset: 0,
+                        class: ClassId {
+                            name: "CVmRet".into(),
+                            schema: 17,
+                        },
+                        address: 48,
+                        next_address: u32::MAX,
+                        flags: 0,
+                        arguments: vec![],
+                    },
+                ],
+            },
+        )?;
+        game.vm = Vm::new(Arc::new(program), 1)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.vm.cursor().unwrap().address, 24);
+        let request = &game.pending_sounds()[0];
+        assert_eq!(request.flags, 0x14);
+        assert!(request.stereo.left > request.stereo.right && request.stereo.right > 0.0);
+        let stereo = request.stereo;
+        let original = request.ticket.context("spatial ticket missing")?;
+        let mut audio = None;
+        crate::audio::mute_requests(&mut game, &mut audio)?;
+        let saved = game.snapshot()?;
+        let mut wire = Vec::new();
+        saved.write(&mut wire)?;
+        let saved = super::super::snapshot::GameSnapshot::read(wire.as_slice())?;
+        let resumes = game.restore_snapshot(&saved, audio.as_mut().unwrap())?;
+        let restored = game.audio_wait.as_ref().unwrap()[0];
+        assert!(restored > original);
+        assert_eq!(resumes[0].stereo, stereo);
+        game.finish_audio_ticket(original);
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        game.queue_sound(SoundRequest {
+            ticket: None,
+            source: Some(source),
+            kind: 3,
+            flags: 0,
+            stereo: Default::default(),
+            parameters: [0; 3],
+        })?;
+        assert_eq!(game.step(0)?, RunState::Ended);
+        Ok(())
+    }
+
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_audio_and_vm_snapshots_resume_a_real_pcm_wait_without_replay_or_stale_completion()
@@ -232,6 +378,7 @@ mod tests {
                 source: Some(source.clone()),
                 kind: 2,
                 flags: 0,
+                stereo: Default::default(),
                 parameters: [0; 3],
             })?;
             let future_ticket = game.pending_sounds()[0]
@@ -337,6 +484,7 @@ mod tests {
                 source: None,
                 kind,
                 flags: 255,
+                stereo: Default::default(),
                 parameters: [u16::MAX; 3],
             })?);
         }
@@ -353,6 +501,7 @@ mod tests {
             source: None,
             kind: 0,
             flags: 0,
+            stereo: Default::default(),
             parameters: [4096, 0, 1000],
         };
         for (kind, bus) in [
@@ -382,13 +531,17 @@ mod tests {
             source: None,
             kind: 4,
             flags: 2,
+            stereo: Default::default(),
             parameters: [1024, 2048, 1000],
         };
         assert_eq!(request.gain_envelope()?.control_at_ms(500), 1536);
         request.flags = 3; // wait bit + native unused bit
         assert!(request.gain_envelope().is_ok());
-        request.flags = 4; // extended acoustic packet needs a different path
+        request.flags = 0x14; // placement has already been resolved by the host
+        assert!(request.gain_envelope().is_ok());
+        request.stereo.left = f32::NAN;
         assert!(request.gain_envelope().is_err());
+        request.stereo = Default::default();
         request.flags = 0;
         request.kind = 2;
         request.parameters = [65535; 3]; // ordinary play ignores the three words

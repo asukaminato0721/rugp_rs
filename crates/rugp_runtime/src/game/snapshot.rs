@@ -411,6 +411,7 @@ mod tests {
                 source: Some(source.clone()),
                 kind: 2,
                 flags: 0,
+                stereo: Default::default(),
                 parameters: [0; 3],
             })?;
             let future = game.pending_sounds().last().unwrap().ticket.unwrap();

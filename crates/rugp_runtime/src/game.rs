@@ -57,6 +57,8 @@ pub struct SoundRequest {
     pub source: Option<ObjectRef>,
     pub kind: u8,
     pub flags: u8,
+    /// Resolved per-instance placement; never modifies the cached PCM source.
+    pub stereo: crate::audio_spatial::StereoGains,
     /// Kind 4: initial gain, final gain (4096 = unity), transition milliseconds.
     /// Ordinary play (kind 2) uses source defaults instead.
     pub parameters: [u16; 3],
@@ -474,6 +476,7 @@ impl Game {
                 source: None,
                 kind: 255,
                 flags: 0,
+                stereo: Default::default(),
                 parameters: [0; 3],
             })?;
             self.ended = true;
@@ -950,11 +953,27 @@ impl Game {
                 let n = |i: usize| self.vm.evaluate(&instruction.arguments[i])?.integer();
                 let flags = n(2)? as u8;
                 let kind = n(1)? as u8;
+                let stereo = if matches!(kind, 2 | 4)
+                    && flags & 4 != 0
+                    && source
+                        .as_ref()
+                        .is_some_and(|r| r.class.as_ref().is_some_and(|c| c.name == "CPmEffect"))
+                {
+                    ensure!(flags & 8 == 0, "referenced acoustic motion is unsupported");
+                    let Some(rugp_scene_vm::Argument::Bytes(bytes)) = instruction.arguments.get(6)
+                    else {
+                        bail!("inline acoustic position missing");
+                    };
+                    crate::audio_spatial::StereoGains::from_position(flags, bytes)?
+                } else {
+                    Default::default()
+                };
                 let request = SoundRequest {
                     ticket: None,
                     source,
                     kind,
                     flags,
+                    stereo,
                     parameters: [n(3)? as u16, n(4)? as u16, n(5)? as u16],
                 };
                 if self.queue_sound(request)? {

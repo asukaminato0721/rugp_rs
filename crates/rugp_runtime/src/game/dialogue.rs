@@ -150,6 +150,7 @@ impl Game {
                 source: Some(source.clone()),
                 kind: 2,
                 flags: 0,
+                stereo: Default::default(),
                 parameters: [0; 3],
             })?;
         }
@@ -194,6 +195,7 @@ impl Game {
                     source: Some(source),
                     kind: 3,
                     flags: 0,
+                    stereo: Default::default(),
                     parameters: [0; 3],
                 })?;
             }

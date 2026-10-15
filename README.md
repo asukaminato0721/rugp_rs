@@ -361,7 +361,16 @@ gain (4096 = unity) and millisecond transition, interpolated in amplitude rather
 than decibels. Zero duration keeps the initial gain; PCM loops do not restart
 the envelope and fading to silence does not itself stop playback. Kira mock
 tests check actual output samples; native block buffering/quantization are not
-reproduced bit-for-bit. Native extended acoustic packets remain unsupported.
+reproduced bit-for-bit. Inline `CAcsPos` acoustic packets now retain real PCM
+playback with a portable static stereo/distance approximation. Signed range and
+XYZ words are checked in the compact 8-byte and full 14-byte layouts; the native
+moving listener, cone and extra motion words are not reproduced. All 44 literal
+compact effect packets are audited. Two referenced-motion packets remain a
+separate unsupported path. Stereo gains belong to each playback instance, not
+the shared PCM cache, and survive gain changes, stop handling and portable
+restoration. Legacy saves default to unity channel gains. Kira mock samples and
+an original spatial-play/sync packet verify channel balance and fresh restored
+tickets. Restore preparation also decodes looping PCM before committing state.
 Class-specific `OM_SetVarData` IDs 128/129 now set/clear distinct CParseBgBox
 world-slot flags (1–7); non-integer payloads and out-of-range slots have the
 native no-effect behavior. These flags suppress cached planes only in the

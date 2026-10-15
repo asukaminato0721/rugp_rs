@@ -5,6 +5,7 @@
 //! playback and rebuild its runtime/device ticket map from `playbacks`.
 use super::{Bus, FadeStop, GainMotion, PlaybackRegistry, Playing};
 use crate::audio_envelope::GainEnvelope;
+use crate::audio_spatial::StereoGains;
 use anyhow::{Context, Result, ensure};
 use rugp_assets::object::{ObjectRef, snapshot::ReferenceSnapshotWriter};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,8 @@ struct SavedPlaying {
     deadline: Option<u64>,
     gain: SavedGain,
     fade_stop: Option<SavedFade>,
+    #[serde(default)]
+    stereo: StereoGains,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +56,7 @@ pub struct PlaybackResume {
     pub elapsed_ms: u64,
     pub envelope: GainEnvelope,
     pub fade_stop: Option<FadeResume>,
+    pub stereo: StereoGains,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct FadeResume {
@@ -64,6 +68,7 @@ impl PlaybackResume {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.ticket > 0, "invalid resumed audio ticket");
         validate_source(&self.source, self.bus)?;
+        self.stereo.validate()?;
         if let Some(fade) = self.fade_stop {
             ensure!(
                 fade.duration_ms > 0
@@ -87,6 +92,9 @@ impl PlaybackRestore {
     /// error affects this candidate only; the live registry is not modified.
     pub fn prepare_muted(&mut self, resources: &mut crate::audio::AudioResources) -> Result<()> {
         for playback in &self.playbacks {
+            // Looping sounds have no muted deadline, but their PCM must still
+            // be validated before the candidate can replace live game state.
+            resources.load(&playback.source)?;
             if let Some(duration) = resources.muted_duration(&playback.source)? {
                 self.registry.set_duration(playback.ticket, duration);
             }
@@ -124,6 +132,7 @@ impl PlaybackRegistry {
                     ticket: *ticket,
                     source: references.insert(source)?,
                     bus: p.bus,
+                    stereo: p.stereo,
                     started: p.started,
                     deadline: p.deadline,
                     gain: SavedGain {
@@ -196,6 +205,7 @@ impl PlaybackSnapshot {
                 elapsed_ms: self.clock - saved.started,
                 envelope: gain.remaining(self.clock),
                 fade_stop: fade_resume,
+                stereo: saved.stereo,
             });
             result.registry.playing.insert(
                 ticket,
@@ -207,6 +217,7 @@ impl PlaybackSnapshot {
                     deadline: saved.deadline,
                     gain,
                     fade_stop,
+                    stereo: saved.stereo,
                 },
             );
             result.tickets.insert(saved.ticket, ticket);
@@ -243,6 +254,7 @@ impl PlaybackSnapshot {
                 "expired audio snapshot playback"
             );
             GainEnvelope::from_native(p.gain.parameters)?;
+            p.stereo.validate()?;
             if let Some(fade) = &p.fade_stop {
                 let end = fade.started.saturating_add(u64::from(fade.duration_ms));
                 ensure!(
@@ -319,6 +331,56 @@ mod tests {
     }
     fn copy(snapshot: &PlaybackSnapshot) -> PlaybackSnapshot {
         serde_json::from_slice(&serde_json::to_vec(snapshot).unwrap()).unwrap()
+    }
+    #[test]
+    fn stereo_instances_roundtrip_independently_and_legacy_saves_default_to_unity() -> Result<()> {
+        let mut live = PlaybackRegistry::default();
+        let left = StereoGains {
+            left: 0.75,
+            right: 0.25,
+        };
+        let right = StereoGains {
+            left: 0.25,
+            right: 0.75,
+        };
+        for stereo in [left, right] {
+            live.play_sound_spatial(&source("CPmEffect", 7), GainEnvelope::UNITY, stereo)?;
+        }
+        live.set_source_gain(7, GainEnvelope::from_native([4096, 2048, 100])?);
+        live.advance(50);
+        let (snapshot, references) = capture(&live);
+        let result = snapshot.restore(&references, &live)?;
+        assert_eq!(
+            result
+                .playbacks
+                .iter()
+                .map(|p| p.stereo)
+                .collect::<Vec<_>>(),
+            [left, right]
+        );
+        assert!(
+            result
+                .playbacks
+                .iter()
+                .all(|p| p.elapsed_ms == 50 && p.envelope.duration_ms() == 50)
+        );
+        let mut legacy = serde_json::to_value(&snapshot)?;
+        for p in legacy["playing"].as_array_mut().unwrap() {
+            p.as_object_mut().unwrap().remove("stereo");
+        }
+        let legacy: PlaybackSnapshot = serde_json::from_value(legacy)?;
+        assert!(
+            legacy
+                .restore(&references, &live)?
+                .playbacks
+                .iter()
+                .all(|p| p.stereo == StereoGains::UNITY)
+        );
+        let mut invalid = copy(&snapshot);
+        invalid.playing[0].stereo.left = -1.0;
+        assert!(invalid.restore(&references, &live).is_err());
+        assert_eq!(live.source_tickets(7).len(), 2);
+        Ok(())
     }
     #[test]
     fn resume_restores_epoch_gain_and_exact_remaining_deadline_with_fresh_tickets() -> Result<()> {

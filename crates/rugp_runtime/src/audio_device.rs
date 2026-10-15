@@ -2,6 +2,7 @@
 use crate::{
     audio::{AudioResources, SoundData},
     audio_envelope::GainEnvelope,
+    audio_spatial::StereoGains,
     audio_state::snapshot::PlaybackResume,
     game::SoundRequest,
 };
@@ -33,6 +34,7 @@ struct PlaybackStart {
     envelope: GainEnvelope,
     gain_scale: f64,
     stop_after_ms: Option<u32>,
+    stereo: StereoGains,
 }
 pub struct Mixer<B: Backend> {
     manager: AudioManager<B>,
@@ -58,6 +60,17 @@ impl<B: Backend> Mixer<B> {
         looped: bool,
         envelope: GainEnvelope,
     ) -> Result<u64> {
+        self.play_with_spatial(source, bus, data, looped, envelope, StereoGains::UNITY)
+    }
+    pub fn play_with_spatial(
+        &mut self,
+        source: u64,
+        bus: Bus,
+        data: &SoundData,
+        looped: bool,
+        envelope: GainEnvelope,
+        stereo: StereoGains,
+    ) -> Result<u64> {
         self.play_config(
             source,
             bus,
@@ -68,6 +81,7 @@ impl<B: Backend> Mixer<B> {
                 envelope,
                 gain_scale: 1.0,
                 stop_after_ms: None,
+                stereo,
             },
         )
     }
@@ -105,6 +119,7 @@ impl<B: Backend> Mixer<B> {
                 envelope: playback.envelope,
                 gain_scale,
                 stop_after_ms: playback.fade_stop.map(|f| f.remaining_ms),
+                stereo: playback.stereo,
             },
         )
         .map(Some)
@@ -118,6 +133,7 @@ impl<B: Backend> Mixer<B> {
         start: PlaybackStart,
     ) -> Result<u64> {
         validate_data(data)?;
+        start.stereo.validate()?;
         let ticket = self.next;
         let next = self.next.checked_add(1).context("sound ticket overflow")?;
         self.playing
@@ -129,7 +145,10 @@ impl<B: Backend> Mixer<B> {
         for samples in data.pcm.chunks(data.channels as usize) {
             let left = samples[0] as f32 / 32768.0;
             let right = samples.get(1).map_or(left, |v| *v as f32 / 32768.0);
-            frames.push(Frame::new(left, right));
+            frames.push(Frame::new(
+                left * start.stereo.left,
+                right * start.stereo.right,
+            ));
         }
         let settings = if looped {
             StaticSoundSettings::default().loop_region(..)
@@ -338,12 +357,13 @@ impl DeviceAudio {
             "cannot wait for a looping sound"
         );
         let data = self.resources.load(source)?;
-        let ticket = self.mixer.play_with_envelope(
+        let ticket = self.mixer.play_with_spatial(
             offset,
             bus,
             &data,
             looped,
             envelope.context("playback envelope missing")?,
+            request.stereo,
         )?;
         // Every playback needs completion reporting, including asynchronous
         // sounds that a later CVmSync may query. VM waiting is runtime-owned.
@@ -395,6 +415,7 @@ mod tests {
             elapsed_ms,
             envelope,
             fade_stop: None,
+            stereo: Default::default(),
         }
     }
     fn mock_mixer(rate: u32) -> Result<Mixer<MockBackend>> {
@@ -404,6 +425,53 @@ mod tests {
         })
         .map_err(|_| anyhow::anyhow!("mock init"))?;
         Ok(Mixer::new(manager))
+    }
+    #[test]
+    fn spatial_channels_survive_gain_motion_and_resumed_pcm_without_touching_the_source()
+    -> Result<()> {
+        let data = SoundData {
+            sample_rate: 1000,
+            channels: 1,
+            pcm: vec![16384; 1000],
+        };
+        let stereo = StereoGains {
+            left: 0.75,
+            right: 0.25,
+        };
+        for resumed in [false, true] {
+            let mut mixer = mock_mixer(1000)?;
+            if resumed {
+                let mut playback = continuation(Bus::Effect, 200, GainEnvelope::UNITY);
+                playback.stereo = stereo;
+                mixer.resume_playback(&playback, &data, false)?.unwrap();
+            } else {
+                mixer.play_with_spatial(
+                    7,
+                    Bus::Effect,
+                    &data,
+                    false,
+                    GainEnvelope::UNITY,
+                    stereo,
+                )?;
+            }
+            mixer.manager.backend_mut().on_start_processing();
+            for _ in 0..100 {
+                let _ = mixer.manager.backend_mut().process();
+            }
+            let frame = mixer.manager.backend_mut().process();
+            assert!(frame.left > 0.05 && frame.right > 0.01);
+            assert!((frame.left / frame.right - 3.0).abs() < 0.001);
+            mixer.set_source_gain(7, GainEnvelope::from_native([4096, 2048, 100])?);
+            mixer.manager.backend_mut().on_start_processing();
+            for _ in 0..150 {
+                let _ = mixer.manager.backend_mut().process();
+            }
+            let faded = mixer.manager.backend_mut().process();
+            assert!((faded.left / faded.right - 3.0).abs() < 0.001);
+            assert!((faded.left / frame.left - 0.5).abs() < 0.02);
+        }
+        assert!(data.pcm.iter().all(|s| *s == 16384));
+        Ok(())
     }
     #[test]
     fn resumed_pcm_plays_the_tail_not_the_beginning_and_finishes_at_its_tail() -> Result<()> {
