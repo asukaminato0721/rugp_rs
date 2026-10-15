@@ -489,23 +489,25 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         .get(&212259)
         .context("chapter background missing")?
         .camera;
-    assert_eq!(camera.focal_length, 2040);
-    assert_eq!(camera.angles_q4, [0, -32, 0]);
+    assert_eq!(camera.focal_length, 1752, "{boundary:#}");
+    assert_eq!(camera.angles_q4, [-5920, -1776, 0], "{boundary:#}");
+    assert_eq!(
+        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
+        Some((79, 0x3c)),
+        "{boundary:#}"
+    );
     let layers = game.objects[&212259].world_layers;
     assert!(layers.draws_in_sprite_pass(0));
     for slot in 1..=3 {
-        assert!(!layers.draws_in_sprite_pass(slot));
+        assert!(layers.draws_in_sprite_pass(slot), "{boundary:#}");
     }
-    assert_eq!(
-        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((79, 0x428))
-    );
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("camera style/transition is not implemented yet"),
+        format!("{boundary:#}")
+            .contains("camera replacement during an active ParseScreen transition"),
         "{boundary:#}"
     );
     let ramp = game
@@ -519,14 +521,14 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_SetWorldCamera");
+        assert_eq!(message.class, "OM_SetWorldCameraAsScreen");
         assert!(matches!(
             message.fields.get("スタイル"),
-            Some(rugp_scene_vm::vm::Value::Integer(1))
+            Some(rugp_scene_vm::vm::Value::Integer(0))
         ));
-        assert_eq!(message.fields["フェード方式"].integer()?, 8);
+        assert_eq!(message.fields["フェード方式"].integer()?, 0);
     } else {
-        panic!("unsupported camera transition was acknowledged");
+        panic!("unsupported active camera replacement was acknowledged");
     }
     Ok(())
 }

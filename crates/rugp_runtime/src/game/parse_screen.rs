@@ -1,10 +1,11 @@
-//! ParseScreen-driven opacity, separate from framebuffer CFade effects.
+//! ParseScreen-driven object properties, separate from framebuffer CFade effects.
 use super::*;
 use rugp_assets::mime::MimeCurve;
 
 pub(super) struct ParseTransition {
     pub(super) scene: BTreeMap<u64, ObjectState>,
     curves: BTreeMap<u64, MimeCurve>,
+    cameras: BTreeMap<u64, crate::world::CameraTween>,
     elapsed: u32,
     duration: u32,
 }
@@ -83,7 +84,7 @@ impl Game {
     }
     /// Native 10042a8a activates mode-0x100 requests. Keep a render snapshot
     /// so subsequent image commands remain staged until explicit presentation.
-    pub(super) fn start_parse_draw_ratios(&mut self, duration: u32) -> Result<bool> {
+    pub(super) fn start_parse_transition(&mut self, duration: u32) -> Result<bool> {
         ensure!(
             self.parse_transition.is_none(),
             "overlapping ParseScreen transitions are not implemented yet"
@@ -91,7 +92,7 @@ impl Game {
         if !self
             .objects
             .values()
-            .any(|o| o.pending_draw_ratio.is_some())
+            .any(|o| o.pending_draw_ratio.is_some() || o.pending_camera.is_some())
         {
             return Ok(false);
         }
@@ -100,23 +101,39 @@ impl Game {
             .iter_mut()
             .filter_map(|(&id, o)| o.pending_draw_ratio.take().map(|c| (id, c)))
             .collect();
+        let cameras = self
+            .objects
+            .iter_mut()
+            .filter_map(|(&id, o)| o.pending_camera.take().map(|t| (id, t)))
+            .collect();
         self.parse_transition = Some(ParseTransition {
             scene: self.objects.clone(),
             curves,
+            cameras,
             elapsed: 0,
             duration,
         });
         self.transition = None;
-        self.advance_parse_draw_ratios(0)?;
+        self.advance_parse_transition(0)?;
         Ok(true)
     }
-    pub(super) fn advance_parse_draw_ratios(&mut self, dt_ms: u32) -> Result<()> {
+    pub(super) fn advance_parse_transition(&mut self, dt_ms: u32) -> Result<()> {
         let size = self.size();
         let Some(parse) = &mut self.parse_transition else {
             return Ok(());
         };
         parse.elapsed = parse.elapsed.saturating_add(dt_ms).min(parse.duration);
         let progress = progress_q16(parse.elapsed, parse.duration);
+        for (&id, tween) in &parse.cameras {
+            let camera = tween.sample(progress)?;
+            if let Some(object) = parse.scene.get_mut(&id) {
+                object.validate_camera_boundary(&camera)?;
+                object.camera = camera;
+            }
+            if let Some(object) = self.objects.get_mut(&id) {
+                object.camera = camera;
+            }
+        }
         for (&id, curve) in &parse.curves {
             // Vm60 10044774 shifts Q5 output, then clamps to native u8.
             let opacity = curve_opacity(curve, progress);
@@ -135,6 +152,8 @@ impl Game {
             for id in parse.scene.keys() {
                 if let Some(object) = self.objects.get_mut(id) {
                     object.pending_draw_ratio = None;
+                    object.pending_camera = None;
+                    object.camera_start = None;
                 }
             }
             self.parse_transition = None;
@@ -293,9 +312,7 @@ mod tests {
             &game.frame()[..4]
         );
     }
-    #[test]
-    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
-    fn retail_draw_ratio_host_clock_curves_staging_and_reset() -> Result<()> {
+    fn waiting_game() -> Result<Game> {
         use rugp_scene_vm::{Argument, Scenario};
         let root = std::env::var_os("RUGP_TEST_GAME").context("game directory")?;
         let mut game = Game::open(root.as_ref())?;
@@ -344,6 +361,12 @@ mod tests {
         )?;
         game.vm = Vm::new(Arc::new(program), 1)?;
         assert_eq!(game.step(0)?, RunState::Waiting);
+        Ok(game)
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_draw_ratio_host_clock_curves_staging_and_reset() -> Result<()> {
+        let mut game = waiting_game()?;
         for (id, color) in [(212259, [255, 0, 0, 255]), (212260, [0, 0, 255, 255])] {
             let mut object = ObjectState {
                 rect: (0, 0, 4, 4),
@@ -430,6 +453,244 @@ mod tests {
         assert!(game.objects[&212260].pending_draw_ratio.is_none());
         assert!(game.parse_transition.is_none());
         assert!(game.wait_ms.is_some()); // all animation ran during VM waits
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_camera_parse_clock_zoom_pan_and_opacity_match_inverse_pixel_oracle() -> Result<()> {
+        let mut game = waiting_game()?;
+        let texture = Arc::new(Texture {
+            width: 16,
+            height: 16,
+            display_scale: 1.0,
+            rgba: (0..16u8)
+                .flat_map(|y| (0..16u8).flat_map(move |x| [x * 15, y * 15, (x ^ y) * 15, 255]))
+                .collect(),
+        });
+        let plane = crate::world::Plane::bitmap(&texture)?;
+        let mut object = ObjectState {
+            rect: (0, 0, 4, 4),
+            ..ObjectState::default()
+        };
+        object.layers.insert(
+            512,
+            Layer::World(WorldImage {
+                boundary: plane,
+                planes: vec![crate::image_manager::WorldImagePlane {
+                    texture: Arc::clone(&texture),
+                    plane,
+                    draw_flags: 0,
+                }],
+            }),
+        );
+        game.objects.insert(212259, object);
+        game.present_scene()?;
+        let call = |screen: bool, fields: BTreeMap<String, Value>| {
+            message(
+                212259,
+                if screen {
+                    "OM_SetWorldCameraAsScreen"
+                } else {
+                    "OM_SetWorldCamera"
+                },
+                fields,
+            )
+        };
+        let verify = |game: &Game, camera: Camera, opacity: u8| {
+            assert_eq!(game.objects[&212259].camera, camera);
+            let project = |vertex: i32, angle: i32, center: f64| {
+                let numerator = (i64::from(vertex) * 65536 - i64::from(angle) * 720 * 8)
+                    * i64::from(camera.focal_length);
+                center + (((numerator.abs() + 360) / 720) * numerator.signum()) as f64 / 65536.0
+            };
+            let left = project(-8, camera.angles_q4[0], 2.0);
+            let right = project(8, camera.angles_q4[0], 2.0);
+            let top = project(-8, camera.angles_q4[1], 2.0);
+            let bottom = project(8, camera.angles_q4[1], 2.0);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let u = (x as f64 + 0.5 - left) / (right - left);
+                    let v = (y as f64 + 0.5 - top) / (bottom - top);
+                    let mut expected = [0, 0, 0, 255];
+                    if camera.focal_length != 0
+                        && (0.0..1.0).contains(&u)
+                        && (0.0..1.0).contains(&v)
+                    {
+                        let sx = (u * 16.0).floor() as usize;
+                        let sy = (v * 16.0).floor() as usize;
+                        for (c, out) in expected[..3].iter_mut().enumerate() {
+                            *out = ((u32::from(texture.rgba[(sy * 16 + sx) * 4 + c])
+                                * u32::from(opacity)
+                                + 127)
+                                / 255) as u8;
+                        }
+                    }
+                    assert_eq!(
+                        &game.frame()[(y * 4 + x) * 4..(y * 4 + x + 1) * 4],
+                        expected,
+                        "pixel {x},{y}, camera {camera:?}"
+                    );
+                }
+            }
+        };
+        let initial = game.frame().to_vec();
+        game.message(call(
+            true,
+            BTreeMap::from([
+                ("ズーム率".into(), Value::Integer(1440)),
+                ("フェード方式".into(), Value::Integer(8)),
+                ("スタイル".into(), Value::Integer(1)),
+                ("総処理時間基".into(), Value::Integer(10000)),
+            ]),
+        ))?;
+        game.message(call(
+            false,
+            BTreeMap::from([
+                ("ロール角".into(), Value::Integer(1)),
+                ("ピッチ角".into(), Value::Integer(-2)),
+                ("バンク角".into(), Value::Integer(3)),
+                ("フェード方式".into(), Value::Integer(8)),
+                ("スタイル".into(), Value::Integer(1)),
+            ]),
+        ))?;
+        // Screen/angle commands combine through their prepared target, but
+        // neither the picture nor the actual camera advances before a trigger.
+        assert_eq!(game.objects[&212259].camera, Camera::default());
+        game.step(12345)?;
+        assert_eq!(game.frame(), initial);
+        game.message(trigger(400))?;
+        assert!(game.transition.is_none());
+        verify(&game, Camera::default(), 255);
+        game.step(100)?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 900,
+                angles_q4: [4, -8, 12],
+            },
+            255,
+        );
+        let before = game.frame().to_vec();
+        assert!(
+            game.message(call(
+                true,
+                BTreeMap::from([("ズーム率".into(), Value::Integer(2000))])
+            ))
+            .is_err()
+        );
+        assert_eq!(game.frame(), before);
+        game.step(100)?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 1080,
+                angles_q4: [8, -16, 24],
+            },
+            255,
+        );
+        game.step(200)?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 1440,
+                angles_q4: [16, -32, 48],
+            },
+            255,
+        );
+        assert!(game.parse_transition.is_none());
+        assert!(game.objects[&212259].pending_camera.is_none());
+        assert!(game.objects[&212259].camera_start.is_none());
+
+        game.message(call(false, BTreeMap::new()))?;
+        game.message(call(
+            true,
+            BTreeMap::from([
+                ("ズーム率".into(), Value::Integer(0)),
+                ("スタイル".into(), Value::Integer(0x800)),
+            ]),
+        ))?;
+        game.message(call(
+            true,
+            BTreeMap::from([
+                ("ズーム率".into(), Value::Integer(720)),
+                ("フェード方式".into(), Value::Integer(8)),
+                ("スタイル".into(), Value::Integer(1)),
+            ]),
+        ))?;
+        game.message(ratio(212259, 0x100, Value::Null))?;
+        game.message(trigger(400))?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 0,
+                angles_q4: [0; 3],
+            },
+            0,
+        );
+        game.step(100)?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 180,
+                angles_q4: [0; 3],
+            },
+            64,
+        );
+        game.step(300)?;
+        verify(&game, Camera::default(), 255);
+        assert!(game.objects[&212259].camera_start.is_none());
+        // Capture after preparation overwrites the start while preserving
+        // its delta; an angular restage then uses the resulting zoom target.
+        game.message(call(
+            true,
+            BTreeMap::from([
+                ("ズーム率".into(), Value::Integer(1000)),
+                ("フェード方式".into(), Value::Integer(8)),
+                ("スタイル".into(), Value::Integer(1)),
+            ]),
+        ))?;
+        game.message(call(
+            true,
+            BTreeMap::from([
+                ("ズーム率".into(), Value::Integer(800)),
+                ("スタイル".into(), Value::Integer(0x800)),
+            ]),
+        ))?;
+        assert_eq!(
+            game.objects[&212259]
+                .pending_camera
+                .unwrap()
+                .target()
+                .focal_length,
+            1080
+        );
+        game.message(call(
+            false,
+            BTreeMap::from([
+                ("ロール角".into(), Value::Integer(1)),
+                ("フェード方式".into(), Value::Integer(8)),
+                ("スタイル".into(), Value::Integer(1)),
+            ]),
+        ))?;
+        assert_eq!(
+            game.objects[&212259]
+                .pending_camera
+                .unwrap()
+                .start()
+                .focal_length,
+            800
+        );
+        game.message(trigger(0))?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 1080,
+                angles_q4: [16, 0, 0],
+            },
+            255,
+        );
+        assert!(game.wait_ms.is_some());
         Ok(())
     }
 }

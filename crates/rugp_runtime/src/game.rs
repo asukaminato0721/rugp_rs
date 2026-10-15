@@ -12,9 +12,10 @@ use rugp_scene_vm::{
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
+mod camera;
 mod dialogue;
-mod draw_ratio;
 mod menu;
+mod parse_screen;
 mod profile;
 mod sound;
 mod var_data;
@@ -56,6 +57,7 @@ pub struct ObjectState {
     pub camera: Camera,
     /// Native camera command style 0x800 records a start without applying it.
     camera_start: Option<Camera>,
+    pending_camera: Option<crate::world::CameraTween>,
     pub world_layers: crate::world::WorldLayerFlags,
     pub opacity: u8,
     pending_draw_ratio: Option<rugp_assets::mime::MimeCurve>,
@@ -75,6 +77,7 @@ impl Default for ObjectState {
             properties: BTreeMap::new(),
             camera: Camera::default(),
             camera_start: None,
+            pending_camera: None,
             world_layers: crate::world::WorldLayerFlags::default(),
             opacity: 255,
             pending_draw_ratio: None,
@@ -126,7 +129,7 @@ pub struct Game {
     primary_buffer: u64,
     buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
-    parse_transition: Option<draw_ratio::ParseTransition>,
+    parse_transition: Option<parse_screen::ParseTransition>,
     wait_ms: Option<u32>,
     audio_wait: Option<Vec<u64>>,
     audio_state: crate::audio_state::PlaybackRegistry,
@@ -294,7 +297,13 @@ impl Game {
                 *out = ((*from as u64 * (d - a) + *to as u64 * a + d / 2) / d) as u8;
             }
             if transition.elapsed >= transition.duration {
+                let parse = transition.curve.is_none();
                 self.transition = None;
+                if parse {
+                    for object in self.objects.values_mut() {
+                        object.camera_start = None;
+                    }
+                }
             }
         }
     }
@@ -379,83 +388,10 @@ impl Game {
                     .extend(fields);
             }
             "OM_SetWorldCameraAsScreen" => {
-                let style = number(&fields, "スタイル", 0)?;
-                ensure!(
-                    matches!(style, 0..=15 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
-                    "screen camera style/transition is not implemented yet"
-                );
-                ensure!(
-                    number(&fields, "スクリーン座標Ｘ", 0)? == 0
-                        && number(&fields, "スクリーン座標Ｙ", 0)? == 0,
-                    "translated screen camera is not implemented yet"
-                );
-                let focal = number(&fields, "ズーム率", 720)?;
-                ensure!(
-                    ((if style == 0x800 { 0 } else { 1 })..=32767).contains(&focal),
-                    "invalid camera focal length {focal}"
-                );
-                let object = self.objects.entry(id).or_default();
-                if style == 0x800 {
-                    // Vm60 1003faf0 prepares the camera state, then
-                    // 100402a9..100402c6 only copies it to the start slot.
-                    // Neither duration nor fade-0 activates that snapshot.
-                    object.camera_start = Some(Camera {
-                        focal_length: focal as u16,
-                        ..object.camera
-                    });
-                } else {
-                    object.camera.focal_length = focal as u16;
-                }
-                object.properties.extend(fields);
+                self.set_camera(id, fields, true)?;
             }
             "OM_SetWorldCamera" => {
-                let style = number(&fields, "スタイル", 0)?;
-                ensure!(
-                    matches!(style, 0..=15 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
-                    "camera style/transition is not implemented yet"
-                );
-                for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
-                    ensure!(
-                        number(&fields, field, 0)? == 0,
-                        "3D camera {field} is not implemented yet"
-                    );
-                }
-                let angles =
-                    ["ロール角", "ピッチ角", "バンク角"].map(|field| number(&fields, field, 0));
-                let mut angles_q4 = [0; 3];
-                for (out, angle) in angles_q4.iter_mut().zip(angles) {
-                    *out = angle?.checked_mul(16).context("camera angle overflow")?;
-                }
-                let object = self.objects.entry(id).or_default();
-                if angles_q4[..2].iter().any(|v| *v != 0) {
-                    let candidate = Camera {
-                        angles_q4,
-                        ..object.camera
-                    };
-                    for plane in object.layers.values().filter_map(|layer| match layer {
-                        Layer::World(image) => Some(&image.boundary),
-                        Layer::Screen(_) => None,
-                    }) {
-                        let q = plane.quad(&candidate, object.rect)?;
-                        let (x, y, w, h) = object.rect;
-                        ensure!(
-                            q[0][0] <= f64::from(x)
-                                && q[0][1] <= f64::from(y)
-                                && q[2][0] >= f64::from(x) + f64::from(w)
-                                && q[2][1] >= f64::from(y) + f64::from(h),
-                            "camera boundary clamping is not implemented yet"
-                        );
-                    }
-                }
-                if style == 0x800 {
-                    object.camera_start = Some(Camera {
-                        angles_q4,
-                        ..object.camera
-                    });
-                } else {
-                    object.camera.angles_q4 = angles_q4;
-                }
-                object.properties.extend(fields);
+                self.set_camera(id, fields, false)?;
             }
             "OM_HumanOut" => {
                 let style = number(&fields, "スタイル", 0)?;
@@ -502,13 +438,16 @@ impl Game {
                     "transition effect is not implemented yet"
                 );
                 let duration = number(&fields, "総処理時間基", 0)?.max(0) as u32;
-                if self.start_parse_draw_ratios(duration)? {
+                if self.start_parse_transition(duration)? {
                     return Ok(());
                 }
                 let next = self.scene_frame()?;
                 if duration == 0 {
                     self.frame = next;
                     self.transition = None;
+                    for object in self.objects.values_mut() {
+                        object.camera_start = None;
+                    }
                 } else {
                     self.transition = Some(Transition {
                         from: self.frame.rgba.clone(),
@@ -617,7 +556,7 @@ impl Game {
             return Ok(RunState::Ended);
         }
         self.audio_state.advance(dt_ms);
-        self.advance_parse_draw_ratios(dt_ms)?;
+        self.advance_parse_transition(dt_ms)?;
         if let Some(t) = &mut self.transition {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }

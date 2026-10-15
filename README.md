@@ -221,15 +221,24 @@ preserved; full world-sprite interleaving remains unimplemented. A host
 regression verifies cumulative flags, independent clearing, type behavior,
 unsupported dispatch, and unchanged fast-pass pixels.
 Chapter execution now passes the camera, layer-control messages and the
-extended background at scene 88, PC `0x7c`, reaching the next unsupported
-`OM_SetWorldCamera` (style 1, fade mode 8) at scene 79,
-PC `0x428`. Camera style `0x800` is supported for both screen and angular
+extended background at scene 88, PC `0x7c`, and synchronized camera setup
+at scene 79, PC `0x428`. The next boundary is a new screen-camera command
+while ParseScreen is still active, on re-entering scene 79 at PC `0x3c`.
+Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
 without attempting to project it. Host tests check stored zoom/Q4 angles,
 unchanged pixels/current camera, and rejection of unsupported fade modes
-without corrupting the stored state. Nonzero camera-transition modes still
-stop explicitly; staged starts are retained for their future implementation.
+without corrupting the stored state. Fade mode 8 now interpolates staged
+screen zoom and angular targets on ParseScreen's shared clock, including
+camera-only transitions and synchronized opacity curves. Separate screen
+and angular commands combine through the prepared target; a later capture
+replaces the start without changing an already prepared delta. Native easing
+uses repeated quantized Q16 squaring, with signed-floor component interpolation,
+not floating-point powers. Tests cover all sixteen easing styles, intermediate
+camera/pixel values, VM waits, zero zoom/duration, and capture cleanup.
+Independent mode 4, alternate mode 12, additive/relative styles, active-camera
+replacement and camera boundary clamping remain explicitly unsupported.
 The sampled draw-ratio curve is a `CMimeFlat16LimitOne#1`, not a CFade:
 seventeen signed samples use a Q16 input, with arithmetic-shift interpolation
 and input clamping. Its strict asset parser, inline-object framing and native
@@ -255,7 +264,9 @@ matrix), and fade mode 0 takes the target state directly, not a linear 400ms
 interpolation. Its low-four-bit easing flags, including style 1, have no
 effect in fade mode 0; screen and angular pixel tests cover them. Default
 simplified mode pans linearly rather than applying that
-trigonometric matrix. Other camera transition modes remain under investigation.
+trigonometric matrix. Its projection wraps the Q16 numerator in signed 32-bit
+arithmetic before native MulDiv rounding, including the overflow sentinel;
+large offscreen chapter pans and pitch-bias wrapping have numerical regressions.
 The metadata-only `rugp_assets`
 example `background`
 accepts a game directory, CBg2d offset and extent for this work.

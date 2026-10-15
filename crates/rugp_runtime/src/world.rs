@@ -20,7 +20,9 @@
 //! axis-aligned projection with linear roll/pitch pan, *not* 100683f0's
 //! trigonometric matrix. Full-matrix modes require separate implementation.
 use crate::render::Texture;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
+mod camera;
+pub use camera::CameraTween;
 
 /// Per-slot native 0x10000 flags. This suppresses a cached background plane
 /// in the interleaved world-sprite pass, not in the plain background pass.
@@ -223,9 +225,10 @@ impl Plane {
     /// angles. See 1003c388..1003c410: angle*depth*8 is subtracted from the
     /// Q16 vertex before focal/depth projection, not interpreted as degrees.
     pub fn quad(&self, camera: &Camera, viewport: (i32, i32, u32, u32)) -> Result<[[f64; 3]; 4]> {
+        ensure!(self.depth > 0, "invalid camera/plane depth");
         ensure!(
-            camera.focal_length > 0 && self.depth > 0,
-            "invalid camera/plane depth"
+            camera.focal_length <= 32767,
+            "camera focal length exceeds native signed range"
         );
         let center = [
             f64::from(viewport.0) + f64::from(viewport.2 / 2),
@@ -233,28 +236,23 @@ impl Plane {
         ];
         let angles = [
             camera.angles_q4[0],
-            camera.angles_q4[1]
-                .checked_add(i32::from(self.pitch_bias))
-                .context("camera pitch overflow")?,
+            camera.angles_q4[1].wrapping_add(i32::from(self.pitch_bias)),
         ];
         let project = |coordinate: i32, angle: i32| -> Result<f64> {
             // Native KERNEL32.MulDiv rounds the signed Q16 projection to
             // nearest (ties away from zero), rather than truncating vertices
             // to whole pixels or using an unquantized floating-point ratio.
-            let value =
-                i64::from(coordinate) * 65536 - i64::from(angle) * i64::from(self.depth) * 8;
-            ensure!(
-                i32::try_from(value).is_ok(),
-                "camera projection exceeds native numerator range"
-            );
-            let product = value * i64::from(camera.focal_length);
+            // 1003c39b..1003c3b1 uses x86 IMUL/SHL/SUB, wrapping in 32
+            // bits *before* calling signed MulDiv. Large retail pans reach
+            // that wrap on offscreen edges; widening the numerator or
+            // rejecting it changes native behavior.
+            let pan = angle.wrapping_mul(self.depth).wrapping_shl(3);
+            let value = coordinate.wrapping_shl(16).wrapping_sub(pan);
+            let product = i64::from(value) * i64::from(camera.focal_length);
             let magnitude = (product.abs() + i64::from(self.depth) / 2) / i64::from(self.depth);
             let result = magnitude * product.signum();
-            ensure!(
-                i32::try_from(result).is_ok(),
-                "camera projection exceeds native screen range"
-            );
-            Ok(result as f64 / 65536.0)
+            // KERNEL32.MulDiv returns -1 when its rounded result overflows.
+            Ok(f64::from(i32::try_from(result).unwrap_or(-1)) / 65536.0)
         };
         let left = center[0] + project(-self.origin[0], angles[0])?;
         let top = center[1] + project(-self.origin[1], angles[1])?;
@@ -520,28 +518,67 @@ mod tests {
             [14.0 - 21845.0 / 65536.0, 23.0 - 21845.0 / 65536.0, 3.0]
         );
         assert_eq!(q[2], [15.0, 24.0, 3.0]);
-        assert!(
-            plane
-                .quad(
-                    &Camera {
-                        angles_q4: [i32::MAX, 0, 0],
-                        ..camera
-                    },
-                    (0, 0, 9, 7)
-                )
-                .is_err()
+        assert_eq!(
+            plane.quad(
+                &Camera {
+                    angles_q4: [i32::MAX, 0, 0],
+                    ..camera
+                },
+                (0, 0, 9, 7)
+            )?,
+            plane.quad(
+                &Camera {
+                    angles_q4: [-1, 0, 0],
+                    ..camera
+                },
+                (0, 0, 9, 7)
+            )?
         );
-        assert!(
-            plane
-                .quad(
-                    &Camera {
-                        focal_length: 0,
-                        ..camera
-                    },
-                    (0, 0, 9, 7)
-                )
-                .is_err()
+        assert_eq!(
+            plane.quad(
+                &Camera {
+                    focal_length: 0,
+                    ..camera
+                },
+                (0, 0, 9, 7)
+            )?,
+            [[4.0, 3.0, 3.0]; 4]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn projection_wraps_before_muldiv_and_preserves_its_overflow_sentinel() -> Result<()> {
+        let plane = Plane {
+            origin: [24192, 7948],
+            size: [48384, 15896],
+            depth: 18000,
+            pitch_bias: 0,
+        };
+        let camera = Camera {
+            focal_length: 1752,
+            angles_q4: [-5920, -1776, 0],
+        };
+        let q = plane.quad(&camera, (0, 0, 1024, 600))?;
+        // x86 wraps the right vertex's positive numerator to negative.
+        // These are signed MulDiv results, before adding the screen center.
+        assert_eq!(q[0][0], 512.0 - 71342113.0 / 65536.0);
+        assert_eq!(q[1][0], 512.0 - 180751931.0 / 65536.0);
+        let plane = Plane {
+            origin: [1, 1],
+            size: [4, 4],
+            depth: 1,
+            pitch_bias: 1,
+        };
+        let camera = Camera {
+            focal_length: 32767,
+            angles_q4: [0, i32::MAX, 0],
+        };
+        let q = plane.quad(&camera, (0, 0, 10, 10))?;
+        assert_eq!(q[0], [-32762.0, -32762.0, 1.0]);
+        // Three pixels in Q16 times 32767 exceeds signed i32. MulDiv
+        // returns -1, not a saturated or widened result.
+        assert_eq!(q[2], [5.0 - 1.0 / 65536.0, 5.0 - 1.0 / 65536.0, 1.0]);
         Ok(())
     }
 }
