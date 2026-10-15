@@ -2,6 +2,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rugp_assets::RioArchive;
 use std::{collections::BTreeMap, path::PathBuf};
+#[cfg(all(
+    feature = "desktop",
+    any(target_os = "linux", target_os = "windows", target_os = "macos")
+))]
+mod desktop;
 
 #[derive(Parser)]
 #[command(about = "Native Rust rUGP archive and engine tools", version)]
@@ -14,10 +19,30 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run the work-in-progress desktop runtime; unsupported operations stop with an error.
+    #[cfg(all(
+        feature = "desktop",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
+    Play {
+        #[arg(long)]
+        mute: bool,
+        #[arg(long)]
+        quit_after_ms: Option<u32>,
+    },
+    /// Run the current runtime headlessly and export its RGBA frame (development diagnostic).
+    Frame {
+        output: PathBuf,
+        #[arg(long, default_value_t = 1000)]
+        time_ms: u32,
+    },
     /// Validate OOR audio framing and setup headers; optionally decode every packet.
     CheckAudio {
         #[arg(long)]
         decode: bool,
+        /// Only sources discovered inside sound wrappers, excluding direct scene references.
+        #[arg(long)]
+        additional_only: bool,
     },
     /// Decode one referenced OOR stream to 16-bit PCM WAV.
     Audio {
@@ -70,19 +95,58 @@ fn main() -> Result<()> {
         .parent()
         .context("game root missing")?;
     match args.command {
-        Command::CheckAudio { decode } => {
+        #[cfg(all(
+            feature = "desktop",
+            any(target_os = "linux", target_os = "windows", target_os = "macos")
+        ))]
+        Command::Play {
+            mute,
+            quit_after_ms,
+        } => desktop::run(
+            rugp_runtime::Game::open(&args.project_dir)?,
+            mute,
+            quit_after_ms,
+        )?,
+        Command::Frame { output, time_ms } => {
+            let mut game = rugp_runtime::Game::open(&args.project_dir)?;
+            game.step(0)?;
+            let mut elapsed = 0;
+            while elapsed < time_ms {
+                let dt = (time_ms - elapsed).min(16);
+                game.step(dt)?;
+                elapsed += dt;
+            }
+            let (width, height) = game.size();
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)?;
+            let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header()?.write_image_data(game.frame())?;
+            println!(
+                "Rendered {elapsed} ms at PC {:?} to {} (audio requests not played)",
+                game.vm.cursor(),
+                output.display()
+            );
+        }
+        Command::CheckAudio {
+            decode,
+            additional_only,
+        } => {
             let native = rugp_assets::native_schema::NativeSchema::from_directory(game_root)?;
-            let index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let mut index = rugp_scene_vm::resources::ResourceIndex::scan(&archive, &native)?;
+            let direct: std::collections::BTreeSet<_> = index.resources.keys().copied().collect();
+            index.expand_sound_sources(&archive)?;
             let plugin = std::fs::read(game_root.join("Plugins/riooor.rpo"))?;
             let headers = rugp_assets::oor::SetupHeaders::from_plugin(&plugin);
             let mut ok = 0;
             let mut failures = BTreeMap::new();
             let mut frames = 0u64;
-            for resource in index
-                .resources
-                .values()
-                .filter(|r| r.class.name == "COptimizedObs")
-            {
+            for resource in index.resources.values().filter(|r| {
+                r.class.name == "COptimizedObs" && (!additional_only || !direct.contains(&r.offset))
+            }) {
                 let result = (|| -> Result<()> {
                     let bytes = archive.read_at(resource.offset, resource.size as usize)?;
                     let stream = rugp_assets::oor::Oor::parse(&bytes)?;

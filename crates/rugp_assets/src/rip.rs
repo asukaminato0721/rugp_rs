@@ -362,6 +362,8 @@ pub fn decode_rip_pixels(header: &RipHeader, data: &[u8]) -> Result<Image> {
         })
         .collect();
     Ok(Image {
+        canvas_width: width as u32,
+        canvas_height: height as u32,
         width: width as u32,
         height: height as u32,
         x: 0,

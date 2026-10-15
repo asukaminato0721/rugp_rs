@@ -286,6 +286,8 @@ impl MipLevel {
             );
         }
         Ok(Image {
+            canvas_width: width as u32,
+            canvas_height: height as u32,
             width: width as u32,
             height: height as u32,
             x: 0,

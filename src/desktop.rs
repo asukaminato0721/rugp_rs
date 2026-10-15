@@ -1,0 +1,179 @@
+//! Desktop presentation host; all game/render state stays in rugp_runtime.
+use anyhow::{Context, Result, bail};
+use rugp_runtime::{Game, RunState};
+use std::{
+    num::NonZeroU32,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use winit::{
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    window::{Window, WindowId},
+};
+
+pub fn run(game: Game, mute: bool, quit_after_ms: Option<u32>) -> Result<()> {
+    let event_loop = EventLoop::new().context("create desktop event loop")?;
+    let mut app = App {
+        game,
+        window: None,
+        surface: None,
+        last: Instant::now(),
+        elapsed: 0,
+        error: None,
+        mute,
+        quit_after_ms,
+    };
+    event_loop
+        .run_app(&mut app)
+        .context("run desktop event loop")?;
+    if let Some(error) = app.error {
+        bail!(error);
+    }
+    Ok(())
+}
+struct App {
+    game: Game,
+    window: Option<Arc<Window>>,
+    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    last: Instant,
+    elapsed: u32,
+    error: Option<String>,
+    mute: bool,
+    quit_after_ms: Option<u32>,
+}
+impl App {
+    fn present(&mut self) -> Result<()> {
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        let size = window.inner_size();
+        let (Some(sw), Some(sh)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+        else {
+            return Ok(());
+        };
+        let surface = self
+            .surface
+            .as_mut()
+            .context("software window surface missing")?;
+        surface
+            .resize(sw, sh)
+            .map_err(|e| anyhow::anyhow!("resize surface: {e}"))?;
+        let mut output = surface
+            .buffer_mut()
+            .map_err(|e| anyhow::anyhow!("acquire window buffer: {e}"))?;
+        output.fill(0);
+        let (gw, gh) = self.game.size();
+        let width = (size.width as u64)
+            .min(size.height as u64 * gw as u64 / gh as u64)
+            .max(1) as usize;
+        let height = (width as u64 * gh as u64 / gw as u64).max(1) as usize;
+        let left = (size.width as usize - width) / 2;
+        let top = (size.height as usize - height) / 2;
+        let frame = self.game.frame();
+        for y in 0..height {
+            let sy = y * gh as usize / height;
+            for x in 0..width {
+                let sx = x * gw as usize / width;
+                let i = (sy * gw as usize + sx) * 4;
+                output[(y + top) * size.width as usize + x + left] =
+                    (frame[i] as u32) << 16 | (frame[i + 1] as u32) << 8 | frame[i + 2] as u32;
+            }
+        }
+        output
+            .present()
+            .map_err(|e| anyhow::anyhow!("present frame: {e}"))?;
+        Ok(())
+    }
+    fn fail(&mut self, error: anyhow::Error) {
+        let message = format!("{error:#}");
+        eprintln!("{message}");
+        if let Some(window) = &self.window {
+            window.set_title(&format!("rUGP — {message}"));
+        }
+        self.error = Some(message);
+    }
+}
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            let (width, height) = self.game.size();
+            let window = Arc::new(
+                event_loop.create_window(
+                    Window::default_attributes()
+                        .with_title(self.game.title())
+                        .with_inner_size(PhysicalSize::new(width, height)),
+                )?,
+            );
+            let context = softbuffer::Context::new(Arc::clone(&window))
+                .map_err(|e| anyhow::anyhow!("create display context: {e}"))?;
+            let surface = softbuffer::Surface::new(&context, Arc::clone(&window))
+                .map_err(|e| anyhow::anyhow!("create software surface: {e}"))?;
+            self.window = Some(window);
+            self.surface = Some(surface);
+            self.last = Instant::now();
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.fail(error);
+            event_loop.exit();
+        }
+    }
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.window.as_ref().is_none_or(|w| w.id() != id) {
+            return;
+        }
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                let dt = now.duration_since(self.last).as_millis().min(100) as u32;
+                self.last = now;
+                if self.error.is_none() {
+                    match self.game.step(dt) {
+                        Ok(RunState::Ended) => event_loop.exit(),
+                        Ok(_) => {}
+                        Err(e) => self.fail(e),
+                    }
+                    for request in self.game.take_sounds() {
+                        if request.source.is_some() && !self.mute {
+                            self.fail(anyhow::anyhow!("audio playback backend is not implemented yet; --mute explicitly disables audio"));
+                            break;
+                        }
+                    }
+                }
+                if let Err(e) = self.present() {
+                    self.fail(e);
+                    event_loop.exit();
+                }
+                self.elapsed = self.elapsed.saturating_add(dt);
+                if self
+                    .quit_after_ms
+                    .is_some_and(|limit| self.elapsed >= limit)
+                {
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::Resized(_) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let deadline = self.last + Duration::from_millis(16);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        if Instant::now() >= deadline
+            && let Some(window) = &self.window
+        {
+            window.request_redraw();
+        }
+    }
+}

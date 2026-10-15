@@ -78,8 +78,10 @@ impl Program {
             )?;
             scene.visit_references(&mut |r| {
                 if let (Some(offset), Some(size), Some(class)) = (r.offset, r.size, &r.class)
-                    && ["CInt", "CFlag", "CByte", "CShort", "CUShort", "CUInt"]
-                        .contains(&class.name.as_str())
+                    && [
+                        "CInt", "CBool", "CFlag", "CByte", "CShort", "CUShort", "CUInt",
+                    ]
+                    .contains(&class.name.as_str())
                 {
                     variables
                         .entry(offset)
@@ -95,7 +97,7 @@ impl Program {
                 ("CInt" | "CUInt", [a, b, c, d]) => i32::from_le_bytes([*a, *b, *c, *d]),
                 ("CShort", [a, b]) => i16::from_le_bytes([*a, *b]) as i32,
                 ("CUShort", [a, b]) => u16::from_le_bytes([*a, *b]) as i32,
-                ("CFlag" | "CByte", [a]) => *a as i32,
+                ("CBool" | "CFlag" | "CByte", [a]) => *a as i32,
                 _ => bail!("unsupported {class} scalar extent at {offset:#x}"),
             };
             program.initial.insert(offset, Value::Integer(value));

@@ -93,4 +93,29 @@ impl ResourceIndex {
             .context("resource offset not in scene reference index")?;
         archive.read_at(resource.offset, resource.size as usize)
     }
+    /// Include sources stored inside BGM/effect wrappers, rather than only
+    /// the direct scene references. Voice OOR extents are already direct.
+    pub fn expand_sound_sources(&mut self, archive: &RioArchive) -> Result<()> {
+        let wrappers: Vec<_> = self
+            .resources
+            .values()
+            .filter(|r| ["CPmBgm", "CPmEffect"].contains(&r.class.name.as_str()) && r.size > 3)
+            .cloned()
+            .collect();
+        for wrapper in wrappers {
+            let bytes = archive.read_at(wrapper.offset, wrapper.size as usize)?;
+            let sample = rugp_assets::sound::Sample::parse(&bytes, archive.address_shift)
+                .with_context(|| format!("{} at {:#x}", wrapper.class.name, wrapper.offset))?;
+            sample.source.visit(&mut |r| self.add(r));
+        }
+        for r in self.resources.values() {
+            ensure!(
+                r.offset
+                    .checked_add(r.size as u64)
+                    .is_some_and(|end| end <= archive.len()),
+                "expanded sound resource outside archive"
+            );
+        }
+        Ok(())
+    }
 }

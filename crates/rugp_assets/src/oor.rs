@@ -172,8 +172,8 @@ impl Oor {
         id.align()?;
         let setup = Page::read(&mut bits)?;
         ensure!(
-            setup.flags & 14 == 0,
-            "fragmented or duplicate OOR setup page"
+            setup.flags & 10 == 0,
+            "continued or duplicate OOR setup page"
         );
         let first = setup.packets.first().context("OOR setup page is empty")?;
         let setup_id = first.first().context("OOR setup packet is empty")? & 63;
@@ -182,19 +182,35 @@ impl Oor {
             "external OOR setup packet has unexpected data"
         );
         let inline_setup = if setup_id == 0 {
-            first[1..].to_vec()
+            ensure!(
+                setup.flags & 4 == 0,
+                "fragmented inline Vorbis setup is unsupported"
+            );
+            first[1..]
+                .iter()
+                .chain(setup.packets.iter().skip(1).flat_map(|p| p.iter()))
+                .copied()
+                .collect()
         } else {
             Vec::new()
         };
         // Retail v0 setup pages include an empty comment-header placeholder.
         // It is a header packet, not a zero-length Vorbis audio packet.
         ensure!(
-            setup.packets.iter().skip(1).all(|p| p.is_empty()),
+            setup_id == 0 || setup.packets.iter().skip(1).all(|p| p.is_empty()),
             "unexpected data after OOR setup header"
         );
         let mut packets = Vec::new();
+        // BGM setup pages can end with an empty partial packet. The first
+        // audio page continues it, even though no bytes were accumulated yet.
+        ensure!(
+            setup.flags & 4 == 0
+                || (setup.packets.len() > 1 && setup.packets.last().is_some_and(|p| p.is_empty())),
+            "fragmented OOR setup header is unsupported"
+        );
         let mut partial = Vec::new();
-        let mut pending = false;
+        let mut pending = setup.flags & 4 != 0;
+        let mut setup_tail = pending;
         let mut eos = setup.flags & 1 != 0;
         while bits.pos < data.len() * 8 && !eos {
             let page = Page::read(&mut bits)?;
@@ -216,14 +232,17 @@ impl Oor {
                 ensure!(partial.len() <= 16_777_216, "OOR packet exceeds limit");
                 pending = i + 1 == count && page.flags & 4 != 0;
                 if !pending {
-                    packets.push(AudioPacket {
-                        data: std::mem::take(&mut partial),
-                        final_granule: if i + 1 == count && page.flags & 1 != 0 {
-                            page.granule
-                        } else {
-                            None
-                        },
-                    });
+                    if !(setup_tail && partial.is_empty()) {
+                        packets.push(AudioPacket {
+                            data: std::mem::take(&mut partial),
+                            final_granule: if i + 1 == count && page.flags & 1 != 0 {
+                                page.granule
+                            } else {
+                                None
+                            },
+                        });
+                    }
+                    setup_tail = false;
                 }
             }
             eos = page.flags & 1 != 0;

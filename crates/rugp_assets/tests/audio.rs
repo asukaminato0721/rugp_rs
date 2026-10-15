@@ -86,3 +86,47 @@ fn oor_rejects_corrupt_headers_and_continuations() {
     let headers = SetupHeaders::from_plugin(&[0; 256]);
     assert!(headers.is_empty());
 }
+
+#[test]
+fn cpmbgm_wrapper_reference_string_and_bounds() {
+    let mut bytes = vec![0; 3];
+    bytes.extend(1u16.to_le_bytes());
+    bytes.extend([0, 0, 0]); // ancestor count + null source reference
+    bytes.extend([2, b'0', b'1']);
+    bytes.extend(4u16.to_le_bytes());
+    let sample = rugp_assets::sound::Sample::parse(&bytes, 0).unwrap();
+    assert_eq!(
+        (sample.mode, sample.name.as_str(), sample.flags),
+        (1, "01", 4)
+    );
+    assert_eq!(sample.source.cache_index, Some(0));
+    for length in 0..bytes.len() {
+        assert!(rugp_assets::sound::Sample::parse(&bytes[..length], 0).is_err());
+    }
+    bytes.push(0);
+    assert!(rugp_assets::sound::Sample::parse(&bytes, 0).is_err());
+}
+
+#[test]
+fn oor_bgm_empty_setup_tail_continues_into_audio() {
+    let mut data = vec![0x08, 0x15, 0x17]; // stereo
+    data.extend(page(4, &[&[4], &[]]));
+    data.extend(page(8 | 1, &[&[], &[2, 4, 6]]));
+    let stream = Oor::parse(&data).unwrap();
+    assert_eq!(stream.info.channels, 2);
+    assert_eq!(stream.setup_id, 4);
+    assert_eq!(stream.packets.len(), 1);
+    assert_eq!(stream.packets[0].data, [2, 4, 6]);
+}
+
+#[test]
+fn oor_inline_setup_in_second_header_packet() {
+    let mut data = vec![0x08, 0x0d, 0x17];
+    data.extend(page(0, &[&[0x40], &[0x22, 0x42, 0x43, 0x56]]));
+    data.extend(page(1, &[&[2, 4, 6]]));
+    let stream = Oor::parse(&data).unwrap();
+    assert_eq!(stream.setup_id, 0);
+    assert_eq!(stream.inline_setup, [0x22, 0x42, 0x43, 0x56]);
+    assert_eq!(stream.packets.len(), 1);
+    assert_eq!(stream.packets[0].data, [2, 4, 6]);
+}

@@ -4,6 +4,8 @@ use anyhow::{Context, Result, ensure};
 
 #[derive(Debug)]
 pub struct Image {
+    pub canvas_width: u32,
+    pub canvas_height: u32,
     pub width: u32,
     pub height: u32,
     pub x: u16,
@@ -253,6 +255,8 @@ pub fn decode_r6ti_pixels(header: &R6Header, compressed: &[u8]) -> Result<Image>
         kind => anyhow::bail!("unsupported Cr6Ti bitmap kind {kind}"),
     }
     Ok(Image {
+        canvas_width: header.canvas_width as u32,
+        canvas_height: header.canvas_height as u32,
         width: header.width as u32,
         height: header.height as u32,
         x: header.x,

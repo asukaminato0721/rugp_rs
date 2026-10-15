@@ -14,6 +14,7 @@ pub mod project;
 pub mod rip;
 mod rip_quant;
 pub mod script;
+pub mod sound;
 
 pub use archive::RioArchive;
 pub use ici::InstallManifest;
