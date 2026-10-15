@@ -46,7 +46,10 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
     };
     game.message(call(
         "OM_SetWorldCameraAsScreen",
-        BTreeMap::from([("ズーム率".into(), Value::Integer(1752))]),
+        BTreeMap::from([
+            ("ズーム率".into(), Value::Integer(1752)),
+            ("スタイル".into(), Value::Integer(1)),
+        ]),
     ))?;
     let before = game.frame().to_vec();
     let camera_before = game.objects[&212259].camera;
@@ -149,6 +152,7 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
                 BTreeMap::from([
                     ("ピッチ角".into(), Value::Integer(pitch)),
                     ("ロール角".into(), Value::Integer(roll)),
+                    ("スタイル".into(), Value::Integer(11)),
                 ]),
             ))?;
             game.message(call("OM_ParseScreenTrigger", BTreeMap::new()))?;

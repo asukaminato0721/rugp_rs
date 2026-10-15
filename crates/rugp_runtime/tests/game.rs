@@ -498,14 +498,14 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     }
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((79, 0x36c))
+        Some((79, 0x428))
     );
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("unimplemented runtime message OM_SetDrawRatioAsParseWnd"),
+        format!("{boundary:#}").contains("camera style/transition is not implemented yet"),
         "{boundary:#}"
     );
     let ramp = game
@@ -519,21 +519,14 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_SetDrawRatioAsParseWnd");
+        assert_eq!(message.class, "OM_SetWorldCamera");
         assert!(matches!(
-            message.fields.get("モード"),
-            Some(rugp_scene_vm::vm::Value::Integer(256))
+            message.fields.get("スタイル"),
+            Some(rugp_scene_vm::vm::Value::Integer(1))
         ));
-        assert!(matches!(
-            message.fields.get("時間"),
-            Some(rugp_scene_vm::vm::Value::Integer(0))
-        ));
-        assert!(matches!(
-            message.fields.get("比重曲線"),
-            Some(rugp_scene_vm::vm::Value::Null)
-        ));
+        assert_eq!(message.fields["フェード方式"].integer()?, 8);
     } else {
-        panic!("unsupported draw-ratio operation was acknowledged");
+        panic!("unsupported camera transition was acknowledged");
     }
     Ok(())
 }

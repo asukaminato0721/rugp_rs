@@ -77,6 +77,10 @@ impl Game {
     }
     /// Returns whether the VM must wait for this effect before acknowledging it.
     pub(super) fn blit(&mut self, instruction: &Instruction) -> Result<bool> {
+        ensure!(
+            self.parse_transition.is_none(),
+            "framebuffer effects during a ParseScreen transition are not implemented yet"
+        );
         let [
             Argument::Message { class, arguments },
             control,

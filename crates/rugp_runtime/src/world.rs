@@ -6,7 +6,15 @@
 //! 100683f0 builds its signed Q12 matrix. Its radians coefficient at
 //! 100904d0 is 2*pi/65536, hence 4096 script units per revolution.
 //! 10046c70's mode-0 branch (10046cb2) takes start+delta, ignoring
-//! interpolation progress. Do not infer linear motion from duration alone.
+//! interpolation progress and the low-four-bit easing power/direction flags.
+//! Those flags only enter the mode-4/8/12 branch at 10046d3a; style 1
+//! does not change mode-0 timing. Do not infer linear motion from duration alone.
+//! For that remaining branch, low bits 0..2 select strength n (zero means
+//! two), applying n-1 successive squarings; bit 3 selects acceleration
+//! instead of mirrored decay. Each squaring is ((q >> 2) * q) >> 14, not a float
+//! power or a single full-precision Q16 multiplication. Start/delta slots
+//! are +844/+868 relative to the world state. 10045031..10045078 passes
+//! the per-window progress to 10046c70 before updating the visible camera.
 //! CParseBgBox resource loading does not restore save-state camera flags;
 //! the constructor's default mode is zero. Vm60 1003c2e5 then uses an
 //! axis-aligned projection with linear roll/pitch pan, *not* 100683f0's

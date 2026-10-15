@@ -19,6 +19,7 @@ pub struct ImageManager {
     bytes: usize,
     budget: usize,
 }
+#[derive(Clone)]
 pub struct WorldImagePlane {
     pub texture: Arc<Texture>,
     pub plane: crate::world::Plane,
@@ -27,6 +28,7 @@ pub struct WorldImagePlane {
     pub draw_flags: u32,
 }
 /// One native image replacement, with independent per-slot world geometry.
+#[derive(Clone)]
 pub struct WorldImage {
     pub planes: Vec<WorldImagePlane>,
     pub boundary: crate::world::Plane,

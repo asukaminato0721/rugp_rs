@@ -13,6 +13,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
 mod dialogue;
+mod draw_ratio;
 mod menu;
 mod profile;
 mod sound;
@@ -38,10 +39,12 @@ pub struct SoundRequest {
     /// Ordinary play (kind 2) uses source defaults instead.
     pub parameters: [u16; 3],
 }
+#[derive(Clone)]
 enum Layer {
     Screen(Arc<Texture>),
     World(WorldImage),
 }
+#[derive(Clone)]
 pub struct ObjectState {
     pub enabled: bool,
     pub visible: bool,
@@ -54,6 +57,8 @@ pub struct ObjectState {
     /// Native camera command style 0x800 records a start without applying it.
     camera_start: Option<Camera>,
     pub world_layers: crate::world::WorldLayerFlags,
+    pub opacity: u8,
+    pending_draw_ratio: Option<rugp_assets::mime::MimeCurve>,
     menu: Option<u64>,
     backdrop: Option<crate::message_window::Backdrop>,
     layers: BTreeMap<i32, Layer>,
@@ -71,6 +76,8 @@ impl Default for ObjectState {
             camera: Camera::default(),
             camera_start: None,
             world_layers: crate::world::WorldLayerFlags::default(),
+            opacity: 255,
+            pending_draw_ratio: None,
             menu: None,
             backdrop: None,
             layers: BTreeMap::new(),
@@ -93,11 +100,11 @@ impl ObjectState {
                             &layer.texture,
                             layer.plane.quad(&self.camera, self.rect)?,
                             self.rect,
-                            255,
+                            self.opacity,
                         )?;
                     }
                 }
-                Layer::Screen(texture) => frame.blit(texture, self.rect, 255)?,
+                Layer::Screen(texture) => frame.blit(texture, self.rect, self.opacity)?,
             }
         }
         Ok(())
@@ -119,6 +126,7 @@ pub struct Game {
     primary_buffer: u64,
     buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
+    parse_transition: Option<draw_ratio::ParseTransition>,
     wait_ms: Option<u32>,
     audio_wait: Option<Vec<u64>>,
     audio_state: crate::audio_state::PlaybackRegistry,
@@ -169,6 +177,7 @@ impl Game {
             primary_buffer,
             buffers: BTreeMap::new(),
             transition: None,
+            parse_transition: None,
             wait_ms: None,
             audio_wait: None,
             audio_state: crate::audio_state::PlaybackRegistry::default(),
@@ -248,8 +257,14 @@ impl Game {
         self.audio_state.set_duration(ticket, duration_ms);
     }
     fn scene_frame(&self) -> Result<Framebuffer> {
-        let mut frame = Framebuffer::new(self.frame.width, self.frame.height)?;
-        for object in self.objects.values().filter(|o| o.visible) {
+        Self::render_objects(&self.objects, self.size())
+    }
+    fn render_objects(
+        objects: &BTreeMap<u64, ObjectState>,
+        size: (u32, u32),
+    ) -> Result<Framebuffer> {
+        let mut frame = Framebuffer::new(size.0, size.1)?;
+        for object in objects.values().filter(|o| o.visible) {
             object.render(&mut frame)?;
         }
         Ok(frame)
@@ -315,6 +330,7 @@ impl Game {
         }
         match message.class.as_str() {
             "OM_SetVarData" => self.set_var_data(&target, &fields)?,
+            "OM_SetDrawRatioAsParseWnd" => self.set_draw_ratio(&target, &fields)?,
             "OM_AllDisableSelecter" | "OM_AllEnableSelecter" | "OM_EnableSelecter" => {
                 self.configure_menu(&target, &message.class, &fields)?
             }
@@ -365,7 +381,7 @@ impl Game {
             "OM_SetWorldCameraAsScreen" => {
                 let style = number(&fields, "スタイル", 0)?;
                 ensure!(
-                    matches!(style, 0 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
+                    matches!(style, 0..=15 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
                     "screen camera style/transition is not implemented yet"
                 );
                 ensure!(
@@ -395,7 +411,7 @@ impl Game {
             "OM_SetWorldCamera" => {
                 let style = number(&fields, "スタイル", 0)?;
                 ensure!(
-                    matches!(style, 0 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
+                    matches!(style, 0..=15 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
                     "camera style/transition is not implemented yet"
                 );
                 for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
@@ -486,6 +502,9 @@ impl Game {
                     "transition effect is not implemented yet"
                 );
                 let duration = number(&fields, "総処理時間基", 0)?.max(0) as u32;
+                if self.start_parse_draw_ratios(duration)? {
+                    return Ok(());
+                }
                 let next = self.scene_frame()?;
                 if duration == 0 {
                     self.frame = next;
@@ -598,6 +617,7 @@ impl Game {
             return Ok(RunState::Ended);
         }
         self.audio_state.advance(dt_ms);
+        self.advance_parse_draw_ratios(dt_ms)?;
         if let Some(t) = &mut self.transition {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }

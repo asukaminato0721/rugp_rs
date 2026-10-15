@@ -222,26 +222,39 @@ regression verifies cumulative flags, independent clearing, type behavior,
 unsupported dispatch, and unchanged fast-pass pixels.
 Chapter execution now passes the camera, layer-control messages and the
 extended background at scene 88, PC `0x7c`, reaching the next unsupported
-`OM_SetDrawRatioAsParseWnd` (mode `0x100`, default curve) at scene 79,
-PC `0x36c`. Camera style `0x800` is supported for both screen and angular
+`OM_SetWorldCamera` (style 1, fade mode 8) at scene 79,
+PC `0x428`. Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
 without attempting to project it. Host tests check stored zoom/Q4 angles,
 unchanged pixels/current camera, and rejection of unsupported fade modes
 without corrupting the stored state. Nonzero camera-transition modes still
 stop explicitly; staged starts are retained for their future implementation.
-The pending draw-ratio curve is a `CMimeFlat16LimitOne#1`, not a CFade:
+The sampled draw-ratio curve is a `CMimeFlat16LimitOne#1`, not a CFade:
 seventeen signed samples use a Q16 input, with arithmetic-shift interpolation
 and input clamping. Its strict asset parser, inline-object framing and native
 ascending/descending defaults are now implemented. Synthetic tests cover
 every truncation, exact knots, negative slopes and unclamped signed output;
 a retail test checks every Q16 position against an independent raw-data
-oracle. Connecting these curves to ParseScreen-triggered opacity remains
-pending; unsupported draw-ratio messages still stop instead of being skipped.
+oracle. CParseBgBox draw-ratio mode `0x100` now queues opacity curves until
+ParseScreen starts. Default ascending/descending curves and explicit sampled
+curves (including mode `0x110`) use the shared Q16 transition progress;
+their own time field does not start another clock. Opacity is sampled and
+clamped each frame, applies independently to each world plane, and retains
+its final value when synchronized curve state is released. Render snapshots
+keep subsequent image replacements staged; explicit live presentations can
+refresh them without resetting the clock. A host regression checks two
+overlapping objects with different curves, real curve data, intermediate
+pixels, VM waits, zero duration, large time jumps, curve replacement/reset,
+and staged image replacement. Independent-clock draw ratios, special default
+after-image curves, non-background targets, overlapping ParseScreen clocks
+and framebuffer effects during them remain explicitly unsupported.
 Static native inspection establishes that script camera angles use 4096 units
 per turn (internally shifted left by four for a 65536-unit
 matrix), and fade mode 0 takes the target state directly, not a linear 400ms
-interpolation. Default simplified mode pans linearly rather than applying that
+interpolation. Its low-four-bit easing flags, including style 1, have no
+effect in fade mode 0; screen and angular pixel tests cover them. Default
+simplified mode pans linearly rather than applying that
 trigonometric matrix. Other camera transition modes remain under investigation.
 The metadata-only `rugp_assets`
 example `background`
