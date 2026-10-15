@@ -113,17 +113,21 @@ mod tests {
             display_scale: 1.0,
             rgba: [53, 91, 183, 255].repeat(16),
         };
-        let plane = Plane::bitmap(&image)?;
+        let plane = crate::world::Plane::bitmap(&image)?;
         let mut object = ObjectState {
             rect: (0, 0, 4, 4),
             ..ObjectState::default()
         };
         object.layers.insert(
             512,
-            Layer {
-                texture: Arc::new(image),
-                plane: Some(plane),
-            },
+            Layer::World(crate::image_manager::WorldImage {
+                planes: vec![crate::image_manager::WorldImagePlane {
+                    texture: Arc::new(image),
+                    plane,
+                    draw_flags: 0,
+                }],
+                boundary: plane,
+            }),
         );
         game.objects.insert(212259, object);
         game.present_scene()?;

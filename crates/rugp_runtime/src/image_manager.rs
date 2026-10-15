@@ -2,7 +2,7 @@ use crate::render::Texture;
 use anyhow::{Context, Result, ensure};
 use rugp_assets::{
     RioArchive,
-    background::Background,
+    background::SceneBackground,
     crmt::Crmt,
     image::decode_r6ti,
     object::ObjectRef,
@@ -19,31 +19,80 @@ pub struct ImageManager {
     bytes: usize,
     budget: usize,
 }
+pub struct WorldImagePlane {
+    pub texture: Arc<Texture>,
+    pub plane: crate::world::Plane,
+    /// Serialized base +18 flags. Vm60 1003bff3 skips bit 1 in the
+    /// no-sprite pass; this is distinct from runtime +60 suppression flags.
+    pub draw_flags: u32,
+}
+/// One native image replacement, with independent per-slot world geometry.
+pub struct WorldImage {
+    pub planes: Vec<WorldImagePlane>,
+    pub boundary: crate::world::Plane,
+}
 impl ImageManager {
-    pub fn load_world(
-        &mut self,
-        reference: &ObjectRef,
-    ) -> Result<(Arc<Texture>, crate::world::Plane)> {
-        let texture = self.load(reference)?;
-        let plane = if reference.class.as_ref().is_some_and(|c| c.name == "CBg2d") {
+    pub fn load_world(&mut self, reference: &ObjectRef) -> Result<WorldImage> {
+        if reference.class.as_ref().is_some_and(|c| c.name == "CBg2d") {
             let bytes = self.archive.read_at(
                 reference.offset.context("background offset missing")?,
                 reference.size.context("background extent missing")? as usize,
             )?;
-            let bg = Background::parse(
+            let scene = SceneBackground::parse(
                 &bytes,
                 reference.class.as_ref().unwrap().schema,
                 self.archive.address_shift,
             )?;
             ensure!(
-                texture.width == u32::from(bg.width) && texture.height == u32::from(bg.height),
-                "background canvas composition is not implemented yet"
+                scene.color == 0
+                    && scene.screen == [0; 2]
+                    && scene.range == [0; 2]
+                    && scene.background.properties.is_none(),
+                "extended background color/range/properties are not implemented yet"
             );
-            crate::world::Plane::background(&bg)?
+            let boundary = crate::world::Plane::scene_background(&scene)?;
+            let mut planes = Vec::new();
+            if scene.layers.is_empty() {
+                ensure!(
+                    scene.background.planes.len() == 1,
+                    "legacy background canvas composition is not implemented yet"
+                );
+                let texture = self.load(&scene.background.planes[0].image)?;
+                ensure!(
+                    texture.width == u32::from(scene.background.width)
+                        && texture.height == u32::from(scene.background.height),
+                    "background canvas composition is not implemented yet"
+                );
+                planes.push(WorldImagePlane {
+                    texture,
+                    plane: boundary,
+                    draw_flags: 0,
+                });
+            } else {
+                // Native slots are capped at eight, in linked-list order.
+                for layer in scene.layers.iter().take(8) {
+                    let texture = self.load(&layer.image)?;
+                    let plane = crate::world::Plane::background_layer(&scene, layer, &texture)?;
+                    planes.push(WorldImagePlane {
+                        texture,
+                        plane,
+                        draw_flags: layer.parameters[2] as u32,
+                    });
+                }
+            }
+            Ok(WorldImage { planes, boundary })
         } else {
-            crate::world::Plane::bitmap(&texture)?
-        };
-        Ok((texture, plane))
+            let texture = self.load(reference)?;
+            let plane = crate::world::Plane::bitmap(&texture)?;
+            Ok(WorldImage {
+                boundary: plane,
+                planes: vec![WorldImagePlane {
+                    texture,
+                    plane,
+                    draw_flags: 0,
+                }],
+            })
+        }
     }
     pub fn new(archive: Arc<RioArchive>) -> Self {
         Self {
@@ -84,7 +133,12 @@ impl ImageManager {
                 .context("texture has no mipmaps")?
                 .decode()?,
             "CBg2d" => {
-                let bg = Background::parse(&bytes, class.schema, shift)?;
+                let scene = SceneBackground::parse(&bytes, class.schema, shift)?;
+                ensure!(
+                    scene.layers.is_empty(),
+                    "world background cannot be loaded as a flat texture"
+                );
+                let bg = scene.background;
                 ensure!(
                     bg.planes.len() == 1,
                     "background needs {}-plane/motion rendering",

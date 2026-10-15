@@ -38,7 +38,9 @@ fn native_background_geometry_and_instant_camera_pan_reach_real_pixels() -> Resu
     assert_eq!(background.placement().origin, [600, 600]);
     assert_eq!(background.placement().depth, 5000);
     let mut images = rugp_runtime::image_manager::ImageManager::new(Arc::clone(&game.archive));
-    let (texture, plane) = images.load_world(&bg)?;
+    let image = images.load_world(&bg)?;
+    let texture = &image.planes[0].texture;
+    let plane = image.planes[0].plane;
     assert_eq!((texture.width, texture.height), (1200, 1200));
     let quad = plane.quad(&rugp_runtime::world::Camera::default(), (0, 0, 1024, 600))?;
     assert_eq!(

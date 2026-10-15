@@ -1,7 +1,7 @@
 use crate::{
-    image_manager::ImageManager,
+    image_manager::{ImageManager, WorldImage},
     render::{Framebuffer, Texture},
-    world::{Camera, Plane},
+    world::Camera,
 };
 use anyhow::{Context, Result, bail, ensure};
 use rugp_assets::{RioArchive, fade::FadeCurve, native_schema::NativeSchema, object::ObjectRef};
@@ -18,6 +18,8 @@ mod profile;
 mod sound;
 mod var_data;
 mod video;
+#[cfg(test)]
+mod world_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
@@ -36,9 +38,9 @@ pub struct SoundRequest {
     /// Ordinary play (kind 2) uses source defaults instead.
     pub parameters: [u16; 3],
 }
-struct Layer {
-    texture: Arc<Texture>,
-    plane: Option<Plane>,
+enum Layer {
+    Screen(Arc<Texture>),
+    World(WorldImage),
 }
 pub struct ObjectState {
     pub enabled: bool,
@@ -78,15 +80,21 @@ impl ObjectState {
             backdrop.paint(frame, self.rect);
         }
         for layer in self.layers.values() {
-            if let Some(plane) = &layer.plane {
-                frame.blit_projective(
-                    &layer.texture,
-                    plane.quad(&self.camera, self.rect)?,
-                    self.rect,
-                    255,
-                )?;
-            } else {
-                frame.blit(&layer.texture, self.rect, 255)?;
+            match layer {
+                Layer::World(image) => {
+                    for layer in &image.planes {
+                        if layer.draw_flags & 2 != 0 {
+                            continue;
+                        }
+                        frame.blit_projective(
+                            &layer.texture,
+                            layer.plane.quad(&self.camera, self.rect)?,
+                            self.rect,
+                            255,
+                        )?;
+                    }
+                }
+                Layer::Screen(texture) => frame.blit(texture, self.rect, 255)?,
             }
         }
         Ok(())
@@ -395,11 +403,10 @@ impl Game {
                         angles_q4,
                         ..object.camera
                     };
-                    for plane in object
-                        .layers
-                        .values()
-                        .filter_map(|layer| layer.plane.as_ref())
-                    {
+                    for plane in object.layers.values().filter_map(|layer| match layer {
+                        Layer::World(image) => Some(&image.boundary),
+                        Layer::Screen(_) => None,
+                    }) {
                         let q = plane.quad(&candidate, object.rect)?;
                         let (x, y, w, h) = object.rect;
                         ensure!(
@@ -444,15 +451,14 @@ impl Game {
                     matches!(fields.get("表情画像"), None | Some(Value::Null)),
                     "expression-image composition is not implemented yet"
                 );
-                let (texture, plane) = self.images.load_world(image)?;
-                let plane = Some(plane);
+                let image = self.images.load_world(image)?;
                 self.buffers.remove(&id);
                 self.objects.entry(id).or_default().menu = None;
                 self.objects
                     .entry(id)
                     .or_default()
                     .layers
-                    .insert(style, Layer { texture, plane });
+                    .insert(style, Layer::World(image));
             }
             "OM_ParseScreenTrigger" => {
                 ensure!(

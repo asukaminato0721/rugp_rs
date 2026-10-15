@@ -56,13 +56,11 @@ impl Game {
             "menu framebuffer budget exceeded"
         );
         self.buffers.insert(target, Arc::clone(&texture));
-        self.objects.entry(target).or_default().layers.insert(
-            0,
-            Layer {
-                texture,
-                plane: None,
-            },
-        );
+        self.objects
+            .entry(target)
+            .or_default()
+            .layers
+            .insert(0, Layer::Screen(texture));
         Ok(())
     }
     fn refresh_menu(&mut self, id: u64, present: bool) -> Result<()> {

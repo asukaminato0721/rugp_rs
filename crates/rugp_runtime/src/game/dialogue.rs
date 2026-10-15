@@ -130,13 +130,7 @@ impl Game {
             &d.stream.page,
         )?);
         let object = self.objects.get_mut(&d.target).unwrap();
-        object.layers.insert(
-            0,
-            Layer {
-                texture,
-                plane: None,
-            },
-        );
+        object.layers.insert(0, Layer::Screen(texture));
         self.present_scene()
     }
     fn finish_dialogue_if_done(&mut self) -> Result<()> {

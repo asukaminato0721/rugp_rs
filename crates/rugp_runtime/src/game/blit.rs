@@ -66,13 +66,11 @@ impl Game {
                 .as_ref()
                 .is_some_and(|c| c.name == "CParseBgBox")
             {
-                self.objects.entry(id).or_default().layers.insert(
-                    0,
-                    Layer {
-                        texture,
-                        plane: None,
-                    },
-                );
+                self.objects
+                    .entry(id)
+                    .or_default()
+                    .layers
+                    .insert(0, Layer::Screen(texture));
             }
         }
         Ok(())

@@ -220,15 +220,15 @@ interleaved world-sprite pass, not the fast background pass. Their state is
 preserved; full world-sprite interleaving remains unimplemented. A host
 regression verifies cumulative flags, independent clearing, type behavior,
 unsupported dispatch, and unchanged fast-pass pixels.
-Chapter execution now passes the camera and these layer-control messages,
-reaching `OM_HumanIn2` at scene 88, PC `0x7c`: its CBg2d has no legacy image
-planes and requires extended-layer composition (`CBg2dLayerRip007Image#1`).
+Chapter execution now passes the camera, layer-control messages and the
+extended background at scene 88, PC `0x7c`, reaching the next unsupported
+`OM_SetWorldCameraAsScreen` style `0x800` (fade mode 0) at scene 79, PC `0xf8`.
 Static native inspection establishes that script camera angles use 4096 units
 per turn (internally shifted left by four for a 65536-unit
 matrix), and fade mode 0 takes the target state directly, not a linear 400ms
 interpolation. Default simplified mode pans linearly rather than applying that
-trigonometric matrix. Extended/multiplane background geometry and other camera
-transition modes remain under investigation. The metadata-only `rugp_assets`
+trigonometric matrix. Other camera transition modes remain under investigation.
+The metadata-only `rugp_assets`
 example `background`
 accepts a game directory, CBg2d offset and extent for this work.
 Its optional `--extension-header` reports the native extension fields and first
@@ -240,8 +240,22 @@ Cr6Ti inline records now consume their native even-aligned bitstream and
 two-byte lookahead guard, keeping subsequent cached layer records aligned.
 Synthetic regressions cover shared classes/images, linked ordering, every
 truncation, non-finite scales, invalid pointers and count/EOF checks. The
-pending chapter background's four layers all parse and decode; runtime
-composition is still pending.
+chapter background's four layers all parse and decode. Runtime image groups
+now retain each layer's texture, anchor, independent position/depth and scale;
+they project and composite in native linked order (up to eight slots).
+The serialized draw-flags hidden bit is honored separately from the
+sprite-pass suppression mask; the chapter background's three foreground
+planes are initially hidden, not eagerly displayed.
+The group's scaled background bounds, rather than individual foreground
+quads, govern the camera boundary check. One image replacement replaces the
+whole group without clearing sprite-pass masks. A retail host regression
+compares every composited pixel against an independent inverse-mapping and
+alpha oracle at two camera positions, in both the native initial visibility
+state and an explicitly exposed all-layer test state, and checks staging and
+replacement. Native layer-activation messages are not yet implemented.
+All 321 directly referenced backgrounds' legacy planes were also re-decoded.
+Non-default extension color/range/properties, general legacy canvas
+composition, sprite interleaving and full-matrix modes remain unsupported.
 For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.

@@ -498,14 +498,14 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     }
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((88, 0x7c))
+        Some((79, 0xf8))
     );
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("background needs 0-plane/motion rendering"),
+        format!("{boundary:#}").contains("screen camera style/transition is not implemented yet"),
         "{boundary:#}"
     );
     let ramp = game
@@ -519,14 +519,17 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_HumanIn2");
-        let rugp_scene_vm::vm::Value::Reference(image) = &message.fields["ベース画像"] else {
-            panic!("pending background is not a resource reference");
-        };
-        assert_eq!(image.class.as_ref().unwrap().name, "CBg2d");
-        assert_eq!(image.offset, Some(251819850));
+        assert_eq!(message.class, "OM_SetWorldCameraAsScreen");
+        assert!(matches!(
+            message.fields.get("スタイル"),
+            Some(rugp_scene_vm::vm::Value::Integer(2048))
+        ));
+        assert!(matches!(
+            message.fields.get("フェード方式"),
+            Some(rugp_scene_vm::vm::Value::Integer(0))
+        ));
     } else {
-        panic!("unsupported background composition was acknowledged");
+        panic!("unsupported screen camera operation was acknowledged");
     }
     Ok(())
 }

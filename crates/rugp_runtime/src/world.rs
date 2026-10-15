@@ -93,11 +93,22 @@ impl Plane {
         })
     }
     pub fn background(bg: &rugp_assets::background::Background) -> Result<Self> {
-        let p = bg.placement();
         ensure!(
-            p.mode == 0 && bg.flags == 0 && bg.planes.len() == 1,
+            bg.planes.len() == 1,
             "background requires extended/multiplane world geometry"
         );
+        Self::background_scaled(bg, 0.0)
+    }
+    pub fn scene_background(scene: &rugp_assets::background::SceneBackground) -> Result<Self> {
+        Self::background_scaled(&scene.background, scene.scale)
+    }
+    fn background_scaled(bg: &rugp_assets::background::Background, scale: f32) -> Result<Self> {
+        let p = bg.placement();
+        ensure!(
+            p.mode == 0 && bg.flags == 0,
+            "background requires extended/multiplane world geometry"
+        );
+        ensure!(scale.is_finite(), "invalid background extension scale");
         ensure!(
             p.scale_q16 > 0 && p.depth > 0,
             "invalid background scale/depth"
@@ -108,7 +119,17 @@ impl Plane {
                 i32::try_from(product).is_ok(),
                 "background scale exceeds native multiplication range"
             );
-            Ok((product >> 16) as i32)
+            let value = (product >> 16) as i32;
+            Ok(if scale > 0.0 {
+                let scaled = (f64::from(value) * f64::from(scale)).trunc();
+                ensure!(
+                    (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&scaled),
+                    "background extension scale exceeds native integer range"
+                );
+                scaled as i32
+            } else {
+                value
+            })
         };
         let origin = [
             scaled(i64::from(p.origin[0]))?,
@@ -118,8 +139,8 @@ impl Plane {
         for axis in 0..2 {
             ensure!(
                 size[axis] > 0
-                    && i16::try_from(-origin[axis]).is_ok()
-                    && i16::try_from(size[axis] - origin[axis]).is_ok(),
+                    && i16::try_from(-i64::from(origin[axis])).is_ok()
+                    && i16::try_from(i64::from(size[axis]) - i64::from(origin[axis])).is_ok(),
                 "background exceeds native vertex range"
             );
         }
@@ -132,6 +153,62 @@ impl Plane {
             size,
             depth: p.depth,
             pitch_bias: p.pitch_bias,
+        })
+    }
+    /// Vm60 1003e6fe..1003e800: anchor offsets are measured from half the
+    /// unscaled background width and its unscaled Y origin. The native
+    /// coefficient is 0.0016 (not Q16); global and optional per-layer float
+    /// scales multiply it. Each edge truncates independently before i16 storage.
+    pub fn background_layer(
+        scene: &rugp_assets::background::SceneBackground,
+        layer: &rugp_assets::background::BackgroundLayer,
+        texture: &Texture,
+    ) -> Result<Self> {
+        let depth = layer.position[2];
+        ensure!(
+            depth > 0 && i16::try_from(depth).is_ok(),
+            "invalid background layer depth"
+        );
+        ensure!(
+            scene.scale.is_finite() && layer.scale.is_finite(),
+            "invalid background layer scale"
+        );
+        let global_scale = if scene.scale > 0.0 {
+            f64::from(scene.scale)
+        } else {
+            1.0
+        };
+        let mut factor = f64::from(depth) * global_scale * 0.0015999999999999999;
+        if layer.scale > 0.0 {
+            factor *= f64::from(layer.scale);
+        }
+        let base = [
+            f64::from(layer.anchor[0]) - f64::from(scene.background.width) * 0.5,
+            f64::from(layer.anchor[1]) - f64::from(scene.background.placement().origin[1]),
+        ];
+        let dimensions = [texture.width, texture.height];
+        let mut origin = [0; 2];
+        let mut size = [0; 2];
+        for axis in 0..2 {
+            let edge = |coordinate: f64| -> Result<i32> {
+                let value = (coordinate * factor + f64::from(layer.position[axis])).trunc();
+                ensure!(
+                    (f64::from(i16::MIN)..=f64::from(i16::MAX)).contains(&value),
+                    "background layer exceeds native vertex range"
+                );
+                Ok(value as i32)
+            };
+            let left = edge(base[axis])?;
+            let right = edge(base[axis] + f64::from(dimensions[axis]))?;
+            ensure!(right > left, "degenerate background layer");
+            origin[axis] = -left;
+            size[axis] = right - left;
+        }
+        Ok(Self {
+            origin,
+            size,
+            depth,
+            pitch_bias: scene.background.placement().pitch_bias,
         })
     }
     /// Default native world mode: pan terms are linear in the internal Q4
@@ -219,6 +296,75 @@ impl Plane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn layer_edges_truncate_independently_and_ignore_texture_display_scale() -> Result<()> {
+        use rugp_assets::background::{Background, BackgroundLayer, SceneBackground};
+        let mut metadata = [0; 20];
+        metadata[2..6].copy_from_slice(&65536i32.to_le_bytes());
+        metadata[8..12].copy_from_slice(&30i32.to_le_bytes());
+        metadata[12..16].copy_from_slice(&20i32.to_le_bytes());
+        metadata[16..20].copy_from_slice(&1000i32.to_le_bytes());
+        let mut scene = SceneBackground {
+            background: Background {
+                width: 100,
+                height: 80,
+                display_metadata: metadata,
+                flags: 0,
+                planes: vec![],
+                properties: None,
+                trailing_data: vec![],
+            },
+            color: 0,
+            screen: [0; 2],
+            range: [0; 2],
+            scale: 0.6,
+            layers: vec![],
+        };
+        let mut layer = BackgroundLayer {
+            anchor: [10, 5],
+            position: [3, -7, 1000],
+            extra: [0; 3],
+            scale: 0.0,
+            image: rugp_assets::object::ObjectReader::new(&[0; 3]).reference(0)?,
+            name: String::new(),
+            id: 0,
+            attributes: [0; 2],
+            parameters: [0; 3],
+            flags: 0,
+        };
+        let texture = Texture {
+            width: 30,
+            height: 20,
+            display_scale: 999.0,
+            rgba: vec![],
+        };
+        let plane = Plane::background_layer(&scene, &layer, &texture)?;
+        assert_eq!(plane.origin, [35, 21]);
+        assert_eq!(plane.size, [29, 19]);
+        assert_eq!(plane.depth, 1000);
+        layer.scale = 0.5;
+        let plane = Plane::background_layer(&scene, &layer, &texture)?;
+        assert_eq!(plane.origin, [16, 14]);
+        assert_eq!(plane.size, [15, 10]);
+        layer.position[2] = 0;
+        assert!(Plane::background_layer(&scene, &layer, &texture).is_err());
+        layer.position[2] = 32768;
+        assert!(Plane::background_layer(&scene, &layer, &texture).is_err());
+        layer.position[2] = 1000;
+        layer.position[0] = i32::MAX;
+        assert!(Plane::background_layer(&scene, &layer, &texture).is_err());
+        layer.position[0] = 3;
+        layer.scale = f32::NAN;
+        assert!(Plane::background_layer(&scene, &layer, &texture).is_err());
+        scene.scale = f32::MAX;
+        assert!(Plane::scene_background(&scene).is_err());
+        // Even a native minimum integer origin must error instead of
+        // overflowing during vertex negation in debug or release builds.
+        scene.scale = 65536.0;
+        scene.background.display_metadata[8..12].copy_from_slice(&(-32768i32).to_le_bytes());
+        assert!(Plane::scene_background(&scene).is_err());
+        Ok(())
+    }
     #[test]
     fn bitmap_scale_and_focal_length_are_independent() -> Result<()> {
         let mut texture = Texture {
