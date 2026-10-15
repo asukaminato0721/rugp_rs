@@ -320,6 +320,9 @@ portable playback first settles that camera at its bounded endpoint, then
 starts the posture there. Native overlap/interpolation is approximated, while
 posture identity, inclusive completion, synchronization and later render waits
 are retained. A retail-host regression covers timed and instantaneous moments.
+Background `OM_HumanIn2` low style `0x20` clears its staged image/captured surface
+even with a null source, as the native clear branch does before resolving the
+image. It preserves camera preparation and existing waits until presentation.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

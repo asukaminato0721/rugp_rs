@@ -390,6 +390,40 @@ mod tests {
         assert_eq!(game.vm.cursor().unwrap().address, 48);
         assert_eq!(game.vm.synchronization_status, Some(true));
         assert_eq!(game.frame(), pixels); // omitted effect has no stray overlay
+        let cached = match &game.objects[&212259].layers[&512] {
+            Layer::World(world) => Arc::clone(&world.planes[0].texture),
+            _ => bail!("test background missing"),
+        };
+        game.buffers.insert(212259, cached);
+        let camera = game.objects[&212259].camera;
+        let pending = game.objects[&212259].pending_camera;
+        let wait = game.wait_ms;
+        for (style, image) in [(32, Value::Null), (0x220, Value::Reference(target.clone()))] {
+            game.message(Message {
+                class: "OM_HumanIn2".into(),
+                target: Value::Reference(target.clone()),
+                fields: BTreeMap::from([
+                    ("スタイル".into(), Value::Integer(style)),
+                    ("ベース画像".into(), image),
+                ]),
+            })?;
+            let object = &game.objects[&212259];
+            assert!(object.layers.is_empty());
+            assert!(!game.buffers.contains_key(&212259));
+            assert_eq!(object.camera, camera);
+            assert_eq!(object.pending_camera, pending);
+            assert_eq!(game.wait_ms, wait);
+            assert_eq!(game.vm.cursor().unwrap().address, 48);
+            assert_eq!(game.frame(), pixels); // clear is staged
+        }
+        game.present_scene()?;
+        assert!(
+            game.frame()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel == &[0, 0, 0, 255])
+        );
         Ok(())
     }
 }

@@ -710,10 +710,25 @@ impl Game {
                         "3D placement {field} is not implemented yet"
                     );
                 }
+                let style = number(&fields, "スタイル", 0)?;
+                if message.class == "OM_HumanIn2"
+                    && style & 255 == 32
+                    && target
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "CParseBgBox")
+                {
+                    // Vm60 1003f39a -> 1003f4e9 clears the world image before
+                    // inspecting the supplied reference. Null is valid here.
+                    let object = self.objects.entry(id).or_default();
+                    object.layers.clear();
+                    object.menu = None;
+                    self.buffers.remove(&id);
+                    return Ok(());
+                }
                 let Some(Value::Reference(image)) = fields.get("ベース画像") else {
                     bail!("image message has no bound image");
                 };
-                let style = number(&fields, "スタイル", 0)?;
                 ensure!(
                     style == 512 || (message.class == "OM_HumanIn" && style == 0),
                     "unimplemented world image style {style:#x}"
