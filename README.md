@@ -222,7 +222,14 @@ regression verifies cumulative flags, independent clearing, type behavior,
 unsupported dispatch, and unchanged fast-pass pixels.
 Chapter execution now passes the camera, layer-control messages and the
 extended background at scene 88, PC `0x7c`, reaching the next unsupported
-`OM_SetWorldCameraAsScreen` style `0x800` (fade mode 0) at scene 79, PC `0xf8`.
+`OM_SetDrawRatioAsParseWnd` (mode `0x100`, default curve) at scene 79,
+PC `0x36c`. Camera style `0x800` is supported for both screen and angular
+messages: the prepared start state is stored separately without changing
+the visible camera or starting a duration clock. A zero zoom can be stored
+without attempting to project it. Host tests check stored zoom/Q4 angles,
+unchanged pixels/current camera, and rejection of unsupported fade modes
+without corrupting the stored state. Nonzero camera-transition modes still
+stop explicitly; staged starts are retained for their future implementation.
 Static native inspection establishes that script camera angles use 4096 units
 per turn (internally shifted left by four for a 65536-unit
 matrix), and fade mode 0 takes the target state directly, not a linear 400ms

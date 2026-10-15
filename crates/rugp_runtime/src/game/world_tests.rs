@@ -49,6 +49,45 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
         BTreeMap::from([("ズーム率".into(), Value::Integer(1752))]),
     ))?;
     let before = game.frame().to_vec();
+    let camera_before = game.objects[&212259].camera;
+    game.message(call(
+        "OM_SetWorldCameraAsScreen",
+        BTreeMap::from([
+            ("スタイル".into(), Value::Integer(0x800)),
+            ("総処理時間基".into(), Value::Integer(400)),
+            ("ズーム率".into(), Value::Integer(0)),
+        ]),
+    ))?;
+    assert_eq!(game.objects[&212259].camera, camera_before);
+    assert_eq!(game.objects[&212259].camera_start.unwrap().focal_length, 0);
+    assert_eq!(game.frame(), before);
+    game.message(call(
+        "OM_SetWorldCamera",
+        BTreeMap::from([
+            ("スタイル".into(), Value::Integer(0x800)),
+            ("総処理時間基".into(), Value::Integer(400)),
+            ("ロール角".into(), Value::Integer(1)),
+            ("ピッチ角".into(), Value::Integer(-2)),
+            ("バンク角".into(), Value::Integer(3)),
+        ]),
+    ))?;
+    assert_eq!(game.objects[&212259].camera, camera_before);
+    let captured = game.objects[&212259].camera_start.unwrap();
+    assert_eq!(captured.angles_q4, [16, -32, 48]);
+    assert_eq!(game.frame(), before);
+    // Unsupported capture/transition combinations fail without replacing
+    // either the visible camera or the already staged start.
+    let rejected = game.message(call(
+        "OM_SetWorldCameraAsScreen",
+        BTreeMap::from([
+            ("スタイル".into(), Value::Integer(0x800)),
+            ("フェード方式".into(), Value::Integer(4)),
+            ("ズーム率".into(), Value::Integer(2000)),
+        ]),
+    ));
+    assert!(rejected.is_err());
+    assert_eq!(game.objects[&212259].camera, camera_before);
+    assert_eq!(game.objects[&212259].camera_start, Some(captured));
     game.message(call(
         "OM_HumanIn2",
         BTreeMap::from([

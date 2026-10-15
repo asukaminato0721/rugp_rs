@@ -489,7 +489,7 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         .get(&212259)
         .context("chapter background missing")?
         .camera;
-    assert_eq!(camera.focal_length, 1752);
+    assert_eq!(camera.focal_length, 2040);
     assert_eq!(camera.angles_q4, [0, -32, 0]);
     let layers = game.objects[&212259].world_layers;
     assert!(layers.draws_in_sprite_pass(0));
@@ -498,14 +498,14 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     }
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((79, 0xf8))
+        Some((79, 0x36c))
     );
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("screen camera style/transition is not implemented yet"),
+        format!("{boundary:#}").contains("unimplemented runtime message OM_SetDrawRatioAsParseWnd"),
         "{boundary:#}"
     );
     let ramp = game
@@ -519,17 +519,21 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_SetWorldCameraAsScreen");
+        assert_eq!(message.class, "OM_SetDrawRatioAsParseWnd");
         assert!(matches!(
-            message.fields.get("スタイル"),
-            Some(rugp_scene_vm::vm::Value::Integer(2048))
+            message.fields.get("モード"),
+            Some(rugp_scene_vm::vm::Value::Integer(256))
         ));
         assert!(matches!(
-            message.fields.get("フェード方式"),
+            message.fields.get("時間"),
             Some(rugp_scene_vm::vm::Value::Integer(0))
         ));
+        assert!(matches!(
+            message.fields.get("比重曲線"),
+            Some(rugp_scene_vm::vm::Value::Null)
+        ));
     } else {
-        panic!("unsupported screen camera operation was acknowledged");
+        panic!("unsupported draw-ratio operation was acknowledged");
     }
     Ok(())
 }

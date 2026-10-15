@@ -51,6 +51,8 @@ pub struct ObjectState {
     pub rect: (i32, i32, u32, u32),
     pub properties: BTreeMap<String, Value>,
     pub camera: Camera,
+    /// Native camera command style 0x800 records a start without applying it.
+    camera_start: Option<Camera>,
     pub world_layers: crate::world::WorldLayerFlags,
     menu: Option<u64>,
     backdrop: Option<crate::message_window::Backdrop>,
@@ -67,6 +69,7 @@ impl Default for ObjectState {
             rect: (0, 0, 1024, 600),
             properties: BTreeMap::new(),
             camera: Camera::default(),
+            camera_start: None,
             world_layers: crate::world::WorldLayerFlags::default(),
             menu: None,
             backdrop: None,
@@ -360,9 +363,9 @@ impl Game {
                     .extend(fields);
             }
             "OM_SetWorldCameraAsScreen" => {
+                let style = number(&fields, "スタイル", 0)?;
                 ensure!(
-                    number(&fields, "スタイル", 0)? == 0
-                        && number(&fields, "フェード方式", 0)? == 0,
+                    matches!(style, 0 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
                     "screen camera style/transition is not implemented yet"
                 );
                 ensure!(
@@ -372,17 +375,27 @@ impl Game {
                 );
                 let focal = number(&fields, "ズーム率", 720)?;
                 ensure!(
-                    (1..=32767).contains(&focal),
+                    ((if style == 0x800 { 0 } else { 1 })..=32767).contains(&focal),
                     "invalid camera focal length {focal}"
                 );
                 let object = self.objects.entry(id).or_default();
-                object.camera.focal_length = focal as u16;
+                if style == 0x800 {
+                    // Vm60 1003faf0 prepares the camera state, then
+                    // 100402a9..100402c6 only copies it to the start slot.
+                    // Neither duration nor fade-0 activates that snapshot.
+                    object.camera_start = Some(Camera {
+                        focal_length: focal as u16,
+                        ..object.camera
+                    });
+                } else {
+                    object.camera.focal_length = focal as u16;
+                }
                 object.properties.extend(fields);
             }
             "OM_SetWorldCamera" => {
+                let style = number(&fields, "スタイル", 0)?;
                 ensure!(
-                    number(&fields, "スタイル", 0)? == 0
-                        && number(&fields, "フェード方式", 0)? == 0,
+                    matches!(style, 0 | 0x800) && number(&fields, "フェード方式", 0)? == 0,
                     "camera style/transition is not implemented yet"
                 );
                 for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
@@ -418,7 +431,14 @@ impl Game {
                         );
                     }
                 }
-                object.camera.angles_q4 = angles_q4;
+                if style == 0x800 {
+                    object.camera_start = Some(Camera {
+                        angles_q4,
+                        ..object.camera
+                    });
+                } else {
+                    object.camera.angles_q4 = angles_q4;
+                }
                 object.properties.extend(fields);
             }
             "OM_HumanOut" => {

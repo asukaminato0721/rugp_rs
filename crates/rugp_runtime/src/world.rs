@@ -42,7 +42,7 @@ impl WorldLayerFlags {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Camera {
     pub focal_length: u16,
     /// Script roll/pitch/bank shifted left by four, as in the native state.
