@@ -330,6 +330,12 @@ planes as a planar presentation. Material references stay in their original
 object-reader context; object XYZ is retained as metadata, while mesh geometry
 and its spatial placement are omitted. A retail regression checks all six
 model packets in scene 474 against their actual base-image geometry/pixels.
+`CVmVarObj#1` globals now load their serialized CBasicValue defaults, including
+inline posture references, instead of being left as unresolved containers.
+Defaults preserve their original reader context and distinct instance identity;
+cached aliases share one instance, writes stay VM-local, and fresh VMs reset to
+the resource defaults. Runtime synchronization can query an initialized but
+unactivated posture without inventing an active motion or skipping the query.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

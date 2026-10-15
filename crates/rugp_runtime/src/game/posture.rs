@@ -388,6 +388,29 @@ mod tests {
     }
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn initialized_variable_posture_can_be_queried_before_activation() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let mut slot = target();
+        slot.class = Some(ClassId {
+            name: "CVmVarObj".into(),
+            schema: 1,
+        });
+        slot.offset = Some(4239816);
+        slot.size = Some(193);
+        let initial = game.vm.variables.clone();
+        assert!(matches!(&initial[&4239816], Value::Reference(r)
+            if r.class.as_ref().is_some_and(|c| c.name == "CPostureMoment")));
+        install_sync(&mut game, slot, 33)?;
+        game.vm.variables = initial;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.vm.cursor().unwrap().address, 32);
+        assert_eq!(game.vm.synchronization_status, Some(false));
+        assert!(game.objects.values().all(|o| o.active_posture_count() == 0));
+        Ok(())
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_host_posture_clock_pixels_query_cancel_and_instance_identity() -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let mut game = Game::open(root.as_ref())?;

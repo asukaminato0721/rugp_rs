@@ -169,6 +169,29 @@ struct Decoder<'a> {
     shift: u32,
     native: Option<&'a NativeSchema>,
 }
+
+/// CVmVarObj#1 stores a CBasicValue after its three-byte object prefix. Its
+/// object/string/constant encoding is the same as a scene's value operand;
+/// importantly, embedded references use this resource's own reader context.
+pub(crate) fn decode_variable_value(data: &[u8], schema: u16, shift: u32) -> Result<Argument> {
+    ensure!(schema == 1, "unsupported variable-object schema {schema}");
+    ensure!(data.len() <= 16 * 1024 * 1024, "oversized variable object");
+    let mut r = ObjectReader::new(data);
+    r.scrambled = true;
+    r.input.skip(3)?;
+    let mut decoder = Decoder {
+        r,
+        shift,
+        native: None,
+    };
+    let value = decoder.value()?;
+    ensure!(
+        decoder.r.input.remaining() == 0,
+        "trailing variable-object bytes"
+    );
+    Ok(value)
+}
+
 impl Decoder<'_> {
     fn reference(&mut self) -> Result<Argument> {
         Ok(Argument::Reference(self.r.reference(self.shift)?))
@@ -507,4 +530,42 @@ impl Decoder<'_> {
 
 fn encoding_text(bytes: &[u8]) -> String {
     rugp_assets::binary::decode_text(bytes)
+}
+
+#[cfg(test)]
+mod variable_tests {
+    use super::*;
+    #[test]
+    fn stored_variants_are_bounded_and_use_value_not_reference_encoding() -> Result<()> {
+        let mut integer = vec![0; 3];
+        integer.extend(((37u32 << 2) | 2).to_le_bytes());
+        assert!(matches!(
+            decode_variable_value(&integer, 1, 0)?,
+            Argument::Value {
+                descriptor: 150,
+                ..
+            }
+        ));
+        for len in 0..integer.len() {
+            assert!(decode_variable_value(&integer[..len], 1, 0).is_err());
+        }
+        integer.push(0);
+        assert!(decode_variable_value(&integer, 1, 0).is_err());
+        assert!(decode_variable_value(&integer[..7], 2, 0).is_err());
+        let mut text = vec![0; 3];
+        text.extend(0x1001u32.to_le_bytes());
+        text.extend(b"\x05probe");
+        let Argument::Value { arguments, .. } = decode_variable_value(&text, 1, 0)? else {
+            bail!("value expected");
+        };
+        assert!(matches!(&arguments[0], Argument::Text(s) if s == "probe"));
+        let mut null = vec![0; 3];
+        null.extend(0x1000u32.to_le_bytes());
+        null.extend([0; 3]);
+        let Argument::Value { arguments, .. } = decode_variable_value(&null, 1, 0)? else {
+            bail!("value expected");
+        };
+        assert!(matches!(&arguments[0], Argument::Reference(r) if r.cache_index == Some(0)));
+        Ok(())
+    }
 }

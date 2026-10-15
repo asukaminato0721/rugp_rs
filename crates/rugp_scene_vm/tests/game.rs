@@ -4,6 +4,68 @@ use rugp_scene_vm::Scenario;
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
+fn variable_objects_load_their_real_inline_initial_values_and_alias_identity() -> Result<()> {
+    use rugp_scene_vm::{
+        Argument,
+        vm::{Program, Value, Vm},
+    };
+    use std::sync::Arc;
+    let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+    let archive = RioArchive::open(&root)?;
+    let native = NativeSchema::from_directory(root.as_ref())?;
+    let program = Arc::new(Program::load(&archive, &native)?);
+    let mut vm = Vm::new(Arc::clone(&program), 21)?;
+    let mut identities = Vec::new();
+    for offset in [4239623, 4239816] {
+        let Value::Reference(r) = &vm.variables[&offset] else {
+            anyhow::bail!("initial value is not an object");
+        };
+        assert_eq!(r.class.as_ref().unwrap().name, "CPostureMoment");
+        let inline = r
+            .inline
+            .as_ref()
+            .context("inline initial posture missing")?;
+        assert_eq!(inline.references.len(), 5);
+        assert!(inline.posture.is_some());
+        identities.push(inline.identity());
+    }
+    assert!(identities[0] != identities[1]); // identical bytes, separate native instances
+    let scene = &program.scenes[&474];
+    let argument = &scene
+        .instructions
+        .iter()
+        .find(|i| i.address == 0x478c)
+        .unwrap()
+        .arguments[0];
+    let alias = &scene
+        .instructions
+        .iter()
+        .find(|i| i.address == 0x5bc8)
+        .unwrap()
+        .arguments[0];
+    let Value::Reference(first) = vm.evaluate(argument)? else {
+        anyhow::bail!("initial posture missing");
+    };
+    let Value::Reference(second) = vm.evaluate(alias)? else {
+        anyhow::bail!("cached posture missing");
+    };
+    assert!(first.inline.unwrap().identity() == second.inline.unwrap().identity());
+    let Argument::Reference(destination) = argument else {
+        anyhow::bail!("variable reference missing");
+    };
+    let Value::Reference(raw) = vm.resolve_object(argument)? else {
+        anyhow::bail!("output destination missing");
+    };
+    assert_eq!(raw.class.unwrap().name, "CVmVarObj"); // output reference is not dereferenced
+    vm.write_object(destination, Value::Null)?;
+    assert!(matches!(vm.evaluate(argument)?, Value::Null));
+    let fresh = Vm::new(Arc::clone(&program), 21)?;
+    assert!(matches!(fresh.evaluate(argument)?, Value::Reference(_)));
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to a KIMINOZO_LE game directory"]
 fn message_border_expansion_is_explicit_and_idempotent() -> Result<()> {
     use rugp_scene_vm::resources::ResourceIndex;
     let root = std::env::var_os("RUGP_TEST_GAME")

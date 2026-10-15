@@ -32,6 +32,42 @@ impl Value {
         }
     }
 }
+fn literal_value(type_name: &str, data: &[u8]) -> Result<Value> {
+    Ok(match (type_name, data) {
+        ("フラグ" | "バイト", [v]) => Value::Integer(*v as i32),
+        ("短整数", [a, b]) => Value::Integer(i16::from_le_bytes([*a, *b]) as i32),
+        ("短正整数", [a, b]) => Value::Integer(u16::from_le_bytes([*a, *b]) as i32),
+        ("整数" | "正整数" | "色", [a, b, c, d]) => {
+            Value::Integer(i32::from_le_bytes([*a, *b, *c, *d]))
+        }
+        ("低精度実数", [a, b, c, d]) => {
+            Value::Real(f32::from_le_bytes([*a, *b, *c, *d]) as f64)
+        }
+        ("実数" | "高精度実数", bytes) if bytes.len() == 8 => {
+            Value::Real(f64::from_le_bytes(bytes.try_into()?))
+        }
+        _ => bail!("unsupported runtime literal {type_name}"),
+    })
+}
+fn initial_value(argument: &Argument) -> Result<Value> {
+    Ok(match argument {
+        Argument::Value {
+            descriptor,
+            arguments,
+        } => match descriptor & 3 {
+            2 => Value::Integer((*descriptor as i32) >> 2),
+            0 | 1 => {
+                return initial_value(arguments.first().context("empty initial variable value")?);
+            }
+            _ => bail!("unsupported initial variable descriptor {descriptor:#x}"),
+        },
+        Argument::Reference(r) if r.offset.is_none() && r.cache_index == Some(0) => Value::Null,
+        Argument::Reference(r) => Value::Reference(r.clone()),
+        Argument::Text(s) => Value::Text(s.clone()),
+        Argument::Literal { type_name, data } => return literal_value(type_name, data),
+        _ => bail!("invalid initial variable value"),
+    })
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cursor {
     pub scene: usize,
@@ -101,26 +137,41 @@ impl Program {
             scene.visit_references(&mut |r| {
                 if let (Some(offset), Some(size), Some(class)) = (r.offset, r.size, &r.class)
                     && [
-                        "CInt", "CBool", "CFlag", "CByte", "CShort", "CUShort", "CUInt",
+                        "CInt",
+                        "CBool",
+                        "CFlag",
+                        "CByte",
+                        "CShort",
+                        "CUShort",
+                        "CUInt",
+                        "CVmVarObj",
                     ]
                     .contains(&class.name.as_str())
                 {
-                    variables
-                        .entry(offset)
-                        .or_insert((size, class.name.clone()));
+                    variables.entry(offset).or_insert((size, class.clone()));
                 }
             });
             program.insert(node.offset.context("scene extent missing")?, scene)?;
         }
         for (offset, (size, class)) in variables {
             let bytes = archive.read_at(offset, size as usize)?;
+            if class.name == "CVmVarObj" {
+                let argument = crate::scenario::decode_variable_value(
+                    &bytes,
+                    class.schema,
+                    archive.address_shift,
+                )
+                .with_context(|| format!("decode variable object at {offset:#x}"))?;
+                program.initial.insert(offset, initial_value(&argument)?);
+                continue;
+            }
             let payload = bytes.get(3..).context("scalar object prefix missing")?;
-            let value = match (class.as_str(), payload) {
+            let value = match (class.name.as_str(), payload) {
                 ("CInt" | "CUInt", [a, b, c, d]) => i32::from_le_bytes([*a, *b, *c, *d]),
                 ("CShort", [a, b]) => i16::from_le_bytes([*a, *b]) as i32,
                 ("CUShort", [a, b]) => u16::from_le_bytes([*a, *b]) as i32,
                 ("CBool" | "CFlag" | "CByte", [a]) => *a as i32,
-                _ => bail!("unsupported {class} scalar extent at {offset:#x}"),
+                _ => bail!("unsupported {} scalar extent at {offset:#x}", class.name),
             };
             program.initial.insert(offset, Value::Integer(value));
         }
@@ -402,21 +453,7 @@ impl Vm {
                 }
                 _ => bail!("unsupported runtime value descriptor {descriptor:#x}"),
             },
-            Argument::Literal { type_name, data } => match (type_name.as_str(), data.as_slice()) {
-                ("フラグ" | "バイト", [v]) => Value::Integer(*v as i32),
-                ("短整数", [a, b]) => Value::Integer(i16::from_le_bytes([*a, *b]) as i32),
-                ("短正整数", [a, b]) => Value::Integer(u16::from_le_bytes([*a, *b]) as i32),
-                ("整数" | "正整数" | "色", [a, b, c, d]) => {
-                    Value::Integer(i32::from_le_bytes([*a, *b, *c, *d]))
-                }
-                ("低精度実数", [a, b, c, d]) => {
-                    Value::Real(f32::from_le_bytes([*a, *b, *c, *d]) as f64)
-                }
-                ("実数" | "高精度実数", bytes) if bytes.len() == 8 => {
-                    Value::Real(f64::from_le_bytes(bytes.try_into()?))
-                }
-                _ => bail!("unsupported runtime literal {type_name}"),
-            },
+            Argument::Literal { type_name, data } => return literal_value(type_name, data),
             _ => bail!("argument is not an evaluable value"),
         })
     }

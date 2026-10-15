@@ -133,6 +133,19 @@ fn main() -> Result<()> {
                             .map(|(key, value)| (key, describe(value)))
                             .collect::<std::collections::BTreeMap<_, _>>()
                     );
+                } else if let Some(ins) = game.vm.pending_instruction()
+                    && ins.class.name == "CVmSync"
+                {
+                    eprintln!(
+                        "host CVmSync: {:?}",
+                        ins.arguments
+                            .iter()
+                            .map(|arg| game
+                                .vm
+                                .evaluate(arg)
+                                .map_or("<unresolved>".into(), |value| describe(&value)))
+                            .collect::<Vec<_>>()
+                    );
                 }
                 return Err(error.context(format!("autoplay tick={tick}, scenes={}, pages={dialogue_pages}, choices={choices}, sounds={sounds}", scenes.len())));
             }
