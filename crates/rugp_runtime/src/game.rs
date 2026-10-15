@@ -483,17 +483,22 @@ impl Game {
                 self.set_character_core(id, &fields)?
             }
             "OM_SetLayerData2D" => self.set_character_layer(id, &fields)?,
-            "OM_SetCharMouthAnimeSetting"
+            "OM_SetCharMouthAnimeSetting" | "OM_SetCharBreath"
                 if target
                     .class
                     .as_ref()
                     .is_some_and(|c| matches!(c.name.as_str(), "CCharBox" | "CCharBox2")) =>
             {
-                // Portraits remain static; keep lip-sync configuration separate
-                // from placement/style and other material properties.
+                // Portraits remain static; keep lip-sync/breath configuration
+                // separate from placement/style and other material properties.
+                let channel = if message.class == "OM_SetCharBreath" {
+                    "breath"
+                } else {
+                    "mouth"
+                };
                 let properties = &mut self.objects.entry(id).or_default().properties;
                 for (key, value) in fields {
-                    properties.insert(format!("render.mouth.{key}"), value);
+                    properties.insert(format!("render.{channel}.{key}"), value);
                 }
             }
             "OM_PlayMedia"

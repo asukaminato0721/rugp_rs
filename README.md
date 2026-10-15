@@ -267,6 +267,8 @@ deformation and animated lips/blinks remain incomplete. Message windows render
 above portraits regardless of serialized object-address ordering.
 `OM_SetCharMouthAnimeSetting` retains lip-sync settings separately from the
 character's placement/style, without starting mouth animation or replaying voice.
+`OM_SetCharBreath` similarly retains independent breathing settings without
+deforming the static portrait or changing its live placement/lip-sync settings.
 Script helper functions can initialize local parameter slots not supplied by
 the caller; assignment does not first read an uninitialized destination.
 Region blits now crop/scale between differently sized surfaces and preserve

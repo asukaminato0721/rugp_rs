@@ -318,6 +318,22 @@ mod tests {
             game.objects[&id].properties["render.mouth.スタイル"],
             Value::Integer(1)
         ));
+        game.message(Message {
+            class: "OM_SetCharBreath".into(),
+            target: Value::Reference(target.clone()),
+            fields: BTreeMap::from([
+                ("呼吸モード".into(), Value::Integer(1)),
+                ("スタイル".into(), Value::Integer(2)),
+            ]),
+        })?;
+        assert!(matches!(
+            game.objects[&id].properties["render.breath.スタイル"],
+            Value::Integer(2)
+        ));
+        assert!(matches!(
+            game.objects[&id].properties["render.mouth.スタイル"],
+            Value::Integer(1)
+        ));
         assert_eq!(game.objects[&id].character.style, 0);
         assert_eq!(game.objects[&id].character.position, [0, 0, 2240]);
         assert!(Arc::ptr_eq(
