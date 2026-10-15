@@ -214,7 +214,11 @@ previously disabled title selector and returns. The three True End terminal
 scenes each expose exactly their own route plus Cancel in the gated extra-route
 chooser; cancellation returns through the original hub to the title. The first
 chapter's ending does not unlock second-chapter Premium. These tests run native
-ending tails, not their complete story prefixes or the unlocked extra stories.
+ending tails, not their complete story prefixes. A separate long regression
+then selects each actually earned extra route through its original menu and
+runs it back to the original title: scenes 202, 264 and 349 completed 4,828,
+2,828 and 2,546 dialogue confirmations, respectively. These are host-logic
+runs with resources and clocks active, not pixel-rendered route verification.
 
 The Rust-port progress database uses versioned, stable stored-resource keys,
 not Windows' private reference-stream text encoding. Bindings come from the
@@ -225,6 +229,13 @@ globally and is not rewound by game slots. A real new-game probe reaches its
 first earned CG after 75 dialogue confirmations, then checks that earned state
 against the original gallery. This is not Windows-profile interoperability or
 a claim that every premium/replay entry has been played.
+An additional earned-replay probe runs original scene 478 until its actual
+image use unlocks the first replay (515 dialogue confirmations), preserves that
+progress into an isolated Premium hub, and selects the enabled replay normally.
+The unchanged replay script completes 378 dialogue and nine non-text
+confirmations, returns to its replay page, then navigates back to the title.
+It does not fabricate ending permission or replay flags; remaining earned
+replay entries still need individual playback coverage.
 
 Literal-null `CVmSync` mode 16 now waits for an actual Enter/Space or left-click
 confirmation, indefinitely when its time word is zero (also Windows INFINITE).
@@ -634,8 +645,9 @@ its previous binding. One source identity remains attached to one owner; restart
 resets its motion clock/history without snapping the old sampled camera, and
 transfer leaves the previous owner where it was. Native fixture tests cover
 restart, transfer, failed replacement, source queries and cancellation. A long
-opt-in regression enters the three extra routes through actually earned menus;
-complete extra-route playback coverage is still being checked.
+opt-in regression has run all three earned extra routes back to the original
+title, including their original non-text input waits (683, 326 and 388 actual
+confirmations respectively). It does not force unlocks or bypass host calls.
 Standalone posture resources now retain all five references with the RIO object
 cache context; stored offsets identify their playback/wait instances independently
 of inline object identities.

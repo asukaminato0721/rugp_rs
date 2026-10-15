@@ -685,6 +685,144 @@ mod tests {
             game.vm.cursor()
         )
     }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME; original earned replay playback"]
+    fn retail_earned_replay_plays_original_scene_and_returns_without_forced_unlock() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        game.set_scene_rasterization(false);
+        let mut audio = None;
+        wait_selection(&mut game, &mut audio)?;
+        // The first replay selector jumps to an original label in scene 478.
+        // Start that story scene normally to earn its actual image use. This
+        // isolated scene probe does not claim to have played its story prefix.
+        let binding = game.vm.message(&packet(&game, 242, 200)?)?;
+        let Value::Reference(database) = &binding.fields["データベース"] else {
+            bail!("replay database missing");
+        };
+        let key = progress_key(&binding.fields["キー名となるオブジェクト"])?;
+        ensure!(
+            game.profile_database(database)?.read_string(&key, "0") == "0",
+            "fresh replay was already earned"
+        );
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let program = Arc::new(Program::load(&game.archive, &native)?);
+        let mut vm = Vm::new(program, 478)?;
+        vm.variables = std::mem::take(&mut game.vm.variables);
+        game.vm = vm;
+        game.selection = None;
+        let mut pages = 0;
+        let mut earned = false;
+        for tick in 0..10_000 {
+            if game.dialogue_waits_for_input() {
+                game.activate_selection()?;
+                pages += 1;
+            }
+            if game.waiting_for_input() {
+                game.activate_selection()?;
+            }
+            if game.waiting_for_selection() {
+                game.navigate_selection(1)?;
+                game.activate_selection()?;
+            }
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+            ensure!(
+                game.step(1000)
+                    .with_context(|| format!("earning replay tick {tick}"))?
+                    != RunState::Ended,
+                "story ended before earning replay"
+            );
+            if game.profile_database(database)?.read_string(&key, "0") == "1" {
+                ensure!(pages > 0, "replay earned without original dialogue");
+                eprintln!("original scene earned replay 1: tick={tick}, pages={pages}");
+                earned = true;
+                break;
+            }
+        }
+        ensure!(
+            earned,
+            "story did not earn first replay at {:?}",
+            game.vm.cursor()
+        );
+        let progress = std::mem::take(&mut game.profiles);
+        drop(game);
+        drop(audio);
+
+        let mut game = Game::open(root.as_ref())?;
+        game.set_scene_rasterization(false);
+        game.profiles = progress;
+        let mut audio = None;
+        wait_selection(&mut game, &mut audio)?;
+        let title = game.vm.cursor().cloned();
+        // Isolate the hub, not its title permission. No ending or replay flag
+        // is fabricated; the original enabled selector sets replay mode itself.
+        let program = Arc::new(Program::load(&game.archive, &native)?);
+        let mut vm = Vm::new(program, 251)?;
+        vm.variables = std::mem::take(&mut game.vm.variables);
+        game.vm = vm;
+        game.selection = None;
+        wait_selection(&mut game, &mut audio)?;
+        choose(&mut game, 3)?;
+        wait_selection(&mut game, &mut audio)?;
+        let replay = game.vm.cursor().cloned();
+        ensure!(
+            replay.as_ref().is_some_and(|pc| pc.scene == 242),
+            "replay page missing"
+        );
+        choose(&mut game, 1)?;
+        let mut entered = false;
+        let mut pages = 0;
+        let mut confirmations = 0;
+        for tick in 0u32..20_000 {
+            entered |= game.vm.cursor().is_some_and(|pc| pc.scene == 478);
+            if game.waiting_for_selection() {
+                ensure!(
+                    game.vm.cursor() == replay.as_ref(),
+                    "replay returned to wrong menu: {:?}",
+                    game.vm.cursor()
+                );
+                ensure!(
+                    entered && pages > 0,
+                    "replay returned without playing original scene"
+                );
+                eprintln!(
+                    "earned replay returned: ticks={tick}, pages={pages}, confirmations={confirmations}"
+                );
+                choose(&mut game, 28)?;
+                wait_selection(&mut game, &mut audio)?;
+                choose(&mut game, 6)?;
+                wait_selection(&mut game, &mut audio)?;
+                ensure!(
+                    game.vm.cursor() == title.as_ref(),
+                    "replay back did not reach title"
+                );
+                return Ok(());
+            }
+            if game.dialogue_waits_for_input() {
+                game.activate_selection()?;
+                pages += 1;
+            }
+            if game.waiting_for_input() {
+                game.activate_selection()?;
+                confirmations += 1;
+            }
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+            ensure!(
+                game.step(1000).with_context(|| format!(
+                    "earned replay tick {tick}, pc {:?}",
+                    game.vm.cursor()
+                ))? != RunState::Ended,
+                "replay ended instead of returning"
+            );
+            if tick.is_multiple_of(1000) {
+                eprintln!(
+                    "replay 1: tick={tick}, pages={pages}, pc={:?}",
+                    game.vm.cursor()
+                );
+            }
+        }
+        bail!("replay budget exhausted at {:?}", game.vm.cursor())
+    }
     fn view_seen_cg(root: &Path, progress: crate::profile_store::ProfileStore) -> Result<()> {
         let mut game = Game::open(root)?;
         game.profiles = progress;
