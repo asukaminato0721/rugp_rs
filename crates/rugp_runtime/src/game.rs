@@ -23,6 +23,7 @@ mod menu;
 mod parse_screen;
 mod posture;
 mod profile;
+pub mod scene_snapshot;
 mod scroll;
 mod sound;
 mod staffroll;

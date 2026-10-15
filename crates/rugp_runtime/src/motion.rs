@@ -13,7 +13,14 @@ pub struct Motion {
     segment_duration: i32,
 }
 impl Motion {
+    pub(crate) fn snapshot_curve(&self) -> &MotionCurve {
+        &self.curve
+    }
     pub fn new(curve: MotionCurve) -> Result<Self> {
+        ensure!(
+            curve.rate.is_finite() && curve.segments.len() <= 65_536,
+            "invalid motion rate/segment count"
+        );
         ensure!(
             (-1..=1).contains(&curve.timing_mode),
             "unsupported motion timing mode {}",
@@ -43,6 +50,10 @@ impl Motion {
                 "high-degree motion Bezier is not implemented yet"
             );
             if let Some(TimeCurve::Bezier(knots)) = &segment.time_curve {
+                ensure!(
+                    knots.len() <= 65_536,
+                    "motion time-knot count exceeds limit"
+                );
                 ensure!(knots.len() >= 2, "time Bezier needs two knots");
                 ensure!(
                     knots.iter().flatten().all(|v| v.is_finite()),

@@ -2,7 +2,8 @@
 use super::Camera;
 use anyhow::{Context, Result, ensure};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "CameraTweenFields")]
 pub struct CameraTween {
     start: Camera,
     delta_angles: [i32; 3],
@@ -10,7 +11,38 @@ pub struct CameraTween {
     delta_focal: i16,
     style: u8,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CameraTweenFields {
+    start: Camera,
+    delta_angles: [i32; 3],
+    delta_position: [i32; 3],
+    delta_focal: i16,
+    style: u8,
+}
+impl TryFrom<CameraTweenFields> for CameraTween {
+    type Error = anyhow::Error;
+    fn try_from(fields: CameraTweenFields) -> Result<Self> {
+        let tween = Self {
+            start: fields.start,
+            delta_angles: fields.delta_angles,
+            delta_position: fields.delta_position,
+            delta_focal: fields.delta_focal,
+            style: fields.style,
+        };
+        tween.validate_snapshot()?;
+        Ok(tween)
+    }
+}
 impl CameraTween {
+    pub(crate) fn validate_snapshot(&self) -> Result<()> {
+        ensure!(
+            self.style <= 15 && self.start.focal_length <= 32767,
+            "invalid camera-tween snapshot"
+        );
+        self.sample(65536)?;
+        Ok(())
+    }
     pub fn new(start: Camera, target: Camera, style: u8) -> Result<Self> {
         ensure!(style <= 15, "unsupported camera interpolation style");
         ensure!(

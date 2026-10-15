@@ -38,9 +38,34 @@ pub(crate) fn envelope_layout(class: &str) -> Result<(usize, usize)> {
     Ok((prefix, tail))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FadeCurve(Vec<(u16, i16)>);
+impl<'de> serde::Deserialize<'de> for FadeCurve {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let curve = Self(<Vec<(u16, i16)> as serde::Deserialize>::deserialize(
+            deserializer,
+        )?);
+        curve
+            .validate_snapshot()
+            .map_err(serde::de::Error::custom)?;
+        Ok(curve)
+    }
+}
 impl FadeCurve {
+    pub fn validate_snapshot(&self) -> Result<()> {
+        ensure!(
+            self.0.len() <= 257
+                && self
+                    .0
+                    .iter()
+                    .all(|(x, y)| *x <= 256 && (0..=8192).contains(y))
+                && self.0.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "invalid fade snapshot curve"
+        );
+        Ok(())
+    }
     /// Native interpolation uses a 0..256 time axis and signed 1/32 alpha units.
     pub fn alpha(&self, elapsed: u32, duration: u32) -> u16 {
         let x = if duration == 0 {

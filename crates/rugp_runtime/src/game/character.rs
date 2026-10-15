@@ -4,11 +4,11 @@ use super::*;
 
 #[derive(Clone, Default)]
 pub(super) struct CharacterState {
-    face: BTreeMap<String, Value>,
-    layers: BTreeMap<i32, [f32; 2]>,
-    texture: Option<Arc<Texture>>,
-    position: [i32; 3],
-    style: i32,
+    pub(super) face: BTreeMap<String, Value>,
+    pub(super) layers: BTreeMap<i32, [f32; 2]>,
+    pub(super) texture: Option<Arc<Texture>>,
+    pub(super) position: [i32; 3],
+    pub(super) style: i32,
 }
 impl CharacterState {
     pub(super) fn validate_texture(&self) -> Result<()> {

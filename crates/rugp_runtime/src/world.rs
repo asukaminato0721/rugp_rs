@@ -30,11 +30,34 @@ pub use camera::CameraTween;
 /// Vm60 10048500 handles OM_SetVarData IDs 128 (set) and 129 (clear);
 /// 1003bb94/1003bc7b skip drawing the flagged slot between world sprites.
 /// The fast no-sprite path at 1003bfe7 does not inspect this flag.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "WorldLayerFlagsFields")]
 pub struct WorldLayerFlags {
     suppressed_in_sprite_pass: u8,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorldLayerFlagsFields {
+    suppressed_in_sprite_pass: u8,
+}
+impl TryFrom<WorldLayerFlagsFields> for WorldLayerFlags {
+    type Error = anyhow::Error;
+    fn try_from(fields: WorldLayerFlagsFields) -> Result<Self> {
+        let flags = Self {
+            suppressed_in_sprite_pass: fields.suppressed_in_sprite_pass,
+        };
+        flags.validate_snapshot()?;
+        Ok(flags)
+    }
+}
 impl WorldLayerFlags {
+    pub(crate) fn validate_snapshot(&self) -> Result<()> {
+        ensure!(
+            self.suppressed_in_sprite_pass & 1 == 0,
+            "invalid world-layer snapshot flags"
+        );
+        Ok(())
+    }
     /// Native layer zero is deliberately not configurable by this message.
     /// Invalid integer slots are ignored, including negative values.
     pub fn set_sprite_pass_suppressed(&mut self, slot: i32, suppressed: bool) {
@@ -53,7 +76,7 @@ impl WorldLayerFlags {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Camera {
     pub focal_length: u16,
     /// Absolute native world-space position, without the angle Q4 shift.
@@ -72,7 +95,8 @@ impl Default for Camera {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "PlaneFields")]
 pub struct Plane {
     origin: [i32; 2],
     size: [i32; 2],
@@ -82,7 +106,46 @@ pub struct Plane {
     /// applying angular pan and focal length (1003c31a..1003c388).
     camera_relative: bool,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaneFields {
+    origin: [i32; 2],
+    size: [i32; 2],
+    depth: i32,
+    pitch_bias: i16,
+    camera_relative: bool,
+}
+impl TryFrom<PlaneFields> for Plane {
+    type Error = anyhow::Error;
+    fn try_from(fields: PlaneFields) -> Result<Self> {
+        let plane = Self {
+            origin: fields.origin,
+            size: fields.size,
+            depth: fields.depth,
+            pitch_bias: fields.pitch_bias,
+            camera_relative: fields.camera_relative,
+        };
+        plane.validate_snapshot()?;
+        Ok(plane)
+    }
+}
 impl Plane {
+    pub(crate) fn validate_snapshot(&self) -> Result<()> {
+        ensure!(
+            self.depth > 0 && i16::try_from(self.depth).is_ok(),
+            "invalid world-plane snapshot depth"
+        );
+        for axis in 0..2 {
+            ensure!(
+                self.size[axis] > 0
+                    && i16::try_from(-i64::from(self.origin[axis])).is_ok()
+                    && i16::try_from(i64::from(self.size[axis]) - i64::from(self.origin[axis]))
+                        .is_ok(),
+                "invalid world-plane snapshot geometry"
+            );
+        }
+        Ok(())
+    }
     pub(crate) fn projected_camera_center_y(
         &self,
         camera: &Camera,

@@ -8,6 +8,8 @@ use crate::{
 use anyhow::{Result, ensure};
 use rugp_assets::posture::PostureFields;
 
+pub mod snapshot;
+
 #[derive(Debug, Clone)]
 pub struct PostureMotion {
     channels: [Option<Motion>; 3],

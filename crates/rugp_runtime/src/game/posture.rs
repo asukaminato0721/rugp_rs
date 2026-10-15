@@ -19,21 +19,23 @@ fn real_field(fields: &BTreeMap<String, Value>, name: &str) -> Result<f32> {
 
 #[derive(Clone)]
 pub(super) struct PostureInstance {
-    source: PostureIdentity,
-    motion: PostureMotion,
+    pub(super) source: PostureIdentity,
+    pub(super) reference: Arc<ObjectRef>,
+    pub(super) motion: PostureMotion,
 }
 pub(super) struct PostureWait {
-    source: PostureIdentity,
-    snap: bool,
-    remaining_ms: Option<u32>,
+    pub(super) source: PostureIdentity,
+    pub(super) reference: ObjectRef,
+    pub(super) snap: bool,
+    pub(super) remaining_ms: Option<u32>,
 }
-#[derive(Clone, PartialEq, Eq)]
-enum PostureIdentity {
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(super) enum PostureIdentity {
     Inline(rugp_assets::object::InlineIdentity),
     Stored(u64),
 }
 impl PostureIdentity {
-    fn of(reference: &ObjectRef) -> Result<Self> {
+    pub(super) fn of(reference: &ObjectRef) -> Result<Self> {
         Ok(if let Some(inline) = &reference.inline {
             Self::Inline(inline.identity())
         } else {
@@ -138,9 +140,14 @@ impl Game {
             self.present_scene()?;
         } else {
             // Native inserts at the list head and samples newest first.
-            object
-                .postures
-                .insert(0, PostureInstance { source, motion });
+            object.postures.insert(
+                0,
+                PostureInstance {
+                    source,
+                    reference: Arc::new(media.clone()),
+                    motion,
+                },
+            );
         }
         Ok(())
     }
@@ -186,6 +193,7 @@ impl Game {
         if active {
             self.posture_wait = Some(PostureWait {
                 source,
+                reference: reference.clone(),
                 snap: mode & 1 == 0,
                 remaining_ms: (timeout > 0).then_some(timeout as u32),
             });
@@ -238,7 +246,7 @@ impl Game {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use rugp_assets::object::{ClassId, ObjectReader};
     use rugp_scene_vm::{Argument, Scenario};
@@ -247,7 +255,7 @@ mod tests {
             bytes.extend(value.to_le_bytes());
         }
     }
-    fn media(duration: i32, flags: u16) -> ObjectRef {
+    pub(in crate::game) fn media(duration: i32, flags: u16) -> ObjectRef {
         let mut bytes = vec![0, 2, 0, 0]; // posture header and first ancestry count
         bytes.extend([0; 4]); // previous/owner null
         bytes.extend(0xffffu16.to_le_bytes());

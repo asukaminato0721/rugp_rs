@@ -141,6 +141,18 @@ Movie snapshots reconstruct pixels from the original archive and exact clock,
 including delta-frame dependencies and fractional/end boundaries. A retail
 opening regression compares restored frames and subsequent advancement directly
 with uninterrupted playback. Full runtime/window/voice coordination remains pending.
+Scene snapshots now preserve typed window/layer state, shared dynamic/offscreen
+textures, world geometry/flags, cameras and their cached projection center,
+character parts and placement, staged ParseScreen scenes, framebuffer-fade
+endpoints, and posture waits. Postures keep their source identity, sampled delta
+history and fractional clock instead of restarting motion. Texture-table IDs
+preserve shared storage without merging independent equal-pixel surfaces.
+Retail-host checks cover exact scene/VM round trips during startup, the opening,
+title and first dialogue, plus synthetic in-progress ParseScreen/fade/posture
+waits on that host. These still do not constitute complete game save slots:
+other actors, menu/text/voice coordination, settings, save-file I/O and desktop
+load/save interaction remain to be connected. No-raster diagnostics cannot
+capture portable scene snapshots.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.

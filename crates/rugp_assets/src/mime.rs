@@ -16,7 +16,7 @@ use anyhow::{Result, ensure};
 /// CMimeFlat16LimitOne#1: seventeen signed samples over sixteen Q16 intervals.
 /// "LimitOne" clamps the *input* to [0, 65536], not the sampled output.
 /// rvmm 1001bb40 serializes 34 bytes; 1001bb70 evaluates the signed curve.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MimeCurve {
     pub samples: [i16; 17],
 }

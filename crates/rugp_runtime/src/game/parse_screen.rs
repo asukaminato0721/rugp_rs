@@ -22,10 +22,10 @@ pub(super) fn validate_trigger(fields: &BTreeMap<String, Value>) -> Result<()> {
 
 pub(super) struct ParseTransition {
     pub(super) scene: BTreeMap<u64, ObjectState>,
-    curves: BTreeMap<u64, MimeCurve>,
-    cameras: BTreeMap<u64, crate::world::CameraTween>,
-    elapsed: u32,
-    duration: u32,
+    pub(super) curves: BTreeMap<u64, MimeCurve>,
+    pub(super) cameras: BTreeMap<u64, crate::world::CameraTween>,
+    pub(super) elapsed: u32,
+    pub(super) duration: u32,
 }
 impl Game {
     pub(super) fn set_draw_ratio(

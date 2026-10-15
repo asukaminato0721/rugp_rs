@@ -15,7 +15,7 @@ use rugp_assets::{
 };
 use std::{path::Path, sync::Arc};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Backdrop {
     pub color: [u8; 3],
     pub source: u16,

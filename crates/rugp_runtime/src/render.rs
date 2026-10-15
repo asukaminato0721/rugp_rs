@@ -3,6 +3,7 @@ use anyhow::{Result, ensure};
 use rugp_assets::image::Image;
 
 mod projective;
+pub mod snapshot;
 
 pub struct Texture {
     pub width: u32,

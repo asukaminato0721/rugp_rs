@@ -40,13 +40,45 @@ struct SavedFrame {
     arguments: Vec<SavedValue>,
 }
 #[derive(Debug, Serialize, Deserialize)]
-enum SavedValue {
+pub enum ValueSnapshot {
     Null,
     Integer(i32),
     Real(f64),
     Text(String),
     Bytes(Vec<u8>),
     Reference(u32),
+}
+type SavedValue = ValueSnapshot;
+impl ValueSnapshot {
+    /// Use the enclosing VM/game's shared reference writer. Aggregate budgets
+    /// and unique root-use checks remain the enclosing snapshot's responsibility.
+    pub fn capture(value: &Value, references: &mut ReferenceSnapshotWriter) -> Result<Self> {
+        ValueBudget::default().live_value(value)?;
+        Ok(match value {
+            Value::Null => Self::Null,
+            Value::Integer(value) => Self::Integer(*value),
+            Value::Real(value) => Self::Real(*value),
+            Value::Text(value) => Self::Text(value.clone()),
+            Value::Bytes(value) => Self::Bytes(value.clone()),
+            Value::Reference(value) => Self::Reference(references.insert(value)?),
+        })
+    }
+    pub fn restore(&self, references: &[ObjectRef]) -> Result<Value> {
+        ValueBudget::default().value(self)?;
+        Ok(match self {
+            Self::Null => Value::Null,
+            Self::Integer(value) => Value::Integer(*value),
+            Self::Real(value) => Value::Real(*value),
+            Self::Text(value) => Value::Text(value.clone()),
+            Self::Bytes(value) => Value::Bytes(value.clone()),
+            Self::Reference(index) => Value::Reference(
+                references
+                    .get(*index as usize)
+                    .context("snapshot reference root out of range")?
+                    .clone(),
+            ),
+        })
+    }
 }
 
 #[derive(Default)]
@@ -95,6 +127,20 @@ impl ValueBudget {
 }
 
 impl Vm {
+    /// Restore against this live VM's immutable program without reparsing it
+    /// or recalculating its compatibility fingerprint on each in-game load.
+    pub fn restore_snapshot(
+        &self,
+        snapshot: &VmSnapshot,
+        references: &ReferenceSnapshot,
+    ) -> Result<(Vm, Vec<ObjectRef>)> {
+        snapshot.validate(&self.program)?;
+        snapshot.restore_compatible(
+            Arc::clone(&self.program),
+            references,
+            self.snapshot_program_digest()?,
+        )
+    }
     fn snapshot_program_digest(&self) -> Result<[u8; 20]> {
         if let Some(digest) = self.snapshot_program_digest.get() {
             return Ok(*digest);
@@ -111,15 +157,7 @@ impl Vm {
         let mut budget = ValueBudget::default();
         let mut save = |value: &Value| -> Result<SavedValue> {
             budget.live_value(value)?;
-            let saved = match value {
-                Value::Null => SavedValue::Null,
-                Value::Integer(v) => SavedValue::Integer(*v),
-                Value::Real(v) => SavedValue::Real(*v),
-                Value::Text(v) => SavedValue::Text(v.clone()),
-                Value::Bytes(v) => SavedValue::Bytes(v.clone()),
-                Value::Reference(r) => SavedValue::Reference(references.insert(r)?),
-            };
-            Ok(saved)
+            ValueSnapshot::capture(value, references)
         };
         let mut frame = |frame: &Frame| -> Result<SavedFrame> {
             ensure!(
@@ -169,8 +207,17 @@ impl VmSnapshot {
         references: &ReferenceSnapshot,
     ) -> Result<(Vm, Vec<ObjectRef>)> {
         self.validate(&program)?;
+        let digest = program_digest(&program)?;
+        self.restore_compatible(program, references, digest)
+    }
+    fn restore_compatible(
+        &self,
+        program: Arc<Program>,
+        references: &ReferenceSnapshot,
+        digest: [u8; 20],
+    ) -> Result<(Vm, Vec<ObjectRef>)> {
         ensure!(
-            self.program_digest == program_digest(&program)?,
+            self.program_digest == digest,
             "VM snapshot belongs to a different program"
         );
         let constants = program_constants(&program);
@@ -185,21 +232,7 @@ impl VmSnapshot {
             .zip(&constants)
             .collect::<Vec<_>>();
         let references = references.restore_with_bindings(&bindings)?;
-        let restore = |value: &SavedValue| -> Result<Value> {
-            Ok(match value {
-                SavedValue::Null => Value::Null,
-                SavedValue::Integer(v) => Value::Integer(*v),
-                SavedValue::Real(v) => Value::Real(*v),
-                SavedValue::Text(v) => Value::Text(v.clone()),
-                SavedValue::Bytes(v) => Value::Bytes(v.clone()),
-                SavedValue::Reference(index) => Value::Reference(
-                    references
-                        .get(*index as usize)
-                        .context("VM snapshot reference root out of range")?
-                        .clone(),
-                ),
-            })
-        };
+        let restore = |value: &SavedValue| value.restore(&references);
         let frame = |frame: &SavedFrame| -> Result<Frame> {
             Ok(Frame {
                 cursor: frame.cursor.clone(),
@@ -585,6 +618,14 @@ mod tests {
             .unwrap()
             .initial
             .insert(900, Value::Integer(2));
+        let live = Vm::new(Arc::clone(&changed), 1).unwrap();
+        assert!(
+            live.restore_snapshot(&state, &refs)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("different program")
+        );
         assert!(
             state
                 .restore(changed, &refs)
