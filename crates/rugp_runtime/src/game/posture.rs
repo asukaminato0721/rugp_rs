@@ -115,12 +115,25 @@ impl Game {
             ],
         )?;
         let object = self.objects.entry(id).or_default();
-        ensure!(
-            object.pending_camera.is_none(),
-            "posture with a prepared camera transition is not implemented yet"
-        );
+        // Portable composition serializes these two presentation operations:
+        // settle an unstarted camera tween at its bounded endpoint, then start
+        // the posture there. Do not discard the posture, its identity or waits.
+        // The later ParseScreen still owns its normal rendering/wait clock.
+        let prepared = object.pending_camera.is_some();
+        let mut camera = if prepared {
+            object.camera_target()?
+        } else {
+            object.camera
+        };
         if motion.instantaneous() {
-            let camera = object.prepare_camera(motion.apply_end(object.camera))?;
+            camera = object.prepare_camera(motion.apply_end(camera))?;
+        }
+        if prepared {
+            object.pending_camera = None;
+            object.camera_start = None;
+            object.camera = camera;
+        }
+        if motion.instantaneous() {
             object.camera = camera;
             self.present_scene()?;
         } else {
@@ -477,6 +490,48 @@ mod tests {
         assert_eq!(game.vm.cursor().unwrap().address, 32);
         assert_eq!(game.objects[&212259].active_posture_count(), 0);
         assert_eq!(game.objects[&212259].camera.position, [20, 0, 0]);
+        // A real helper can prepare a camera and add a posture before its
+        // ParseScreen trigger. Use the queued endpoint as the new base, while
+        // preserving the posture's full 400 ms inclusive event lifetime.
+        let object = game.objects.get_mut(&212259).unwrap();
+        object.camera_start = Some(object.camera);
+        object.pending_camera = Some(crate::world::CameraTween::new(
+            object.camera,
+            Camera {
+                position: [30, 0, 0],
+                ..object.camera
+            },
+            1,
+        )?);
+        game.message(add(&first))?;
+        let object = &game.objects[&212259];
+        assert!(object.pending_camera.is_none() && object.camera_start.is_none());
+        assert_eq!(object.camera.position, [30, 0, 0]);
+        assert_eq!(object.active_posture_count(), 1);
+        install_sync(&mut game, first, 16)?;
+        assert_eq!(game.step(0)?, RunState::Waiting);
+        assert_eq!(game.step(400)?, RunState::Waiting);
+        assert_eq!(game.vm.cursor().unwrap().address, 0);
+        game.step(1)?;
+        assert_eq!(game.vm.cursor().unwrap().address, 32);
+        assert_eq!(game.objects[&212259].active_posture_count(), 0);
+        assert_eq!(game.objects[&212259].camera.position, [34, 0, 0]);
+        assert!(!game.start_parse_transition(100)?);
+        let object = game.objects.get_mut(&212259).unwrap();
+        object.pending_camera = Some(crate::world::CameraTween::new(
+            object.camera,
+            Camera {
+                position: [40, 0, 0],
+                ..object.camera
+            },
+            1,
+        )?);
+        let wait = game.wait_ms;
+        game.message(add(&media(0, 1)))?;
+        assert_eq!(game.wait_ms, wait);
+        assert_eq!(game.objects[&212259].camera.position, [44, 0, 0]);
+        assert_eq!(game.objects[&212259].active_posture_count(), 0);
+        assert!(game.objects[&212259].pending_camera.is_none());
         Ok(())
     }
 }

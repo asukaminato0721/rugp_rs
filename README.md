@@ -96,6 +96,9 @@ caches, but omits scene pixel composition. It is not visual verification.
 `--choices=0,1,0` selects enabled entries by zero-based order for successive
 menus (including the title menu, where 0 starts a new game); remaining choices
 default to the first entry. Like keyboard navigation, oversized indices wrap.
+`--stop-on-title-return` stops when a played story returns to the initial menu
+instruction, instead of automatically starting another game. This checks one
+choice path only, not all endings or all branches.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
@@ -311,6 +314,12 @@ title-loop jump. Nonzero exit codes remain explicit errors.
 `message_stats` audits static message call sites/fields and encoded overrides
 without printing retail text or sample bytes, for example:
 `cargo run -p rugp_scene_vm --example message_stats -- GAME OM_BoxScroll`.
+
+If a posture starts while a camera tween is prepared but not yet started,
+portable playback first settles that camera at its bounded endpoint, then
+starts the posture there. Native overlap/interpolation is approximated, while
+posture identity, inclusive completion, synchronization and later render waits
+are retained. A retail-host regression covers timed and instantaneous moments.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

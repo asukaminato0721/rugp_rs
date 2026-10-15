@@ -37,6 +37,7 @@ fn main() -> Result<()> {
         .map_or(Ok(1000), |s| s.parse::<u32>())?;
     let mut game = Game::open(root.as_ref())?;
     let mut choice_plan = Vec::new();
+    let mut stop_on_title_return = false;
     for arg in std::env::args().skip(4) {
         if arg == "--no-scene-raster" {
             eprintln!(
@@ -53,6 +54,8 @@ fn main() -> Result<()> {
                     Ok(index)
                 })
                 .collect::<Result<Vec<_>>>()?;
+        } else if arg == "--stop-on-title-return" {
+            stop_on_title_return = true;
         } else {
             anyhow::bail!("unknown autoplay option {arg}");
         }
@@ -62,12 +65,26 @@ fn main() -> Result<()> {
     let mut dialogue_pages = 0;
     let mut choices = 0;
     let mut sounds = 0;
+    let mut entry_menu = None;
     for tick in 0..ticks {
         if game.dialogue_waits_for_input() {
             game.activate_selection()?;
             dialogue_pages += 1;
         }
         if game.waiting_for_selection() {
+            if choices == 0 {
+                entry_menu = game.vm.cursor().cloned();
+            } else if stop_on_title_return
+                && dialogue_pages > 0
+                && entry_menu.is_some()
+                && game.vm.cursor() == entry_menu.as_ref()
+            {
+                println!(
+                    "returned-to-title tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds}",
+                    scenes.len()
+                );
+                return Ok(());
+            }
             // Plan includes the title menu (index 0 starts a new game).
             // Unspecified choices select the first enabled entry.
             for _ in 0..=choice_plan.get(choices).copied().unwrap_or(0) {
