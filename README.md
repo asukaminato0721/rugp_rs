@@ -363,6 +363,12 @@ the credits overlay, preserving the background/camera. All four original text
 sources and a real playback packet pass framebuffer/clock regressions. Native
 font faces/style/alignment, embedded bitmaps, looping, nonzero offsets, and
 non-default sequence settings remain unsupported or approximate.
+The three `CParseBgBox` self-targeted, style-0 `OM_EmbedAlpherChannel` packets
+are recognized as native primary-plane alpha-clear requests. Playback-first
+presentation retains their settings and the existing RGBA/world planes rather
+than reproducing that native alpha mutation. This has no asynchronous output
+or completion wait; cameras, prepared tweens and other clocks are unaffected.
+Other styles/channels/positions and cross-window embedding remain rejected.
 `CWaitableTimer` supports asynchronous `OM_PlayMedia`, `OM_SetTimeInterval`,
 mode-0/16 waits and mode-32 active-state queries. Threshold updates keep the
 original playback epoch, including updates after an earlier threshold has

@@ -11,6 +11,7 @@ use rugp_scene_vm::{
 };
 use std::{cell::Cell, collections::BTreeMap, path::Path, sync::Arc};
 
+mod alpha;
 mod blit;
 mod camera;
 mod character;
@@ -603,6 +604,7 @@ impl Game {
             }
             "OM_PlayDeviceStreamVideo" => self.play_video(&target, &fields)?,
             "OM_PlayTextStaffrollVideo" => self.play_staffroll(&target, &fields)?,
+            "OM_EmbedAlpherChannel" => self.embed_alpha(&target, fields)?,
             "OM_Enable" => self.objects.entry(id).or_default().enabled = true,
             "OM_Disable" => self.objects.entry(id).or_default().enabled = false,
             "OM_Visible" => self.objects.entry(id).or_default().visible = true,
