@@ -55,6 +55,8 @@ impl WorldLayerFlags {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Camera {
     pub focal_length: u16,
+    /// Absolute native world-space position, without the angle Q4 shift.
+    pub position: [i32; 3],
     /// Script roll/pitch/bank shifted left by four, as in the native state.
     /// Simplified projection uses roll/pitch only (bank has no effect).
     pub angles_q4: [i32; 3],
@@ -63,6 +65,7 @@ impl Default for Camera {
     fn default() -> Self {
         Self {
             focal_length: 720,
+            position: [0; 3],
             angles_q4: [0; 3],
         }
     }
@@ -74,6 +77,9 @@ pub struct Plane {
     size: [i32; 2],
     depth: i32,
     pitch_bias: i16,
+    /// Native slot +0f == 1 bypasses camera/global XYZ offsets while still
+    /// applying angular pan and focal length (1003c31a..1003c388).
+    camera_relative: bool,
 }
 impl Plane {
     pub fn bitmap(texture: &Texture) -> Result<Self> {
@@ -100,6 +106,7 @@ impl Plane {
             size: [size[0].ceil() as i32, size[1].ceil() as i32],
             depth: 720,
             pitch_bias: 0,
+            camera_relative: false,
         })
     }
     pub fn background(bg: &rugp_assets::background::Background) -> Result<Self> {
@@ -163,6 +170,7 @@ impl Plane {
             size,
             depth: p.depth,
             pitch_bias: p.pitch_bias,
+            camera_relative: false,
         })
     }
     /// Vm60 1003e6fe..1003e800: anchor offsets are measured from half the
@@ -219,26 +227,37 @@ impl Plane {
             size,
             depth,
             pitch_bias: scene.background.placement().pitch_bias,
+            // 1003e6d7 copies the serialized base +0f byte to slot +0f.
+            camera_relative: layer.attributes[1] == 1,
         })
     }
     /// Default native world mode: pan terms are linear in the internal Q4
     /// angles. See 1003c388..1003c410: angle*depth*8 is subtracted from the
     /// Q16 vertex before focal/depth projection, not interpreted as degrees.
     pub fn quad(&self, camera: &Camera, viewport: (i32, i32, u32, u32)) -> Result<[[f64; 3]; 4]> {
-        ensure!(self.depth > 0, "invalid camera/plane depth");
+        let position = if self.camera_relative {
+            [0; 3]
+        } else {
+            camera.position
+        };
+        let depth = self.depth.wrapping_sub(position[2]);
+        ensure!(
+            depth > 0,
+            "camera at/behind a world plane is not implemented yet"
+        );
         ensure!(
             camera.focal_length <= 32767,
             "camera focal length exceeds native signed range"
         );
         let center = [
-            f64::from(viewport.0) + f64::from(viewport.2 / 2),
-            f64::from(viewport.1) + f64::from(viewport.3 / 2),
+            viewport.0.wrapping_add((viewport.2 / 2) as i32),
+            viewport.1.wrapping_add((viewport.3 / 2) as i32),
         ];
         let angles = [
             camera.angles_q4[0],
             camera.angles_q4[1].wrapping_add(i32::from(self.pitch_bias)),
         ];
-        let project = |coordinate: i32, angle: i32| -> Result<f64> {
+        let project = |coordinate: i32, axis: usize| -> f64 {
             // Native KERNEL32.MulDiv rounds the signed Q16 projection to
             // nearest (ties away from zero), rather than truncating vertices
             // to whole pixels or using an unquantized floating-point ratio.
@@ -246,18 +265,24 @@ impl Plane {
             // bits *before* calling signed MulDiv. Large retail pans reach
             // that wrap on offscreen edges; widening the numerator or
             // rejecting it changes native behavior.
-            let pan = angle.wrapping_mul(self.depth).wrapping_shl(3);
+            let coordinate = coordinate.wrapping_sub(position[axis]);
+            let pan = angles[axis].wrapping_mul(depth).wrapping_shl(3);
             let value = coordinate.wrapping_shl(16).wrapping_sub(pan);
             let product = i64::from(value) * i64::from(camera.focal_length);
-            let magnitude = (product.abs() + i64::from(self.depth) / 2) / i64::from(self.depth);
+            let magnitude = (product.abs() + i64::from(depth) / 2) / i64::from(depth);
             let result = magnitude * product.signum();
             // KERNEL32.MulDiv returns -1 when its rounded result overflows.
-            Ok(f64::from(i32::try_from(result).unwrap_or(-1)) / 65536.0)
+            // 1003c44a..1003c477 adds the signed screen origin in Q16,
+            // also wrapping before storing the cached projected rectangle.
+            let screen = i32::try_from(result)
+                .unwrap_or(-1)
+                .wrapping_add(center[axis].wrapping_shl(16));
+            f64::from(screen) / 65536.0
         };
-        let left = center[0] + project(-self.origin[0], angles[0])?;
-        let top = center[1] + project(-self.origin[1], angles[1])?;
-        let right = center[0] + project(self.size[0] - self.origin[0], angles[0])?;
-        let bottom = center[1] + project(self.size[1] - self.origin[1], angles[1])?;
+        let left = project(-self.origin[0], 0);
+        let top = project(-self.origin[1], 1);
+        let right = project(self.size[0] - self.origin[0], 0);
+        let bottom = project(self.size[1] - self.origin[1], 1);
         ensure!(
             [left, top, right, bottom]
                 .iter()
@@ -265,10 +290,10 @@ impl Plane {
             "projected image outside coordinate range"
         );
         Ok([
-            [left, top, f64::from(self.depth)],
-            [right, top, f64::from(self.depth)],
-            [right, bottom, f64::from(self.depth)],
-            [left, bottom, f64::from(self.depth)],
+            [left, top, f64::from(depth)],
+            [right, top, f64::from(depth)],
+            [right, bottom, f64::from(depth)],
+            [left, bottom, f64::from(depth)],
         ])
     }
     pub fn rect(
@@ -346,12 +371,15 @@ mod tests {
         };
         let plane = Plane::background_layer(&scene, &layer, &texture)?;
         assert_eq!(plane.origin, [35, 21]);
+        assert!(!plane.camera_relative);
         assert_eq!(plane.size, [29, 19]);
         assert_eq!(plane.depth, 1000);
         layer.scale = 0.5;
         let plane = Plane::background_layer(&scene, &layer, &texture)?;
         assert_eq!(plane.origin, [16, 14]);
         assert_eq!(plane.size, [15, 10]);
+        layer.attributes[1] = 1;
+        assert!(Plane::background_layer(&scene, &layer, &texture)?.camera_relative);
         layer.position[2] = 0;
         assert!(Plane::background_layer(&scene, &layer, &texture).is_err());
         layer.position[2] = 32768;
@@ -507,6 +535,7 @@ mod tests {
             size: [4, 4],
             depth: 3,
             pitch_bias: 0,
+            camera_relative: false,
         };
         let camera = Camera {
             focal_length: 1,
@@ -554,10 +583,12 @@ mod tests {
             size: [48384, 15896],
             depth: 18000,
             pitch_bias: 0,
+            camera_relative: false,
         };
         let camera = Camera {
             focal_length: 1752,
             angles_q4: [-5920, -1776, 0],
+            position: [0; 3],
         };
         let q = plane.quad(&camera, (0, 0, 1024, 600))?;
         // x86 wraps the right vertex's positive numerator to negative.
@@ -569,16 +600,102 @@ mod tests {
             size: [4, 4],
             depth: 1,
             pitch_bias: 1,
+            camera_relative: false,
         };
         let camera = Camera {
             focal_length: 32767,
             angles_q4: [0, i32::MAX, 0],
+            position: [0; 3],
         };
         let q = plane.quad(&camera, (0, 0, 10, 10))?;
         assert_eq!(q[0], [-32762.0, -32762.0, 1.0]);
         // Three pixels in Q16 times 32767 exceeds signed i32. MulDiv
         // returns -1, not a saturated or widened result.
         assert_eq!(q[2], [5.0 - 1.0 / 65536.0, 5.0 - 1.0 / 65536.0, 1.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn xyz_translation_changes_relative_depth_but_camera_relative_slots_ignore_it() -> Result<()> {
+        let mut plane = Plane {
+            origin: [50, 40],
+            size: [100, 80],
+            depth: 100,
+            pitch_bias: 0,
+            camera_relative: false,
+        };
+        let camera = Camera {
+            focal_length: 100,
+            position: [10, -20, 50],
+            angles_q4: [16, -8, 99],
+        };
+        let viewport = (0, 0, 100, 80);
+        let q = plane.quad(&camera, viewport)?;
+        assert_eq!(q[0], [-70.1953125, 0.09765625, 50.0]);
+        assert_eq!(q[2], [129.8046875, 160.09765625, 50.0]);
+        assert!(
+            plane
+                .quad(
+                    &Camera {
+                        position: [0, 0, 100],
+                        ..camera
+                    },
+                    viewport
+                )
+                .is_err()
+        );
+        plane.camera_relative = true;
+        let q = plane.quad(&camera, viewport)?;
+        assert_eq!(q[0], [-0.1953125, 0.09765625, 100.0]);
+        assert_eq!(q[2], [99.8046875, 80.09765625, 100.0]);
+        assert_eq!(
+            q,
+            plane.quad(
+                &Camera {
+                    position: [i32::MAX; 3],
+                    ..camera
+                },
+                viewport
+            )?
+        );
+        plane.camera_relative = false;
+        assert_eq!(
+            plane.quad(
+                &Camera {
+                    position: [i32::MAX, 0, 0],
+                    ..camera
+                },
+                viewport
+            )?,
+            plane.quad(
+                &Camera {
+                    position: [-1, 0, 0],
+                    ..camera
+                },
+                viewport
+            )?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn projected_screen_origin_is_added_with_native_q16_wrapping() -> Result<()> {
+        let plane = Plane {
+            origin: [0; 2],
+            size: [1; 2],
+            depth: 1,
+            pitch_bias: 0,
+            camera_relative: false,
+        };
+        let q = plane.quad(
+            &Camera {
+                focal_length: 32767,
+                ..Camera::default()
+            },
+            (0, 0, 10, 10),
+        )?;
+        assert_eq!(q[0], [5.0, 5.0, 1.0]);
+        assert_eq!(q[2], [-32764.0, -32764.0, 1.0]);
         Ok(())
     }
 }

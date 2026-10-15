@@ -9,7 +9,9 @@ impl ObjectState {
             .map_or(self.camera, CameraTween::target)
     }
     pub(super) fn validate_camera_boundary(&self, camera: &Camera) -> Result<()> {
-        if camera.focal_length == 0 || camera.angles_q4[..2].iter().all(|v| *v == 0) {
+        if camera.focal_length == 0
+            || (camera.angles_q4[..2] == [0; 2] && camera.position == [0; 3])
+        {
             return Ok(());
         }
         for plane in self.layers.values().filter_map(|layer| match layer {
@@ -65,11 +67,12 @@ impl Game {
             );
             target.focal_length = focal as u16;
         } else {
-            for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
-                ensure!(
-                    number(&fields, field, 0)? == 0,
-                    "3D camera {field} is not implemented yet"
-                );
+            for (out, field) in target
+                .position
+                .iter_mut()
+                .zip(["３ＤＸ", "３ＤＹ", "３ＤＺ"])
+            {
+                *out = number(&fields, field, 0)?;
             }
             for (out, name) in target
                 .angles_q4

@@ -126,6 +126,7 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
         .collect::<Result<_>>()?;
     let mut native_initial = None;
     for all_visible in [false, true] {
+        let mut untranslated = None;
         // Test the native initial hidden state, then exercise every layer's
         // geometry/compositing by explicitly exposing them in test state.
         // This is not an implementation of a native layer-activation message.
@@ -144,7 +145,7 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
                 plane.draw_flags &= !2;
             }
         }
-        for (pitch, roll) in [(-2, 0), (2, 1)] {
+        for (pitch, roll, position) in [(-2, 0, [0; 3]), (2, 1, [0; 3]), (2, 1, [100, -50, 100])] {
             // The small nearest layer does not cover the viewport; camera
             // validation must use the group's background boundary, not each quad.
             game.message(call(
@@ -153,6 +154,9 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
                     ("ピッチ角".into(), Value::Integer(pitch)),
                     ("ロール角".into(), Value::Integer(roll)),
                     ("スタイル".into(), Value::Integer(11)),
+                    ("３ＤＸ".into(), Value::Integer(position[0])),
+                    ("３ＤＹ".into(), Value::Integer(position[1])),
+                    ("３ＤＺ".into(), Value::Integer(position[2])),
                 ]),
             ))?;
             game.message(call("OM_ParseScreenTrigger", BTreeMap::new()))?;
@@ -166,8 +170,16 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
                 }
                 // Native edge construction + signed MulDiv Q16 rounding,
                 // independently implemented without Plane or the compositor.
-                let z = f64::from(layer.position[2]);
-                let factor = z * f64::from(scene.scale) * 0.0015999999999999999;
+                let raw_depth = f64::from(layer.position[2]);
+                let factor = raw_depth * f64::from(scene.scale) * 0.0015999999999999999;
+                // Only the far retail layer is camera-relative; exposed
+                // foreground layers translate at their independent depths.
+                let camera_position = if layer.attributes[1] == 1 {
+                    [0; 3]
+                } else {
+                    position
+                };
+                let z = raw_depth - f64::from(camera_position[2]);
                 let start = [
                     f64::from(layer.anchor[0]) - 1400.0,
                     f64::from(layer.anchor[1]) - 460.0,
@@ -182,7 +194,8 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
                         };
                         let vertex = ((start[axis] + f64::from(length) * edge as f64) * factor
                             + f64::from(layer.position[axis]))
-                        .trunc();
+                        .trunc()
+                            - f64::from(camera_position[axis]);
                         let angle = if axis == 0 { roll } else { pitch };
                         *out = [512.0, 300.0][axis]
                             + ((vertex * 65536.0 - f64::from(angle * 16) * z * 8.0) * 1752.0 / z)
@@ -216,6 +229,15 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
                 game.frame().iter().zip(&expected).all(|(a, b)| a == b),
                 "multiplane frame differs at pitch {pitch}, roll {roll}"
             );
+            if pitch == 2 {
+                if position == [0; 3] {
+                    untranslated = Some(game.frame().to_vec());
+                } else if all_visible {
+                    assert_ne!(game.frame(), untranslated.as_ref().unwrap());
+                } else {
+                    assert_eq!(game.frame(), untranslated.as_ref().unwrap());
+                }
+            }
             if pitch == -2 {
                 if all_visible {
                     assert_ne!(game.frame(), native_initial.as_ref().unwrap());

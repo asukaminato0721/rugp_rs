@@ -508,6 +508,10 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     assert_eq!(camera.focal_length, 2040, "{boundary:#}");
     assert_eq!(camera.angles_q4, [-5840, -1200, 0], "{boundary:#}");
     assert_eq!(
+        camera.position, [0; 3],
+        "rejected target must not mutate state"
+    );
+    assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
         Some((79, 0x60)),
         "{boundary:#}"
@@ -522,7 +526,7 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("3D camera ３ＤＸ is not implemented yet"),
+        format!("{boundary:#}").contains("camera boundary clamping is not implemented yet"),
         "{boundary:#}"
     );
     assert!(saw_ramp, "chapter must queue the real ramped playback");
@@ -535,9 +539,11 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
             Some(rugp_scene_vm::vm::Value::Integer(0))
         ));
         assert_eq!(message.fields["フェード方式"].integer()?, 0);
-        assert_ne!(message.fields["３ＤＸ"].integer()?, 0);
+        assert_eq!(message.fields["３ＤＸ"].integer()?, 575);
+        assert_eq!(message.fields["３ＤＹ"].integer()?, -1400);
+        assert_eq!(message.fields["３ＤＺ"].integer()?, -8);
     } else {
-        panic!("unsupported translated camera was acknowledged");
+        panic!("camera target requiring unimplemented clamping was acknowledged");
     }
     Ok(())
 }

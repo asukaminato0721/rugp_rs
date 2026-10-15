@@ -653,15 +653,19 @@ mod tests {
         };
         let verify = |game: &Game, camera: Camera, opacity: u8| {
             assert_eq!(game.objects[&212259].camera, camera);
-            let project = |vertex: i32, angle: i32, center: f64| {
-                let numerator = (i64::from(vertex) * 65536 - i64::from(angle) * 720 * 8)
+            let depth = 720 - i64::from(camera.position[2]);
+            let project = |vertex: i32, axis: usize, center: f64| {
+                let numerator = ((i64::from(vertex) - i64::from(camera.position[axis])) * 65536
+                    - i64::from(camera.angles_q4[axis]) * depth * 8)
                     * i64::from(camera.focal_length);
-                center + (((numerator.abs() + 360) / 720) * numerator.signum()) as f64 / 65536.0
+                center
+                    + (((numerator.abs() + depth / 2) / depth) * numerator.signum()) as f64
+                        / 65536.0
             };
-            let left = project(-8, camera.angles_q4[0], 2.0);
-            let right = project(8, camera.angles_q4[0], 2.0);
-            let top = project(-8, camera.angles_q4[1], 2.0);
-            let bottom = project(8, camera.angles_q4[1], 2.0);
+            let left = project(-8, 0, 2.0);
+            let right = project(8, 0, 2.0);
+            let top = project(-8, 1, 2.0);
+            let bottom = project(8, 1, 2.0);
             for y in 0..4 {
                 for x in 0..4 {
                     let u = (x as f64 + 0.5 - left) / (right - left);
@@ -722,6 +726,7 @@ mod tests {
             Camera {
                 focal_length: 900,
                 angles_q4: [4, -8, 12],
+                position: [0; 3],
             },
             255,
         );
@@ -740,6 +745,7 @@ mod tests {
             Camera {
                 focal_length: 1080,
                 angles_q4: [8, -16, 24],
+                position: [0; 3],
             },
             255,
         );
@@ -749,6 +755,7 @@ mod tests {
             Camera {
                 focal_length: 1440,
                 angles_q4: [16, -32, 48],
+                position: [0; 3],
             },
             255,
         );
@@ -779,6 +786,7 @@ mod tests {
             Camera {
                 focal_length: 0,
                 angles_q4: [0; 3],
+                position: [0; 3],
             },
             0,
         );
@@ -788,6 +796,7 @@ mod tests {
             Camera {
                 focal_length: 180,
                 angles_q4: [0; 3],
+                position: [0; 3],
             },
             64,
         );
@@ -841,8 +850,62 @@ mod tests {
             Camera {
                 focal_length: 1080,
                 angles_q4: [16, 0, 0],
+                position: [0; 3],
             },
             255,
+        );
+        game.message(call(false, BTreeMap::new()))?;
+        game.message(call(true, BTreeMap::new()))?;
+        game.message(call(
+            false,
+            BTreeMap::from([
+                ("３ＤＸ".into(), Value::Integer(3)),
+                ("３ＤＹ".into(), Value::Integer(-1)),
+                ("３ＤＺ".into(), Value::Integer(40)),
+                ("フェード方式".into(), Value::Integer(8)),
+                ("スタイル".into(), Value::Integer(1)),
+            ]),
+        ))?;
+        game.message(call(
+            true,
+            BTreeMap::from([
+                ("ズーム率".into(), Value::Integer(1440)),
+                ("フェード方式".into(), Value::Integer(8)),
+                ("スタイル".into(), Value::Integer(1)),
+            ]),
+        ))?;
+        assert_eq!(game.objects[&212259].camera, Camera::default());
+        game.message(trigger(400))?;
+        game.step(200)?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 1080,
+                position: [1, -1, 20],
+                angles_q4: [0; 3],
+            },
+            255,
+        );
+        game.step(200)?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 1440,
+                position: [3, -1, 40],
+                angles_q4: [0; 3],
+            },
+            255,
+        );
+        game.message(call(
+            true,
+            BTreeMap::from([
+                ("ズーム率".into(), Value::Integer(720)),
+                ("スタイル".into(), Value::Integer(0x800)),
+            ]),
+        ))?;
+        assert_eq!(
+            game.objects[&212259].camera_start.unwrap().position,
+            [3, -1, 40]
         );
         assert!(game.wait_ms.is_some());
         Ok(())
