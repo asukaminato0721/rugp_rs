@@ -96,6 +96,17 @@ impl Framebuffer {
         if opacity == 0 || bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
             return Ok(());
         }
+        if quad.iter().all(|v| v[2] == quad[0][2])
+            && positions[0][0] == positions[3][0]
+            && positions[1][0] == positions[2][0]
+            && positions[0][1] == positions[1][1]
+            && positions[2][1] == positions[3][1]
+            && positions[1][0] > positions[0][0]
+            && positions[3][1] > positions[0][1]
+        {
+            self.projective_rectangle(texture, [positions[0], positions[2]], bounds, opacity);
+            return Ok(());
+        }
         let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         let vertices: [Vertex; 4] = std::array::from_fn(|i| {
             let inverse_z = 1.0 / quad[i][2];
@@ -118,6 +129,39 @@ impl Framebuffer {
             opacity,
         );
         Ok(())
+    }
+
+    // The default native view mode produces axis-aligned quads. Preserve
+    // fractional edges and pixel-center sampling, but avoid two triangle
+    // coverage/interpolation evaluations for every background pixel.
+    fn projective_rectangle(
+        &mut self,
+        texture: &Texture,
+        rect: [[f64; 2]; 2],
+        bounds: [i64; 4],
+        opacity: u8,
+    ) {
+        let [[left, top], [right, bottom]] = rect;
+        let x0 = bounds[0].max((left - 0.5).ceil() as i64);
+        let y0 = bounds[1].max((top - 0.5).ceil() as i64);
+        let x1 = bounds[2].min((right - 0.5).ceil() as i64);
+        let y1 = bounds[3].min((bottom - 0.5).ceil() as i64);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let columns: Vec<_> = (x0..x1)
+            .map(|x| texel_coordinate((x as f64 + 0.5 - left) / (right - left), texture.width))
+            .collect();
+        for y in y0..y1 {
+            let sy = texel_coordinate((y as f64 + 0.5 - top) / (bottom - top), texture.height);
+            for (column, sx) in columns.iter().enumerate() {
+                let si = (sy * texture.width as usize + sx) * 4;
+                let di = (y as usize * self.width as usize + x0 as usize + column) * 4;
+                let mut source: [u8; 4] = texture.rgba[si..si + 4].try_into().unwrap();
+                source[3] = ((u32::from(source[3]) * u32::from(opacity) + 127) / 255) as u8;
+                source_over(&mut self.rgba[di..di + 4], source);
+            }
+        }
     }
 
     fn projective_triangle(
@@ -247,6 +291,37 @@ mod tests {
             expected.blit(&texture, (0, 0, 9, 7), 128)?;
             actual.blit_projective(&texture, quad, (0, 0, 9, 7), 128)?;
             assert_eq!(actual.rgba, expected.rgba);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fractional_rectangle_fast_path_matches_general_triangles() -> Result<()> {
+        let texture = grid(9, 7, 128);
+        for [left, top, right, bottom] in [
+            [0.0, 0.0, 9.0, 7.0],
+            [-1.25, 0.5, 12.75, 7.5],
+            [0.5, 1.5, 7.5, 5.5],
+            [-20.0, -3.75, 17.0, 23.0],
+        ] {
+            let quad = [
+                [left, top, 720.0],
+                [right, top, 720.0],
+                [right, bottom, 720.0],
+                [left, bottom, 720.0],
+            ];
+            let mut fast = Framebuffer::transparent(9, 7)?;
+            let mut general = Framebuffer::transparent(9, 7)?;
+            fast.blit_projective(&texture, quad, (0, 0, 9, 7), 128)?;
+            let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+            let v: [Vertex; 4] = std::array::from_fn(|i| Vertex {
+                xy: [quad[i][0], quad[i][1]],
+                inverse_z: 1.0 / 720.0,
+                uv_over_z: uv[i].map(|v| v / 720.0),
+            });
+            general.projective_triangle(&texture, [v[0], v[1], v[2]], [0, 0, 9, 7], 128);
+            general.projective_triangle(&texture, [v[0], v[2], v[3]], [0, 0, 9, 7], 128);
+            assert_eq!(fast.rgba, general.rgba, "rectangle {quad:?}");
         }
         Ok(())
     }

@@ -20,6 +20,31 @@ pub struct ImageManager {
     budget: usize,
 }
 impl ImageManager {
+    pub fn load_world(
+        &mut self,
+        reference: &ObjectRef,
+    ) -> Result<(Arc<Texture>, crate::world::Plane)> {
+        let texture = self.load(reference)?;
+        let plane = if reference.class.as_ref().is_some_and(|c| c.name == "CBg2d") {
+            let bytes = self.archive.read_at(
+                reference.offset.context("background offset missing")?,
+                reference.size.context("background extent missing")? as usize,
+            )?;
+            let bg = Background::parse(
+                &bytes,
+                reference.class.as_ref().unwrap().schema,
+                self.archive.address_shift,
+            )?;
+            ensure!(
+                texture.width == u32::from(bg.width) && texture.height == u32::from(bg.height),
+                "background canvas composition is not implemented yet"
+            );
+            crate::world::Plane::background(&bg)?
+        } else {
+            crate::world::Plane::bitmap(&texture)?
+        };
+        Ok((texture, plane))
+    }
     pub fn new(archive: Arc<RioArchive>) -> Self {
         Self {
             archive,

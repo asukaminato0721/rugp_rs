@@ -27,6 +27,7 @@ fn main() -> Result<()> {
         bg.trailing_data.len(),
         bg.properties.is_some()
     );
+    println!("placement {:?}", bg.placement());
     for (i, plane) in bg.planes.iter().enumerate() {
         let image = plane
             .image

@@ -484,16 +484,23 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         }
     }
     let boundary = boundary.context("expected next unsupported host operation")?;
+    let camera = game
+        .objects
+        .get(&212259)
+        .context("chapter background missing")?
+        .camera;
+    assert_eq!(camera.focal_length, 1752);
+    assert_eq!(camera.angles_q4, [0, -32, 0]);
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((130, 0x60))
+        Some((483, 0x4c4))
     );
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("3D camera ピッチ角"),
+        format!("{boundary:#}").contains("OM_SetVarData"),
         "{boundary:#}"
     );
     let ramp = game
@@ -507,11 +514,11 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_SetWorldCamera");
-        assert_ne!(message.fields["ピッチ角"].integer()?, 0);
-        eprintln!("Pending camera fields: {:?}", message.fields);
+        assert_eq!(message.class, "OM_SetVarData");
+        assert_eq!(message.fields["識別値"].integer()?, 128);
+        assert_eq!(message.fields["データ"].integer()?, 1);
     } else {
-        panic!("unsupported synchronization was acknowledged");
+        panic!("unsupported variable-data message was acknowledged");
     }
     Ok(())
 }

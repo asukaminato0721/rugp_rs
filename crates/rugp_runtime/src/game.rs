@@ -75,11 +75,16 @@ impl ObjectState {
             backdrop.paint(frame, self.rect);
         }
         for layer in self.layers.values() {
-            let rect = layer
-                .plane
-                .as_ref()
-                .map_or(Ok(self.rect), |plane| plane.rect(&self.camera, self.rect))?;
-            frame.blit(&layer.texture, rect, 255)?;
+            if let Some(plane) = &layer.plane {
+                frame.blit_projective(
+                    &layer.texture,
+                    plane.quad(&self.camera, self.rect)?,
+                    self.rect,
+                    255,
+                )?;
+            } else {
+                frame.blit(&layer.texture, self.rect, 255)?;
+            }
         }
         Ok(())
     }
@@ -344,6 +349,11 @@ impl Game {
             }
             "OM_SetWorldCameraAsScreen" => {
                 ensure!(
+                    number(&fields, "スタイル", 0)? == 0
+                        && number(&fields, "フェード方式", 0)? == 0,
+                    "screen camera style/transition is not implemented yet"
+                );
+                ensure!(
                     number(&fields, "スクリーン座標Ｘ", 0)? == 0
                         && number(&fields, "スクリーン座標Ｙ", 0)? == 0,
                     "translated screen camera is not implemented yet"
@@ -358,24 +368,47 @@ impl Game {
                 object.properties.extend(fields);
             }
             "OM_SetWorldCamera" => {
-                for field in [
-                    "ロール角",
-                    "ピッチ角",
-                    "バンク角",
-                    "３ＤＸ",
-                    "３ＤＹ",
-                    "３ＤＺ",
-                ] {
+                ensure!(
+                    number(&fields, "スタイル", 0)? == 0
+                        && number(&fields, "フェード方式", 0)? == 0,
+                    "camera style/transition is not implemented yet"
+                );
+                for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
                     ensure!(
                         number(&fields, field, 0)? == 0,
                         "3D camera {field} is not implemented yet"
                     );
                 }
-                self.objects
-                    .entry(id)
-                    .or_default()
-                    .properties
-                    .extend(fields);
+                let angles =
+                    ["ロール角", "ピッチ角", "バンク角"].map(|field| number(&fields, field, 0));
+                let mut angles_q4 = [0; 3];
+                for (out, angle) in angles_q4.iter_mut().zip(angles) {
+                    *out = angle?.checked_mul(16).context("camera angle overflow")?;
+                }
+                let object = self.objects.entry(id).or_default();
+                if angles_q4[..2].iter().any(|v| *v != 0) {
+                    let candidate = Camera {
+                        angles_q4,
+                        ..object.camera
+                    };
+                    for plane in object
+                        .layers
+                        .values()
+                        .filter_map(|layer| layer.plane.as_ref())
+                    {
+                        let q = plane.quad(&candidate, object.rect)?;
+                        let (x, y, w, h) = object.rect;
+                        ensure!(
+                            q[0][0] <= f64::from(x)
+                                && q[0][1] <= f64::from(y)
+                                && q[2][0] >= f64::from(x) + f64::from(w)
+                                && q[2][1] >= f64::from(y) + f64::from(h),
+                            "camera boundary clamping is not implemented yet"
+                        );
+                    }
+                }
+                object.camera.angles_q4 = angles_q4;
+                object.properties.extend(fields);
             }
             "OM_HumanOut" => {
                 let style = number(&fields, "スタイル", 0)?;
@@ -407,8 +440,8 @@ impl Game {
                     matches!(fields.get("表情画像"), None | Some(Value::Null)),
                     "expression-image composition is not implemented yet"
                 );
-                let texture = self.images.load(image)?;
-                let plane = Some(Plane::bitmap(&texture)?);
+                let (texture, plane) = self.images.load_world(image)?;
+                let plane = Some(plane);
                 self.buffers.remove(&id);
                 self.objects.entry(id).or_default().menu = None;
                 self.objects

@@ -1,4 +1,4 @@
-//! Axis-aligned world image planes. Native zoom is a focal length, not a FOV.
+//! Static world image planes and native simplified-view projection.
 //!
 //! Camera porting evidence (static inspection, never native execution):
 //! Vm60 1003ffc0 receives OM_SetWorldCamera; 1004009b..100400b9
@@ -7,26 +7,35 @@
 //! 100904d0 is 2*pi/65536, hence 4096 script units per revolution.
 //! 10046c70's mode-0 branch (10046cb2) takes start+delta, ignoring
 //! interpolation progress. Do not infer linear motion from duration alone.
-//! CBg2d has its own placement metadata; treating its inline bitmap as an
-//! ordinary rotated image is not a faithful implementation of that resource.
+//! CParseBgBox resource loading does not restore save-state camera flags;
+//! the constructor's default mode is zero. Vm60 1003c2e5 then uses an
+//! axis-aligned projection with linear roll/pitch pan, *not* 100683f0's
+//! trigonometric matrix. Full-matrix modes require separate implementation.
 use crate::render::Texture;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
     pub focal_length: u16,
+    /// Script roll/pitch/bank shifted left by four, as in the native state.
+    /// Simplified projection uses roll/pitch only (bank has no effect).
+    pub angles_q4: [i32; 3],
 }
 impl Default for Camera {
     fn default() -> Self {
-        Self { focal_length: 720 }
+        Self {
+            focal_length: 720,
+            angles_q4: [0; 3],
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Plane {
-    origin: [f64; 2],
-    size: [f64; 2],
-    depth: f64,
+    origin: [i32; 2],
+    size: [i32; 2],
+    depth: i32,
+    pitch_bias: i16,
 }
 impl Plane {
     pub fn bitmap(texture: &Texture) -> Result<Self> {
@@ -46,10 +55,110 @@ impl Plane {
             "world bitmap exceeds native vertex range"
         );
         Ok(Self {
-            origin: [(size[0] * 0.5).floor(), (size[1] * 0.5).floor()],
-            size: [size[0].ceil(), size[1].ceil()],
-            depth: 720.0,
+            origin: [
+                (size[0] * 0.5).floor() as i32,
+                (size[1] * 0.5).floor() as i32,
+            ],
+            size: [size[0].ceil() as i32, size[1].ceil() as i32],
+            depth: 720,
+            pitch_bias: 0,
         })
+    }
+    pub fn background(bg: &rugp_assets::background::Background) -> Result<Self> {
+        let p = bg.placement();
+        ensure!(
+            p.mode == 0 && bg.flags == 0 && bg.planes.len() == 1,
+            "background requires extended/multiplane world geometry"
+        );
+        ensure!(
+            p.scale_q16 > 0 && p.depth > 0,
+            "invalid background scale/depth"
+        );
+        let scaled = |n: i64| -> Result<i32> {
+            let product = n * i64::from(p.scale_q16);
+            ensure!(
+                i32::try_from(product).is_ok(),
+                "background scale exceeds native multiplication range"
+            );
+            Ok((product >> 16) as i32)
+        };
+        let origin = [
+            scaled(i64::from(p.origin[0]))?,
+            scaled(i64::from(p.origin[1]))?,
+        ];
+        let size = [scaled(i64::from(bg.width))?, scaled(i64::from(bg.height))?];
+        for axis in 0..2 {
+            ensure!(
+                size[axis] > 0
+                    && i16::try_from(-origin[axis]).is_ok()
+                    && i16::try_from(size[axis] - origin[axis]).is_ok(),
+                "background exceeds native vertex range"
+            );
+        }
+        ensure!(
+            i16::try_from(p.depth).is_ok(),
+            "background exceeds native depth range"
+        );
+        Ok(Self {
+            origin,
+            size,
+            depth: p.depth,
+            pitch_bias: p.pitch_bias,
+        })
+    }
+    /// Default native world mode: pan terms are linear in the internal Q4
+    /// angles. See 1003c388..1003c410: angle*depth*8 is subtracted from the
+    /// Q16 vertex before focal/depth projection, not interpreted as degrees.
+    pub fn quad(&self, camera: &Camera, viewport: (i32, i32, u32, u32)) -> Result<[[f64; 3]; 4]> {
+        ensure!(
+            camera.focal_length > 0 && self.depth > 0,
+            "invalid camera/plane depth"
+        );
+        let center = [
+            f64::from(viewport.0) + f64::from(viewport.2 / 2),
+            f64::from(viewport.1) + f64::from(viewport.3 / 2),
+        ];
+        let angles = [
+            camera.angles_q4[0],
+            camera.angles_q4[1]
+                .checked_add(i32::from(self.pitch_bias))
+                .context("camera pitch overflow")?,
+        ];
+        let project = |coordinate: i32, angle: i32| -> Result<f64> {
+            // Native KERNEL32.MulDiv rounds the signed Q16 projection to
+            // nearest (ties away from zero), rather than truncating vertices
+            // to whole pixels or using an unquantized floating-point ratio.
+            let value =
+                i64::from(coordinate) * 65536 - i64::from(angle) * i64::from(self.depth) * 8;
+            ensure!(
+                i32::try_from(value).is_ok(),
+                "camera projection exceeds native numerator range"
+            );
+            let product = value * i64::from(camera.focal_length);
+            let magnitude = (product.abs() + i64::from(self.depth) / 2) / i64::from(self.depth);
+            let result = magnitude * product.signum();
+            ensure!(
+                i32::try_from(result).is_ok(),
+                "camera projection exceeds native screen range"
+            );
+            Ok(result as f64 / 65536.0)
+        };
+        let left = center[0] + project(-self.origin[0], angles[0])?;
+        let top = center[1] + project(-self.origin[1], angles[1])?;
+        let right = center[0] + project(self.size[0] - self.origin[0], angles[0])?;
+        let bottom = center[1] + project(self.size[1] - self.origin[1], angles[1])?;
+        ensure!(
+            [left, top, right, bottom]
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= i32::MAX as f64),
+            "projected image outside coordinate range"
+        );
+        Ok([
+            [left, top, f64::from(self.depth)],
+            [right, top, f64::from(self.depth)],
+            [right, bottom, f64::from(self.depth)],
+            [left, bottom, f64::from(self.depth)],
+        ])
     }
     pub fn rect(
         &self,
@@ -57,15 +166,13 @@ impl Plane {
         viewport: (i32, i32, u32, u32),
     ) -> Result<(i32, i32, u32, u32)> {
         ensure!(
-            camera.focal_length > 0 && self.depth > 0.0,
+            camera.focal_length > 0 && self.depth > 0,
             "invalid camera/plane depth"
         );
-        let ratio = f64::from(camera.focal_length) / self.depth;
-        let (x, y, w, h) = viewport;
-        let left = f64::from(x) + f64::from(w) * 0.5 - self.origin[0] * ratio;
-        let top = f64::from(y) + f64::from(h) * 0.5 - self.origin[1] * ratio;
-        let width = self.size[0] * ratio;
-        let height = self.size[1] * ratio;
+        let quad = self.quad(camera, viewport)?;
+        let [left, top, _] = quad[0];
+        let width = quad[1][0] - left;
+        let height = quad[3][1] - top;
         ensure!(
             [left, top, width, height]
                 .iter()
@@ -99,20 +206,160 @@ mod tests {
             (256, 150, 512, 300)
         );
         assert_eq!(
-            plane.rect(&Camera { focal_length: 1440 }, viewport)?,
+            plane.rect(
+                &Camera {
+                    focal_length: 1440,
+                    ..Camera::default()
+                },
+                viewport
+            )?,
             viewport
         );
         texture.display_scale = 1.0;
         let plane = Plane::bitmap(&texture)?;
         assert_eq!(plane.rect(&Camera::default(), viewport)?, viewport);
         assert_eq!(
-            plane.rect(&Camera { focal_length: 1440 }, viewport)?,
+            plane.rect(
+                &Camera {
+                    focal_length: 1440,
+                    ..Camera::default()
+                },
+                viewport
+            )?,
             (-512, -300, 2048, 1200)
         );
         texture.display_scale = f32::NAN;
         assert!(Plane::bitmap(&texture).is_err());
         texture.display_scale = f32::INFINITY;
         assert!(Plane::bitmap(&texture).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn native_background_q16_origin_size_and_depth_are_independent() -> Result<()> {
+        use rugp_assets::{
+            background::{Background, BackgroundPlane},
+            object::ObjectReader,
+        };
+        let mut metadata = Vec::new();
+        metadata.extend(0u16.to_le_bytes());
+        metadata.extend(98304i32.to_le_bytes()); // 1.5 in Q16
+        metadata.extend(0i16.to_le_bytes());
+        metadata.extend(3i32.to_le_bytes());
+        metadata.extend(2i32.to_le_bytes());
+        metadata.extend(90i32.to_le_bytes());
+        let mut bg = Background {
+            width: 8,
+            height: 6,
+            display_metadata: metadata.try_into().unwrap(),
+            flags: 0,
+            planes: vec![BackgroundPlane {
+                metadata: [0; 12],
+                image: ObjectReader::new(&[0; 3]).reference(0)?,
+            }],
+            properties: None,
+            trailing_data: vec![],
+        };
+        let camera = Camera {
+            focal_length: 90,
+            ..Camera::default()
+        };
+        assert_eq!(bg.placement().origin, [3, 2]);
+        assert_eq!(
+            Plane::background(&bg)?.quad(&camera, (0, 0, 20, 10))?,
+            [
+                [6.0, 2.0, 90.0],
+                [18.0, 2.0, 90.0],
+                [18.0, 11.0, 90.0],
+                [6.0, 11.0, 90.0]
+            ]
+        );
+        bg.display_metadata[6..8].copy_from_slice(&16i16.to_le_bytes());
+        assert_eq!(bg.placement().pitch_bias, 16);
+        assert_eq!(
+            Plane::background(&bg)?.quad(&camera, (0, 0, 20, 10))?[0][1],
+            1.82421875
+        );
+        bg.display_metadata[8..12].copy_from_slice(&(-1i32).to_le_bytes());
+        assert_eq!(Plane::background(&bg)?.origin, [-2, 3]); // arithmetic Q16 shift
+        bg.display_metadata[2..6].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(Plane::background(&bg).is_err());
+        bg.display_metadata[2..6].copy_from_slice(&0i32.to_le_bytes());
+        assert!(Plane::background(&bg).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn simple_view_uses_linear_pan_not_degrees_or_a_rotation_matrix() -> Result<()> {
+        let texture = Texture {
+            width: 1024,
+            height: 600,
+            display_scale: 1.0,
+            rgba: vec![],
+        };
+        let plane = Plane::bitmap(&texture)?;
+        let camera = Camera {
+            angles_q4: [16, -32, 1000],
+            ..Camera::default()
+        };
+        let q = plane.quad(&camera, (0, 0, 1024, 600))?;
+        assert_eq!(
+            q,
+            [
+                [-1.40625, 2.8125, 720.0],
+                [1022.59375, 2.8125, 720.0],
+                [1022.59375, 602.8125, 720.0],
+                [-1.40625, 602.8125, 720.0]
+            ]
+        );
+        let other_bank = Camera {
+            angles_q4: [16, -32, 0],
+            ..camera
+        };
+        assert_eq!(plane.quad(&other_bank, (0, 0, 1024, 600))?, q);
+        Ok(())
+    }
+
+    #[test]
+    fn projection_keeps_native_q16_rounding_and_integer_screen_center() -> Result<()> {
+        let plane = Plane {
+            origin: [1, 1],
+            size: [4, 4],
+            depth: 3,
+            pitch_bias: 0,
+        };
+        let camera = Camera {
+            focal_length: 1,
+            ..Camera::default()
+        };
+        let q = plane.quad(&camera, (10, 20, 9, 7))?;
+        assert_eq!(
+            q[0],
+            [14.0 - 21845.0 / 65536.0, 23.0 - 21845.0 / 65536.0, 3.0]
+        );
+        assert_eq!(q[2], [15.0, 24.0, 3.0]);
+        assert!(
+            plane
+                .quad(
+                    &Camera {
+                        angles_q4: [i32::MAX, 0, 0],
+                        ..camera
+                    },
+                    (0, 0, 9, 7)
+                )
+                .is_err()
+        );
+        assert!(
+            plane
+                .quad(
+                    &Camera {
+                        focal_length: 0,
+                        ..camera
+                    },
+                    (0, 0, 9, 7)
+                )
+                .is_err()
+        );
         Ok(())
     }
 }

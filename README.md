@@ -164,12 +164,20 @@ other effects, transformed regions, and timed offscreen blits remain unsupported
 Native Cr6Ti world-display scales are preserved independently of pixels. The
 following startup screen's 0.5 bitmap scale and 1440 camera focal length now
 project to the full viewport, covered by a retail pixel-equality regression.
-Camera rotation, translated view targets, and general 3D geometry remain incomplete.
+Static CBg2d world placement now preserves the serialized Q16 scale, base point,
+depth and pitch bias, independently of bitmap dimensions/display scale. The
+default simplified camera mode uses the native linear roll/pitch pan and Q16
+projection rounding; bank is unused in that mode. Translated camera positions,
+edge-clamping, nonzero transition/style modes and general 3D geometry remain
+incomplete and stop explicitly when requested.
 The software compositor now also has a perspective-correct quadrilateral path:
 reciprocal-depth texture interpolation, pixel-center sampling, object-viewport
 clipping, either winding, and shared-edge alpha coverage are tested against
-independent ray/plane intersections. This is rendering infrastructure, not yet
-VM camera support: CBg2d world metadata must be applied before connecting it.
+independent ray/plane intersections. World rendering uses this compositor;
+an axis-aligned fast path preserves the same fractional-edge sampling. Full
+matrix camera modes are not yet connected. A retail regression compares every
+pixel against an independent inverse mapping, verifies opposite camera pans,
+and checks that mode 0 is instantaneous even with a 400ms duration field.
 Desktop presentation and automatic exit have also been exercised under Xvfb.
 The startup movie regression checks frame-clock boundaries, actual temporal
 pixels, a large clock jump, and synchronization through the end of the opening.
@@ -205,12 +213,15 @@ than decibels. Zero duration keeps the initial gain; PCM loops do not restart
 the envelope and fading to silence does not itself stop playback. Kira mock
 tests check actual output samples; native block buffering/quantization are not
 reproduced bit-for-bit. Native extended acoustic packets remain unsupported.
-Chapter execution now reaches a nonzero camera pitch in `OM_SetWorldCamera`
-at scene 130, PC `0x60`. Static native inspection establishes that script camera
-angles use 4096 units per turn (internally shifted left by four for a 65536-unit
+Chapter execution now passes the nonzero camera pitch in `OM_SetWorldCamera`
+at scene 130, PC `0x60`, reaching `OM_SetVarData` at scene 483, PC `0x4c4`.
+Static native inspection establishes that script camera angles use 4096 units
+per turn (internally shifted left by four for a 65536-unit
 matrix), and fade mode 0 takes the target state directly, not a linear 400ms
-interpolation. Other camera transition modes and background geometry remain
-under investigation. The metadata-only `rugp_assets` example `background`
+interpolation. Default simplified mode pans linearly rather than applying that
+trigonometric matrix. Extended/multiplane background geometry and other camera
+transition modes remain under investigation. The metadata-only `rugp_assets`
+example `background`
 accepts a game directory, CBg2d offset and extent for this work.
 For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
