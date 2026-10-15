@@ -3,12 +3,14 @@ use crate::{
     render::{Framebuffer, Texture},
 };
 use anyhow::{Context, Result, bail, ensure};
-use rugp_assets::{RioArchive, native_schema::NativeSchema, object::ObjectRef};
+use rugp_assets::{RioArchive, fade::FadeCurve, native_schema::NativeSchema, object::ObjectRef};
 use rugp_scene_vm::{
     Instruction,
     vm::{Message, Program, Step, Value, Vm},
 };
 use std::{collections::BTreeMap, path::Path, sync::Arc};
+
+mod blit;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
@@ -56,6 +58,7 @@ struct Transition {
     to: Vec<u8>,
     elapsed: u32,
     duration: u32,
+    curve: Option<FadeCurve>,
 }
 pub struct Game {
     pub vm: Vm,
@@ -63,6 +66,8 @@ pub struct Game {
     pub objects: BTreeMap<u64, ObjectState>,
     images: ImageManager,
     frame: Framebuffer,
+    primary_buffer: u64,
+    buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
     wait_ms: Option<u32>,
     audio_wait: bool,
@@ -85,12 +90,21 @@ impl Game {
         let program = Program::load(&archive, &native)?;
         let entry = program.startup(&archive)?;
         let vm = Vm::new(Arc::new(program), entry)?;
+        let buffers: Vec<_> = archive
+            .nodes
+            .iter()
+            .filter(|n| n.class.name == "CFrameBuffer")
+            .collect();
+        ensure!(buffers.len() == 1, "expected one primary framebuffer");
+        let primary_buffer = buffers[0].offset.context("framebuffer has no extent")?;
         Ok(Self {
             images: ImageManager::new(Arc::clone(&archive)),
             archive,
             vm,
             objects: BTreeMap::new(),
             frame: Framebuffer::new(1024, 600)?,
+            primary_buffer,
+            buffers: BTreeMap::new(),
             transition: None,
             wait_ms: None,
             audio_wait: false,
@@ -134,8 +148,20 @@ impl Game {
     }
     fn update_frame(&mut self) {
         if let Some(transition) = &self.transition {
-            let a = transition.elapsed.min(transition.duration) as u64;
-            let d = transition.duration as u64;
+            let (a, d) = transition.curve.as_ref().map_or_else(
+                || {
+                    (
+                        transition.elapsed.min(transition.duration) as u64,
+                        transition.duration as u64,
+                    )
+                },
+                |curve| {
+                    (
+                        u64::from(curve.alpha(transition.elapsed, transition.duration)),
+                        256,
+                    )
+                },
+            );
             for (out, (from, to)) in self
                 .frame
                 .rgba
@@ -143,6 +169,9 @@ impl Game {
                 .zip(transition.from.iter().zip(&transition.to))
             {
                 *out = ((*from as u64 * (d - a) + *to as u64 * a + d / 2) / d) as u8;
+            }
+            if transition.elapsed >= transition.duration {
+                self.transition = None;
             }
         }
     }
@@ -245,11 +274,12 @@ impl Game {
                 let object = self.objects.entry(id).or_default();
                 if style == 0 {
                     object.layers.clear();
+                    self.buffers.remove(&id);
                 } else {
                     object.layers.remove(&style);
                 }
             }
-            "OM_HumanIn2" => {
+            "OM_HumanIn" | "OM_HumanIn2" => {
                 for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
                     ensure!(
                         number(&fields, field, 0)? == 0,
@@ -260,8 +290,16 @@ impl Game {
                     bail!("image message has no bound image");
                 };
                 let style = number(&fields, "スタイル", 0)?;
-                ensure!(style == 512, "unimplemented world image style {style:#x}");
+                ensure!(
+                    style == 512 || (message.class == "OM_HumanIn" && style == 0),
+                    "unimplemented world image style {style:#x}"
+                );
+                ensure!(
+                    matches!(fields.get("表情画像"), None | Some(Value::Null)),
+                    "expression-image composition is not implemented yet"
+                );
                 let texture = self.images.load(image)?;
+                self.buffers.remove(&id);
                 self.objects
                     .entry(id)
                     .or_default()
@@ -284,6 +322,7 @@ impl Game {
                         to: next.rgba,
                         elapsed: 0,
                         duration,
+                        curve: None,
                     });
                 }
             }
@@ -294,6 +333,11 @@ impl Game {
     fn host(&mut self, instruction: &Instruction) -> Result<()> {
         match instruction.class.name.as_str() {
             "CVmGenericMsg" => self.message(self.vm.message(instruction)?)?,
+            "CVmBlt" => {
+                if self.blit(instruction)? {
+                    return Ok(());
+                }
+            }
             "CVmSound" => {
                 let source = match self.vm.evaluate(&instruction.arguments[0])? {
                     Value::Null => None,

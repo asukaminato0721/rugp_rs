@@ -4,6 +4,7 @@ pub mod background;
 pub mod binary;
 pub mod crmt;
 pub mod crypto;
+pub mod fade;
 pub mod ici;
 pub mod image;
 pub mod native_schema;

@@ -118,6 +118,10 @@ rendering/application host are still under development.
 
 The first-logo runtime regression executes the original startup messages and
 checks that the fully faded 1024x600 frame equals the decoded source pixels.
+The next startup regression exercises native framebuffer snapshots, CFadeNormal
+copying, the serialized CFadeMergeWhite curve, its blocking 800ms wait, and the
+subsequent white CBg2d background. Only full-screen blit regions are implemented;
+other effects, transformed regions, and timed offscreen blits remain unsupported.
 Desktop presentation and automatic exit have also been exercised under Xvfb.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game

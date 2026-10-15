@@ -25,6 +25,46 @@ fn first_logo_is_loaded_by_real_vm_and_faded_to_framebuffer() -> Result<()> {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn startup_snapshot_and_native_white_fade() -> Result<()> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+    let mut game = Game::open(root.as_ref())?;
+    let mut audio = None;
+    game.step(0)?;
+    for _ in 0..100 {
+        rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
+        if game
+            .vm
+            .cursor()
+            .is_some_and(|pc| pc.scene == 137 && pc.address == 0x7c)
+        {
+            break;
+        }
+        game.step(100)?;
+    }
+    assert_eq!(
+        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
+        Some((137, 0x7c))
+    );
+    assert_eq!(game.vm.arguments()[0].integer()?, 800);
+    let before = game.frame().to_vec();
+    assert!(before.iter().any(|v| *v != 255));
+    assert_eq!(game.step(400)?, RunState::Waiting);
+    for (actual, source) in game.frame().iter().zip(&before) {
+        assert_eq!(u16::from(*actual), (u16::from(*source) + 255).div_ceil(2));
+    }
+    // Resumes the script, clears the temporary image area, and installs the
+    // serialized white CBg2d background; no host request is manually skipped.
+    assert_eq!(game.step(400)?, RunState::Waiting);
+    assert!(game.frame().iter().all(|v| *v == 255));
+    assert_eq!(
+        game.vm.cursor().map(|pc| (pc.scene, pc.address)),
+        Some((252, 0xb74))
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
 fn resolves_bgm_wrapper_to_cached_pcm() -> Result<()> {
     use rugp_assets::object::{ClassId, ObjectRef};
     use std::sync::Arc;
