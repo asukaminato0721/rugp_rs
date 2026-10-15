@@ -307,7 +307,7 @@ channel, not explicit posture/camera tweens. Backing-cache enlargement hints
 Window-attached `CVmBlt` flag 1 retains its Xs-effect packet without replacing
 world planes/cameras or drawing native raster distortion. Finite blocking
 requests keep their duration; asynchronous duration -1 is retained without a
-blocking wait. `OM_StopXsFade` mode zero clears only this separate effect
+blocking wait. `OM_StopXsFade` modes zero and one clear only this separate effect
 configuration, not ordinary framebuffer transitions or posture motion.
 The title's quit item now handles global `OM_VmmFinishByUser` exit code zero:
 it stops audio, returns `RunState::Ended` and does not execute the following

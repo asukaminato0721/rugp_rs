@@ -672,11 +672,13 @@ impl Game {
                 }) =>
             {
                 ensure!(
-                    number(&fields, "モード", 0)? == 0,
+                    matches!(number(&fields, "モード", 0)?, 0 | 1),
                     "unsupported Xs-effect stop mode"
                 );
                 // Only the separately retained native window effect is stopped.
                 // Do not cancel a framebuffer fade or a posture/camera motion.
+                // The omitted distortion has no intermediate pixels to retain
+                // versus finalize, so both stop variants clear its settings.
                 self.objects
                     .entry(id)
                     .or_default()

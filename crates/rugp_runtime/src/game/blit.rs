@@ -503,13 +503,14 @@ mod tests {
             target: Value::Reference(target.clone()),
             fields: BTreeMap::from([("モード".into(), Value::Integer(mode))]),
         };
-        assert!(game.message(stop(1)).is_err());
+        assert!(game.message(stop(2)).is_err());
         assert!(
             game.objects[&212259]
                 .properties
                 .contains_key("render.xs_fade.class")
         );
-        game.message(stop(0))?;
+        game.message(stop(1))?;
+        game.message(stop(0))?; // repeated stopping is harmless
         assert!(
             !game.objects[&212259]
                 .properties
