@@ -1064,7 +1064,11 @@ impl Game {
                         ["CPmBgm", "CPmEffect", "COptimizedObs"].contains(&c.name.as_str())
                     }) {
                         let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
-                        let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+                        let timeout = if mode == 32 {
+                            0 // native nonblocking media query does not read this operand
+                        } else {
+                            self.vm.evaluate(&instruction.arguments[2])?.integer()?
+                        };
                         return self.synchronize_sound(&reference, mode, timeout);
                     }
                     if reference

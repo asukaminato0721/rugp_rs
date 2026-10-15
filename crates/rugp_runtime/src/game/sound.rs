@@ -94,7 +94,7 @@ impl Game {
         timeout: i32,
     ) -> Result<()> {
         ensure!(
-            [16, 32].contains(&mode) && timeout == 0,
+            mode == 32 || (mode == 16 && timeout == 0),
             "unsupported sound synchronization mode/timeout {mode}/{timeout}"
         );
         let tickets = self.audio_state.source_tickets(
@@ -103,7 +103,8 @@ impl Game {
                 .context("sound synchronization identity missing")?,
         );
         // Vm60 0x10072ba0: 0x20 queries the media event and writes process
-        // status. Only the other branch (0x10) enters the native wait loop.
+        // status. It never reads the time word (10072cc7 is only reached by
+        // the wait branch), including SC457's actual mode 32 / time 400.
         if mode == 32 {
             return self.vm.acknowledge_sync_query(tickets.is_empty());
         }
@@ -119,6 +120,125 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_nonblocking_sound_query_ignores_time_without_waiting_or_changing_playback()
+    -> Result<()> {
+        use rugp_assets::{object::ClassId, script::Script};
+        use rugp_scene_vm::{Argument, Scenario};
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let archive = RioArchive::open(Path::new(&root))?;
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let code = Scenario::decode_with_schema(
+            &Script::load(&archive, 457)?,
+            archive.address_shift,
+            Some(&native),
+        )?;
+        let query = code
+            .instructions
+            .into_iter()
+            .find(|i| i.address == 7124)
+            .context("original query missing")?;
+        assert!(matches!(query.arguments[1], Argument::Number(32)));
+        assert!(matches!(query.arguments[2], Argument::Number(400)));
+        let Argument::Reference(source) = query.arguments[0].clone() else {
+            bail!("query source missing")
+        };
+        // Inactive, active and completed PCM; also prove that a query never
+        // evaluates an otherwise invalid time operand, just like the native branch.
+        for (state, invalid_time) in [(0, false), (1, false), (2, false), (0, true), (1, true)] {
+            let mut game = Game::open(root.as_ref())?;
+            let mut query = query.clone();
+            query.address = 0;
+            query.next_address = 24;
+            if invalid_time {
+                query.arguments[2] = Argument::Value {
+                    descriptor: 3,
+                    arguments: vec![],
+                };
+            }
+            let instruction = |name: &str, address, next_address, arguments| Instruction {
+                index: address / 24,
+                stream_offset: 0,
+                class: ClassId {
+                    name: name.into(),
+                    schema: 17,
+                },
+                address,
+                next_address,
+                flags: 0,
+                arguments,
+            };
+            let mut program = Program::default();
+            program.insert(
+                1,
+                Scenario {
+                    object_id: 1,
+                    memory_size: 72,
+                    null_records: vec![],
+                    trailing_bytes: 0,
+                    instructions: vec![
+                        query,
+                        instruction(
+                            "CVmSync",
+                            24,
+                            48,
+                            vec![
+                                Argument::Reference(
+                                    rugp_assets::object::ObjectReader::new(&[0; 3]).reference(0)?,
+                                ),
+                                Argument::Number(0),
+                                Argument::Number(1),
+                            ],
+                        ),
+                        instruction("CVmRet", 48, u32::MAX, vec![]),
+                    ],
+                },
+            )?;
+            game.vm = Vm::new(Arc::new(program), 1)?;
+            let mut audio = Some(crate::audio::AudioResources::new(Arc::clone(
+                &game.archive,
+            ))?);
+            if state != 0 {
+                game.queue_sound(SoundRequest {
+                    ticket: None,
+                    source: Some(source.clone()),
+                    kind: 2,
+                    flags: 0,
+                    stereo: Default::default(),
+                    parameters: [0; 3],
+                })?;
+                crate::audio::mute_requests(&mut game, &mut audio)?;
+                if state == 2 {
+                    let tickets = game.audio_state.source_tickets(source.offset.unwrap());
+                    ensure!(!tickets.is_empty(), "original PCM already completed");
+                    game.finish_audio_ticket(tickets[0]);
+                }
+            }
+            let before = game.audio_state.source_tickets(source.offset.unwrap());
+            assert_eq!(!before.is_empty(), state == 1);
+            assert_eq!(game.step(0)?, RunState::Waiting);
+            assert_eq!(game.vm.cursor().unwrap().address, 24);
+            assert_eq!(game.vm.synchronization_status, Some(state != 1));
+            assert_eq!(
+                game.audio_state.source_tickets(source.offset.unwrap()),
+                before
+            );
+            assert!(game.audio_wait.is_none());
+            assert_eq!(game.wait_ms, Some(1)); // subsequent clock, not the query's 400
+            let saved = game.snapshot()?;
+            let resumes = game.restore_snapshot(&saved, audio.as_mut().unwrap())?;
+            assert_eq!(resumes.len(), usize::from(state == 1));
+            assert_eq!(game.vm.synchronization_status, Some(state != 1));
+            assert_eq!(game.vm.cursor().unwrap().address, 24);
+            assert_eq!(game.wait_ms, Some(1));
+            assert!(game.audio_wait.is_none());
+            assert_eq!(game.step(0)?, RunState::Waiting);
+            assert_eq!(game.step(1)?, RunState::Ended);
+        }
+        Ok(())
+    }
+
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_literal_inline_spatial_packets_produce_bounded_channel_gains() -> Result<()> {

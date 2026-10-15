@@ -85,6 +85,11 @@ cargo run --release --features audio -- --project-dir /run/media/w/KIMINOZO_LE p
 ```
 
 Muted/headless runs still honor the duration of scripted waiting one-shot sounds.
+Nonblocking sound-event queries (mode `0x20`) ignore their time operand, as
+the native query branch does; SC457's `32/400` packet no longer fails or adds
+a 400ms wait. Regression checks cover inactive, active and completed PCM,
+an unread invalid time operand, and snapshot restoration of the query status
+without stopping, replaying or waiting on the sound.
 
 The headless playability probe executes the same runtime, automatically advances
 dialogue and chooses the first menu entry. It prints only cursors/counters and
@@ -117,6 +122,9 @@ After correcting non-text confirmations, fresh default host-logic and continuous
 pixel-rendered runs both returned to that title at tick 37,201: 24,960 dialogue
 confirmations, 50 selections, 1,146 separate non-text confirmations and 74 sampled
 script scenes.
+The fresh second-entry host-logic plan also returned to the original title at
+tick 35,195: 23,034 dialogue confirmations, 52 selections, 1,076 non-text
+confirmations, 8,634 sounds and 70 sampled script scenes.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
