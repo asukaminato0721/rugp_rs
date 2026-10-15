@@ -306,6 +306,25 @@ mod tests {
         ));
         assert_eq!(game.objects[&id].character.position, [0, 0, 2240]);
         let pixels = game.frame().to_vec();
+        game.message(Message {
+            class: "OM_SetCharMouthAnimeSetting".into(),
+            target: Value::Reference(target.clone()),
+            fields: BTreeMap::from([
+                ("スタイル".into(), Value::Integer(1)),
+                ("口パク閾値1".into(), Value::Integer(20)),
+            ]),
+        })?;
+        assert!(matches!(
+            game.objects[&id].properties["render.mouth.スタイル"],
+            Value::Integer(1)
+        ));
+        assert_eq!(game.objects[&id].character.style, 0);
+        assert_eq!(game.objects[&id].character.position, [0, 0, 2240]);
+        assert!(Arc::ptr_eq(
+            &image,
+            game.objects[&id].character.texture.as_ref().unwrap()
+        ));
+        assert_eq!(game.frame(), pixels);
         let call = |key| Message {
             class: "OM_SetRefData".into(),
             target: Value::Reference(target.clone()),

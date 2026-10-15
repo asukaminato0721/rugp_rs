@@ -262,6 +262,8 @@ Portraits currently use approximate depth/horizontal placement, static eyes
 and mouth, and instant replacement; native sprite geometry, layer-vector
 deformation and animated lips/blinks remain incomplete. Message windows render
 above portraits regardless of serialized object-address ordering.
+`OM_SetCharMouthAnimeSetting` retains lip-sync settings separately from the
+character's placement/style, without starting mouth animation or replaying voice.
 Script helper functions can initialize local parameter slots not supplied by
 the caller; assignment does not first read an uninitialized destination.
 Region blits now crop/scale between differently sized surfaces and preserve
