@@ -11,12 +11,12 @@ pub(super) struct DialogueWait {
     voice: Option<ObjectRef>,
 }
 fn supported_text_mode(flags: u32) -> bool {
-    // The 0x2/0x6 families share the text/callback packet. Vm60 1006f21c
+    // The 0x2/0x6/0x8 families share the text/callback packet. Vm60 1006f21c
     // forwards the output modifiers to the window/voice callback; they do not
     // replace explicit waits and pauses parsed from the text itself.
     // Portable presentation currently shares its layout for these variants;
     // native voice callback mixing/style modifiers remain approximate.
-    matches!(flags & 0xf0000000, 0x20000000 | 0x60000000)
+    matches!(flags & 0xf0000000, 0x20000000 | 0x60000000 | 0x80000000)
 }
 impl Game {
     /// An outline font is supplied by the user/system, never extracted from
@@ -217,12 +217,12 @@ mod tests {
     fn output_modifiers_do_not_reject_the_standard_text_packet_family() {
         for flags in [
             0x20000000, 0x22000131, 0x60000000, 0x60100000, 0x61100000, 0x620001a6, 0x64200000,
-            0x66000000,
+            0x66000000, 0x80000000, 0x80000038,
         ] {
             assert!(supported_text_mode(flags));
         }
         for flags in [
-            0, 0x10000000, 0x30000000, 0x40000000, 0x80000000, 0xe0000000,
+            0, 0x10000000, 0x30000000, 0x40000000, 0xa0000000, 0xe0000000,
         ] {
             assert!(!supported_text_mode(flags));
         }
@@ -230,23 +230,31 @@ mod tests {
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_two_family_packet_keeps_text_input_wait_and_one_voice_callback() -> Result<()> {
+        check_retail_packet(467, 0x7588, 0x22000000)
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_eight_family_packet_keeps_text_input_wait_and_one_voice_callback() -> Result<()> {
+        check_retail_packet(469, 0x19c8, 0x80000000)
+    }
+    fn check_retail_packet(scene_id: usize, address: u32, modifiers: u32) -> Result<()> {
         use rugp_assets::{object::ClassId, script::Script};
         use rugp_scene_vm::{Argument, Scenario};
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let mut game = Game::open(root.as_ref())?;
         let native = NativeSchema::from_directory(root.as_ref())?;
         let scene = Scenario::decode_with_schema(
-            &Script::load(&game.archive, 467)?,
+            &Script::load(&game.archive, scene_id)?,
             game.archive.address_shift,
             Some(&native),
         )?;
         let mut message = scene
             .instructions
             .iter()
-            .find(|i| i.address == 0x7588)
-            .context("retail 0x2 text packet missing")?
+            .find(|i| i.address == address)
+            .context("retail text packet missing")?
             .clone();
-        assert_eq!(message.flags & !0xfffff, 0x22000000);
+        assert_eq!(message.flags & !0xfffff, modifiers);
         let Argument::Reference(window) = &message.arguments[0] else {
             bail!("dialogue window missing");
         };
