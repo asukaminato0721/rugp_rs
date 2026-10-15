@@ -66,7 +66,10 @@ fn main() -> Result<()> {
     let mut choices = 0;
     let mut sounds = 0;
     let mut entry_menu = None;
-    for tick in 0..ticks {
+    // An explicit zero disables the diagnostic budget. Long story routes
+    // should not need a fresh replay merely because their length was unknown.
+    let mut tick = 0u64;
+    while ticks == 0 || tick < u64::from(ticks) {
         if game.dialogue_waits_for_input() {
             game.activate_selection()?;
             dialogue_pages += 1;
@@ -150,6 +153,7 @@ fn main() -> Result<()> {
                 return Err(error.context(format!("autoplay tick={tick}, scenes={}, pages={dialogue_pages}, choices={choices}, sounds={sounds}", scenes.len())));
             }
         }
+        tick += 1;
     }
     anyhow::bail!(
         "tick limit {ticks} reached at {:?}; scenes={}, pages={dialogue_pages}, choices={choices}, sounds={sounds}",

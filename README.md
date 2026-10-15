@@ -84,7 +84,8 @@ Muted/headless runs still honor the duration of scripted waiting one-shot sounds
 The headless playability probe executes the same runtime, automatically advances
 dialogue and chooses the first menu entry. It prints only cursors/counters and
 uses volatile state (no save/profile writes). Optional arguments are maximum
-ticks and milliseconds per tick; failures identify the next missing operation:
+ticks and milliseconds per tick; zero maximum ticks removes the probe budget.
+Failures identify the next missing operation:
 
 ```sh
 cargo run --release -p rugp_runtime --no-default-features --example autoplay -- /run/media/w/KIMINOZO_LE 10000 1000
