@@ -19,12 +19,7 @@ use kira::{
 use rugp_assets::{RioArchive, sound::Sample};
 use std::{collections::BTreeMap, sync::Arc};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Bus {
-    Bgm,
-    Effect,
-    Voice,
-}
+pub use crate::audio_state::Bus;
 struct Playing {
     source: u64,
     bus: Bus,
@@ -177,11 +172,9 @@ impl DeviceAudio {
         );
         let data = self.resources.load(&source)?;
         let ticket = self.mixer.play(offset, bus, &data, looped)?;
-        Ok(if request.flags & 1 != 0 {
-            Some(ticket)
-        } else {
-            None
-        })
+        // Every playback needs completion reporting, including asynchronous
+        // sounds that a later CVmSync may query. VM waiting is runtime-owned.
+        Ok(Some(ticket))
     }
     pub fn finished(&self, ticket: u64) -> bool {
         self.mixer.finished(ticket)
@@ -217,6 +210,31 @@ mod tests {
         assert!(peak > 0.1);
         mixer.stop_all();
         assert!(mixer.finished(ticket));
+        Ok(())
+    }
+    #[test]
+    fn natural_completion_reports_async_playbacks_but_not_looping_audio() -> Result<()> {
+        let manager = AudioManager::<MockBackend>::new(AudioManagerSettings {
+            backend_settings: MockBackendSettings { sample_rate: 44100 },
+            ..Default::default()
+        })
+        .map_err(|_| anyhow::anyhow!("mock init"))?;
+        let mut mixer = Mixer::new(manager);
+        let data = SoundData {
+            sample_rate: 44100,
+            channels: 1,
+            pcm: vec![8192; 441],
+        };
+        let short = mixer.play(7, Bus::Effect, &data, false)?;
+        let looping = mixer.play(8, Bus::Effect, &data, true)?;
+        mixer.manager.backend_mut().on_start_processing();
+        for _ in 0..8192 {
+            let _ = mixer.manager.backend_mut().process();
+        }
+        assert!(mixer.finished(short));
+        assert!(!mixer.finished(looping));
+        mixer.stop_source(8);
+        assert!(mixer.finished(looping));
         Ok(())
     }
 }

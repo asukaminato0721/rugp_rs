@@ -182,6 +182,8 @@ pub struct Vm {
     stack: Vec<Frame>,
     pub variables: BTreeMap<u64, Value>,
     pending_host: bool,
+    /// Native process status written by CVmSync's nonblocking query mode.
+    pub synchronization_status: Option<bool>,
 }
 impl Vm {
     pub fn new(program: Arc<Program>, entry: usize) -> Result<Self> {
@@ -199,6 +201,7 @@ impl Vm {
             }),
             stack: Vec::new(),
             pending_host: false,
+            synchronization_status: None,
         })
     }
     pub fn cursor(&self) -> Option<&Cursor> {
@@ -470,6 +473,20 @@ impl Vm {
         ensure!(self.pending_host, "no pending host instruction");
         self.advance()?;
         self.pending_host = false;
+        Ok(())
+    }
+    pub fn acknowledge_sync_query(&mut self, completed: bool) -> Result<()> {
+        ensure!(self.pending_host, "no pending synchronization query");
+        ensure!(
+            self.program
+                .instruction(&self.frame.as_ref().context("VM is halted")?.cursor)?
+                .class
+                .name
+                == "CVmSync",
+            "status completion is not a synchronization"
+        );
+        self.acknowledge_host()?;
+        self.synchronization_status = Some(completed);
         Ok(())
     }
     pub fn step(&mut self) -> Result<Step> {

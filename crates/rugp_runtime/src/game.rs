@@ -15,6 +15,7 @@ mod blit;
 mod dialogue;
 mod menu;
 mod profile;
+mod sound;
 mod video;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub enum RunState {
 }
 #[derive(Debug)]
 pub struct SoundRequest {
+    /// Runtime playback identity, present for play operations only.
+    pub ticket: Option<u64>,
     pub source: Option<ObjectRef>,
     pub kind: u8,
     pub flags: u8,
@@ -97,7 +100,8 @@ pub struct Game {
     buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
     wait_ms: Option<u32>,
-    audio_wait: bool,
+    audio_wait: Option<Vec<u64>>,
+    audio_state: crate::audio_state::PlaybackRegistry,
     sounds: Vec<SoundRequest>,
     video: Option<(u64, crate::video::VideoPlayer)>,
     video_wait: bool,
@@ -146,7 +150,8 @@ impl Game {
             buffers: BTreeMap::new(),
             transition: None,
             wait_ms: None,
-            audio_wait: false,
+            audio_wait: None,
+            audio_state: crate::audio_state::PlaybackRegistry::default(),
             sounds: Vec::new(),
             video: None,
             video_wait: false,
@@ -216,16 +221,11 @@ impl Game {
     pub fn take_sounds(&mut self) -> Vec<SoundRequest> {
         std::mem::take(&mut self.sounds)
     }
-    pub fn finish_audio(&mut self) -> Result<()> {
-        ensure!(self.audio_wait, "no pending audio wait");
-        self.audio_wait = false;
-        self.vm.acknowledge_host()
+    pub fn finish_audio_ticket(&mut self, ticket: u64) {
+        self.audio_state.finish(ticket);
     }
-    pub fn time_audio_wait(&mut self, duration_ms: u32) -> Result<()> {
-        ensure!(self.audio_wait, "no pending audio wait");
-        self.audio_wait = false;
-        self.wait_ms = Some(duration_ms.max(1));
-        Ok(())
+    pub fn time_audio_ticket(&mut self, ticket: u64, duration_ms: u32) {
+        self.audio_state.set_duration(ticket, duration_ms);
     }
     fn scene_frame(&self) -> Result<Framebuffer> {
         let mut frame = Framebuffer::new(self.frame.width, self.frame.height)?;
@@ -463,21 +463,27 @@ impl Game {
                 let n = |i: usize| self.vm.evaluate(&instruction.arguments[i])?.integer();
                 let flags = n(2)? as u8;
                 let kind = n(1)? as u8;
-                let waiting = source.is_some() && [2, 4].contains(&kind) && flags & 1 != 0;
-                self.sounds.push(SoundRequest {
+                let request = SoundRequest {
+                    ticket: None,
                     source,
                     kind,
                     flags,
                     parameters: [n(3)? as u16, n(4)? as u16, n(5)? as u16],
-                });
-                if waiting {
-                    self.audio_wait = true;
+                };
+                if self.queue_sound(request)? {
                     return Ok(());
                 }
             }
             "CVmSync" => {
                 let target = self.vm.evaluate(&instruction.arguments[0])?;
                 if let Value::Reference(reference) = target {
+                    if reference.class.as_ref().is_some_and(|c| {
+                        ["CPmBgm", "CPmEffect", "COptimizedObs"].contains(&c.name.as_str())
+                    }) {
+                        let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                        let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+                        return self.synchronize_sound(&reference, mode, timeout);
+                    }
                     ensure!(
                         reference
                             .class
@@ -527,6 +533,7 @@ impl Game {
         if self.ended {
             return Ok(RunState::Ended);
         }
+        self.audio_state.advance(dt_ms);
         if let Some(t) = &mut self.transition {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }
@@ -549,8 +556,12 @@ impl Game {
                 return Ok(RunState::Waiting);
             }
         }
-        if self.audio_wait {
-            return Ok(RunState::Waiting);
+        if let Some(tickets) = &self.audio_wait {
+            if tickets.iter().any(|&id| !self.audio_state.finished(id)) {
+                return Ok(RunState::Waiting);
+            }
+            self.audio_wait = None;
+            self.vm.acknowledge_host()?;
         }
         if let Some(wait) = &mut self.wait_ms {
             *wait = wait.saturating_sub(dt_ms);
@@ -579,7 +590,7 @@ impl Game {
                         format!("runtime at {}:{:#x}", cursor.scene, cursor.address)
                     })?;
                     if self.wait_ms.is_some()
-                        || self.audio_wait
+                        || self.audio_wait.is_some()
                         || self.video_wait
                         || self.selection.is_some()
                         || self.dialogue.is_some()

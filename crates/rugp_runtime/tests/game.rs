@@ -135,6 +135,110 @@ fn resolves_bgm_wrapper_to_cached_pcm() -> Result<()> {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn async_sound_query_wait_tail_and_device_completion_identity() -> Result<()> {
+    use rugp_assets::object::{ClassId, ObjectRef};
+    use rugp_scene_vm::{
+        Argument, Instruction, Scenario,
+        vm::{Program, Vm},
+    };
+    use std::sync::Arc;
+    let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+    let mut game = Game::open(root.as_ref())?;
+    let sound = ObjectRef {
+        class: Some(ClassId {
+            name: "CPmEffect".into(),
+            schema: 0,
+        }),
+        cache_index: None,
+        flags: 0xc108,
+        offset: Some(251819724),
+        size: Some(60),
+        owner: None,
+        selector: 0,
+        inline: None,
+    };
+    let mut resources = rugp_runtime::audio::AudioResources::new(Arc::clone(&game.archive))?;
+    assert!(!resources.looped(&sound)?);
+    let data = resources.load(&sound)?;
+    let ms = (data.pcm.len() as u64 / u64::from(data.channels) * 1000)
+        .div_ceil(u64::from(data.sample_rate)) as u32;
+    assert!(ms > 3);
+    let mut resources = Some(resources);
+    let make_vm = |flags: u32| -> Result<Vm> {
+        let n = Argument::Number;
+        let r = || Argument::Reference(sound.clone());
+        let mut instructions = Vec::new();
+        for (address, name, arguments) in [
+            (0, "CVmSound", vec![r(), n(2), n(flags), n(0), n(0), n(0)]),
+            (24, "CVmSync", vec![r(), n(32), n(0)]),
+            (48, "CVmSync", vec![r(), n(16), n(0)]),
+            (72, "CVmSync", vec![r(), n(32), n(0)]),
+            (96, "CVmRet", vec![]),
+        ] {
+            instructions.push(Instruction {
+                index: instructions.len() as u32,
+                stream_offset: 0,
+                class: ClassId {
+                    name: name.into(),
+                    schema: 17,
+                },
+                address,
+                next_address: if address == 96 {
+                    u32::MAX
+                } else {
+                    address + 24
+                },
+                flags: 0,
+                arguments,
+            });
+        }
+        let mut program = Program::default();
+        program.insert(
+            10,
+            Scenario {
+                object_id: 1,
+                memory_size: 120,
+                instructions,
+                null_records: vec![],
+                trailing_bytes: 0,
+            },
+        )?;
+        Vm::new(Arc::new(program), 1)
+    };
+    game.vm = make_vm(0)?;
+    assert_eq!(game.step(0)?, RunState::Waiting);
+    assert_eq!(game.vm.cursor().map(|pc| pc.address), Some(48));
+    assert_eq!(game.vm.synchronization_status, Some(false)); // query, not wait
+    let elapsed = ms / 3;
+    assert_eq!(game.step(elapsed)?, RunState::Waiting);
+    rugp_runtime::audio::mute_requests(&mut game, &mut resources)?;
+    assert_eq!(game.step(ms - elapsed - 1)?, RunState::Waiting);
+    assert_eq!(game.vm.cursor().map(|pc| pc.address), Some(48));
+    assert_eq!(game.step(1)?, RunState::Ended);
+    assert_eq!(game.vm.synchronization_status, Some(true));
+
+    // Start a separate runtime for the play-and-wait flag (not a CVmSync).
+    let mut waiting = Game::open(root.as_ref())?;
+    waiting.vm = make_vm(1)?;
+    assert_eq!(waiting.step(0)?, RunState::Waiting);
+    assert_eq!(waiting.vm.cursor().map(|pc| pc.address), Some(0));
+    rugp_runtime::audio::mute_requests(&mut waiting, &mut resources)?;
+    assert_eq!(waiting.step(ms - 1)?, RunState::Waiting);
+    assert_eq!(waiting.step(1)?, RunState::Ended);
+
+    // A real output backend reports identity completion rather than a duration.
+    let mut device = Game::open(root.as_ref())?;
+    device.vm = make_vm(0)?;
+    assert_eq!(device.step(0)?, RunState::Waiting);
+    let request = device.take_sounds().pop().context("queued sound missing")?;
+    device.finish_audio_ticket(request.ticket.context("runtime ticket missing")?);
+    assert_eq!(device.step(0)?, RunState::Ended);
+    assert_eq!(device.vm.synchronization_status, Some(true));
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
 fn startup_movie_uses_real_sync_and_fractional_frame_clock() -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
     let mut game = Game::open(root.as_ref())?;
@@ -352,8 +456,7 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     }
     assert!(game.dialogue_waits_for_input());
     assert_ne!(game.vm.cursor().map(|pc| pc.address), Some(0x1c8));
-    // Follow actual page input until the next known unsupported host operation.
-    // This guards against treating a non-video synchronization as a no-op.
+    // Follow real page input through sound status queries to the next boundary.
     let mut boundary = None;
     for _ in 0..100 {
         if game.dialogue_waits_for_input() {
@@ -369,28 +472,21 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
             _ => {}
         }
     }
-    let boundary = boundary.context("expected pending non-video synchronization")?;
+    let boundary = boundary.context("expected next unsupported host operation")?;
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((483, 0x3c8))
+        Some((483, 0x3f8))
     );
     assert!(
-        format!("{boundary:#}").contains("unsupported synchronization target"),
+        game.vm.synchronization_status.is_some(),
+        "sound queries must write VM status"
+    );
+    assert!(
+        format!("{boundary:#}").contains("unsupported sound operation 4"),
         "{boundary:#}"
     );
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
-        assert_eq!(instruction.class.name, "CVmSync");
-        let rugp_scene_vm::vm::Value::Reference(target) =
-            game.vm.evaluate(&instruction.arguments[0])?
-        else {
-            panic!("missing synchronization target");
-        };
-        assert_eq!(
-            target.class.as_ref().map(|c| c.name.as_str()),
-            Some("CPmEffect")
-        );
-        assert_eq!(game.vm.evaluate(&instruction.arguments[1])?.integer()?, 32);
-        assert_eq!(game.vm.evaluate(&instruction.arguments[2])?.integer()?, 0);
+        assert_eq!(instruction.class.name, "CVmSound");
     } else {
         panic!("unsupported synchronization was acknowledged");
     }

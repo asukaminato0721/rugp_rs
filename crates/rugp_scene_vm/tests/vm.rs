@@ -48,6 +48,55 @@ fn immediate(value: i32) -> Argument {
         arguments: Vec::new(),
     }
 }
+#[test]
+fn synchronization_queries_acknowledge_and_preserve_the_status_value() {
+    let mut program = Program::default();
+    program
+        .insert(
+            100,
+            scene(
+                1,
+                vec![
+                    instruction(
+                        "CVmSync",
+                        0,
+                        24,
+                        vec![
+                            reference("CPmEffect", 700),
+                            Argument::Number(32),
+                            Argument::Number(0),
+                        ],
+                    ),
+                    instruction(
+                        "CVmSync",
+                        24,
+                        48,
+                        vec![
+                            reference("CPmEffect", 700),
+                            Argument::Number(32),
+                            Argument::Number(0),
+                        ],
+                    ),
+                    instruction("CVmMsg", 48, 72, vec![Argument::Text("example".into())]),
+                    instruction("CVmRet", 72, u32::MAX, vec![]),
+                ],
+            ),
+        )
+        .unwrap();
+    let mut vm = Vm::new(Arc::new(program), 1).unwrap();
+    assert!(vm.acknowledge_sync_query(true).is_err());
+    assert!(matches!(vm.step().unwrap(), Step::Host { .. }));
+    vm.acknowledge_sync_query(false).unwrap();
+    assert_eq!(vm.synchronization_status, Some(false));
+    assert_eq!(vm.cursor().unwrap().address, 24);
+    assert!(matches!(vm.step().unwrap(), Step::Host { .. }));
+    vm.acknowledge_sync_query(true).unwrap();
+    assert_eq!(vm.synchronization_status, Some(true));
+    assert!(matches!(vm.step().unwrap(), Step::Host { .. }));
+    assert!(vm.acknowledge_sync_query(false).is_err());
+    assert_eq!(vm.cursor().unwrap().address, 48);
+    assert_eq!(vm.synchronization_status, Some(true));
+}
 fn flag(operation: u32, src: Argument, dst: Argument, branch: u32) -> Vec<Argument> {
     vec![
         src,

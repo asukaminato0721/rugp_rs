@@ -107,32 +107,34 @@ impl AudioResources {
     }
 }
 
-/// Muting removes output, not scripted timing: waiting one-shot sounds still
-/// occupy their decoded duration on the runtime's virtual clock.
+/// Muting removes output, not playback state or timing. Even asynchronous
+/// one-shots get a deadline so a later CVmSync query/wait observes their tail.
 pub fn mute_requests(
     game: &mut crate::game::Game,
     resources: &mut Option<AudioResources>,
 ) -> Result<()> {
     for request in game.take_sounds() {
         if let Some(source) = request.source
-            && [2, 4].contains(&request.kind)
-            && request.flags & 1 != 0
+            && request.kind == 2
         {
             if resources.is_none() {
                 *resources = Some(AudioResources::new(Arc::clone(&game.archive))?);
             }
             let resources = resources.as_mut().unwrap();
-            ensure!(
-                !resources.looped(&source)?,
-                "cannot wait for a looping sound"
-            );
+            if resources.looped(&source)? {
+                ensure!(request.flags & 1 == 0, "cannot wait for a looping sound");
+                continue;
+            }
             let data = resources.load(&source)?;
             let frames = data.pcm.len() as u64 / data.channels as u64;
             let ms = (frames * 1000).div_ceil(data.sample_rate as u64);
-            game.time_audio_wait(
+            game.time_audio_ticket(
+                request
+                    .ticket
+                    .context("play request has no runtime ticket")?,
                 ms.try_into()
                     .context("audio duration exceeds runtime clock")?,
-            )?;
+            );
         }
     }
     Ok(())

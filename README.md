@@ -187,9 +187,15 @@ clicking the first title button: the VM enters chapter one. Plain `CVmMsg`
 output now renders Japanese text and blocks on its actual control-code waits.
 A retail regression checks first/second-message pixels, persistent VM waits,
 cancelled input, mouse/keyboard advancement, and the intervening sound wait.
-Release desktop input was also exercised on an isolated Xvfb/XTest display:
-chapter dialogue advances until the next current boundary, `CVmSync` on a
-`CPmEffect` sound (mode 32) at scene 483, PC `0x3c8`. For X11 isolation, unset
+Release desktop input was also exercised on an isolated Xvfb/XTest display.
+Sound synchronization now distinguishes native mode 32 (nonblocking media-event
+status query) from mode 16 (wait). Queries update VM status; waits observe the
+active playback instance, not a replayed full duration. Muted asynchronous
+one-shots have decoded-duration deadlines, and device output reports completion
+for every playback, including nonblocking effects. Stop/replacement and stale
+completion identities have regressions, as do real PCM timing and Kira mock
+natural completion. Chapter execution now reaches the next boundary: sound
+operation 4 at scene 483, PC `0x3f8`. For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.
 Unsupported host messages are never skipped; dialogue resource callbacks,

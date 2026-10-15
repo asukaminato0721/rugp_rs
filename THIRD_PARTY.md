@@ -56,3 +56,6 @@ non-gradient background blend arithmetic were likewise checked against the
 user's Vm60/rvmm code. Text rasterization uses `ab_glyph` and `fontdb` through
 Cargo under their respective open-source licenses. Fonts are user/system inputs,
 not distributed assets; portable layout is not claimed to match the GDI output.
+CVmSync's media-event query (mode 32), process-status write, and separate wait
+branch (mode 16) were checked in Vm60's 0x10072ae0 routine. Those mode values
+are not interchangeable with each other or with CVmSound's play-and-wait flag.

@@ -2,6 +2,7 @@
 pub mod audio;
 #[cfg(feature = "device-audio")]
 pub mod audio_device;
+pub mod audio_state;
 pub mod dialogue;
 pub mod font;
 pub mod game;

@@ -32,7 +32,7 @@ pub fn run(game: Game, mute: bool, quit_after_ms: Option<u32>) -> Result<()> {
         #[cfg(feature = "audio")]
         audio: None,
         #[cfg(feature = "audio")]
-        audio_wait: None,
+        audio_tickets: std::collections::BTreeMap::new(),
     };
     event_loop
         .run_app(&mut app)
@@ -56,7 +56,7 @@ struct App {
     #[cfg(feature = "audio")]
     audio: Option<rugp_runtime::audio_device::DeviceAudio>,
     #[cfg(feature = "audio")]
-    audio_wait: Option<u64>,
+    audio_tickets: std::collections::BTreeMap<u64, u64>,
 }
 impl App {
     fn move_pointer(&mut self, x: f64, y: f64) -> Result<()> {
@@ -85,8 +85,12 @@ impl App {
                         &self.game.archive,
                     ))?);
                 }
+                let runtime_ticket = request.ticket;
                 if let Some(ticket) = self.audio.as_mut().unwrap().request(request)? {
-                    self.audio_wait = Some(ticket);
+                    self.audio_tickets.insert(
+                        runtime_ticket.context("play request lacks runtime identity")?,
+                        ticket,
+                    );
                 }
             }
             #[cfg(not(feature = "audio"))]
@@ -144,7 +148,7 @@ impl App {
         #[cfg(feature = "audio")]
         {
             self.audio = None;
-            self.audio_wait = None;
+            self.audio_tickets.clear();
         }
         let message = format!("{error:#}");
         eprintln!("{message}");
@@ -242,13 +246,15 @@ impl ApplicationHandler for App {
                 self.last = now;
                 if self.error.is_none() {
                     #[cfg(feature = "audio")]
-                    if let Some(ticket) = self.audio_wait
-                        && self.audio.as_ref().is_some_and(|a| a.finished(ticket))
-                    {
-                        self.audio_wait = None;
-                        if let Err(e) = self.game.finish_audio() {
-                            self.fail(e);
-                        }
+                    if let Some(audio) = &self.audio {
+                        self.audio_tickets.retain(|&runtime, &mut ticket| {
+                            if audio.finished(ticket) {
+                                self.game.finish_audio_ticket(runtime);
+                                false
+                            } else {
+                                true
+                            }
+                        });
                     }
                     let selecting = self.game.waiting_for_selection();
                     match self.game.step(dt) {
