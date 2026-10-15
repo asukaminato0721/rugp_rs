@@ -19,6 +19,102 @@ fn reference(name: &str, schema: u16, offset: u64, size: u32) -> ObjectRef {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn retail_plain_image_xyz_placement_projects_real_pixels_without_changing_cached_geometry()
+-> Result<()> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+    let mut game = Game::open(root.as_ref())?;
+    game.frame = Framebuffer::new(1024, 600)?;
+    let target = reference("CParseBgBox", 15, 212259, 118);
+    game.objects.insert(
+        212259,
+        ObjectState {
+            rect: (0, 0, 1024, 600),
+            ..Default::default()
+        },
+    );
+    // SC217:11840 passes this real CRip008 and Y=90 through helper 51.
+    let source = reference("CRip008", 3, 1601820413, 156481);
+    let baseline = game.images.load_world(&source)?;
+    let texture = Arc::clone(&baseline.planes[0].texture);
+    let call = |name: &str, fields| Message {
+        class: name.into(),
+        target: Value::Reference(target.clone()),
+        fields,
+    };
+    for placement in [[0, 90, 0], [20, -30, 1440], [0; 3]] {
+        let before = game.frame().to_vec();
+        game.message(call(
+            "OM_HumanIn",
+            BTreeMap::from([
+                ("ベース画像".into(), Value::Reference(source.clone())),
+                ("スタイル".into(), Value::Integer(512)),
+                ("３ＤＸ".into(), Value::Integer(placement[0])),
+                ("３ＤＹ".into(), Value::Integer(placement[1])),
+                ("３ＤＺ".into(), Value::Integer(placement[2])),
+            ]),
+        ))?;
+        assert_eq!(game.frame(), before);
+        assert_eq!(game.objects[&212259].camera, Camera::default());
+        let Layer::World(placed) = &game.objects[&212259].layers[&512] else {
+            bail!("placed image missing")
+        };
+        assert!(Arc::ptr_eq(&texture, &placed.planes[0].texture));
+        // Independent projection equivalence: global image translation is
+        // the opposite camera translation; explicit Z replaces default 720.
+        let local_camera = Camera {
+            position: [
+                -placement[0],
+                -placement[1],
+                if placement[2] == 0 {
+                    0
+                } else {
+                    720 - placement[2]
+                },
+            ],
+            ..Camera::default()
+        };
+        let expected_quad = baseline.planes[0]
+            .plane
+            .quad(&local_camera, (0, 0, 1024, 600))?;
+        assert_eq!(
+            placed.planes[0]
+                .plane
+                .quad(&Camera::default(), (0, 0, 1024, 600))?,
+            expected_quad
+        );
+        let mut expected = Framebuffer::new(1024, 600)?;
+        expected.blit_projective(&texture, expected_quad, (0, 0, 1024, 600), 255)?;
+        game.message(call("OM_UpdateAllView", BTreeMap::new()))?;
+        assert_eq!(game.frame(), expected.rgba);
+        let reloaded = game.images.load_world(&source)?;
+        assert_eq!(
+            reloaded.planes[0]
+                .plane
+                .quad(&Camera::default(), (0, 0, 1024, 600))?,
+            baseline.planes[0]
+                .plane
+                .quad(&Camera::default(), (0, 0, 1024, 600))?
+        );
+    }
+    let before = game.frame().to_vec();
+    assert!(
+        game.message(call(
+            "OM_HumanIn",
+            BTreeMap::from([
+                ("ベース画像".into(), Value::Reference(source)),
+                ("スタイル".into(), Value::Integer(512)),
+                ("３ＤＹ".into(), Value::Real(1.0)),
+            ])
+        ))
+        .is_err()
+    );
+    game.message(call("OM_UpdateAllView", BTreeMap::new()))?;
+    assert_eq!(game.frame(), before);
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
 fn retail_textured_model_fallback_uses_declared_base_pixels_and_stages_placement() -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
     let mut game = Game::open(root.as_ref())?;

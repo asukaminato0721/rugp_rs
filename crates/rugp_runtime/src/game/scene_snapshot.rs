@@ -791,7 +791,7 @@ mod tests {
     fn object_layers_character_properties_and_shared_surfaces_survive_without_flattening()
     -> Result<()> {
         let texture = texture();
-        let plane = Plane::bitmap(&texture)?;
+        let plane = Plane::bitmap_at(&texture, [3, -2, 1440])?;
         let actor = ObjectRef::transient(ClassId {
             name: "CGenericUso".into(),
             schema: 1,
@@ -877,6 +877,14 @@ mod tests {
         let Layer::World(world) = &object.layers[&2] else {
             panic!("world was flattened")
         };
+        assert_eq!(
+            world.boundary.quad(&object.camera, object.rect)?,
+            plane.quad(&object.camera, object.rect)?
+        );
+        assert_eq!(
+            world.planes[0].plane.quad(&object.camera, object.rect)?,
+            plane.quad(&object.camera, object.rect)?
+        );
         assert!(Arc::ptr_eq(screen, &world.planes[0].texture));
         assert!(Arc::ptr_eq(
             screen,

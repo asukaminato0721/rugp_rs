@@ -23,6 +23,7 @@ use crate::render::Texture;
 use anyhow::{Result, ensure};
 mod bounds;
 mod camera;
+mod placement;
 pub use camera::CameraTween;
 
 /// Per-slot native 0x10000 flags. This suppresses a cached background plane
@@ -105,6 +106,8 @@ pub struct Plane {
     /// Native slot +0f == 1 bypasses camera/global XYZ offsets while still
     /// applying angular pan and focal length (1003c31a..1003c388).
     camera_relative: bool,
+    /// Native global image XYZ offset, applied after loading i16 vertices.
+    offset: [i32; 3],
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +117,8 @@ struct PlaneFields {
     depth: i32,
     pitch_bias: i16,
     camera_relative: bool,
+    #[serde(default)]
+    offset: [i32; 3],
 }
 impl TryFrom<PlaneFields> for Plane {
     type Error = anyhow::Error;
@@ -124,6 +129,7 @@ impl TryFrom<PlaneFields> for Plane {
             depth: fields.depth,
             pitch_bias: fields.pitch_bias,
             camera_relative: fields.camera_relative,
+            offset: fields.offset,
         };
         plane.validate_snapshot()?;
         Ok(plane)
@@ -151,11 +157,7 @@ impl Plane {
         camera: &Camera,
         viewport: (i32, i32, u32, u32),
     ) -> Result<i16> {
-        let depth = if self.camera_relative {
-            self.depth
-        } else {
-            self.depth.wrapping_sub(camera.position[2])
-        };
+        let depth = self.depth.wrapping_sub(self.relative_position(camera)[2]);
         let pan = camera.angles_q4[1]
             .wrapping_add(i32::from(self.pitch_bias))
             .wrapping_mul(depth)
@@ -192,6 +194,7 @@ impl Plane {
             depth: 720,
             pitch_bias: 0,
             camera_relative: false,
+            offset: [0; 3],
         })
     }
     pub fn background(bg: &rugp_assets::background::Background) -> Result<Self> {
@@ -256,6 +259,7 @@ impl Plane {
             depth: p.depth,
             pitch_bias: p.pitch_bias,
             camera_relative: false,
+            offset: [0; 3],
         })
     }
     /// Vm60 1003e6fe..1003e800: anchor offsets are measured from half the
@@ -314,17 +318,14 @@ impl Plane {
             pitch_bias: scene.background.placement().pitch_bias,
             // 1003e6d7 copies the serialized base +0f byte to slot +0f.
             camera_relative: layer.attributes[1] == 1,
+            offset: [0; 3],
         })
     }
     /// Default native world mode: pan terms are linear in the internal Q4
     /// angles. See 1003c388..1003c410: angle*depth*8 is subtracted from the
     /// Q16 vertex before focal/depth projection, not interpreted as degrees.
     pub fn quad(&self, camera: &Camera, viewport: (i32, i32, u32, u32)) -> Result<[[f64; 3]; 4]> {
-        let position = if self.camera_relative {
-            [0; 3]
-        } else {
-            camera.position
-        };
+        let position = self.relative_position(camera);
         let depth = self.depth.wrapping_sub(position[2]);
         ensure!(
             camera.focal_length <= 32767,
@@ -613,6 +614,7 @@ mod tests {
             depth: 3,
             pitch_bias: 0,
             camera_relative: false,
+            offset: [0; 3],
         };
         let camera = Camera {
             focal_length: 1,
@@ -661,6 +663,7 @@ mod tests {
             depth: 18000,
             pitch_bias: 0,
             camera_relative: false,
+            offset: [0; 3],
         };
         let camera = Camera {
             focal_length: 1752,
@@ -678,6 +681,7 @@ mod tests {
             depth: 1,
             pitch_bias: 1,
             camera_relative: false,
+            offset: [0; 3],
         };
         let camera = Camera {
             focal_length: 32767,
@@ -700,6 +704,7 @@ mod tests {
             depth: 100,
             pitch_bias: 0,
             camera_relative: false,
+            offset: [0; 3],
         };
         let camera = Camera {
             focal_length: 100,
@@ -771,6 +776,7 @@ mod tests {
             depth: 1,
             pitch_bias: 0,
             camera_relative: false,
+            offset: [0; 3],
         };
         let q = plane.quad(
             &Camera {

@@ -838,7 +838,9 @@ impl Game {
                     .class
                     .as_ref()
                     .is_some_and(|c| c.name == "CDcAgesModelQsT");
-                for field in ["３ＤＸ", "３ＤＹ", "３ＤＺ"] {
+                let mut placement = [0; 3];
+                for (axis, field) in ["３ＤＸ", "３ＤＹ", "３ＤＺ"].into_iter().enumerate()
+                {
                     if planar_model {
                         ensure!(
                             matches!(fields.get(field), None | Some(Value::Integer(_)))
@@ -846,11 +848,14 @@ impl Game {
                             "invalid textured-model placement {field}"
                         );
                     } else {
-                        ensure!(
-                            number(&fields, field, 0)? == 0,
-                            "3D placement {field} is not implemented yet"
-                        );
+                        placement[axis] = number(&fields, field, 0)?;
                     }
+                }
+                if image.class.as_ref().is_some_and(|c| c.name == "CBg2d") {
+                    ensure!(
+                        placement == [0; 3],
+                        "nonzero CBg2d world-group placement is not implemented yet"
+                    );
                 }
                 ensure!(
                     style == 512 || ((message.class == "OM_HumanIn" || planar_model) && style == 0),
@@ -861,7 +866,17 @@ impl Game {
                     "expression-image composition is not implemented yet"
                 );
                 let source = image.clone();
-                let image = self.images.load_world(image)?;
+                let mut image = self.images.load_world(image)?;
+                if !planar_model && placement != [0; 3] {
+                    ensure!(
+                        image.planes.len() == 1,
+                        "plain image placement needs one bitmap plane"
+                    );
+                    let plane =
+                        crate::world::Plane::bitmap_at(&image.planes[0].texture, placement)?;
+                    image.planes[0].plane = plane;
+                    image.boundary = plane;
+                }
                 self.buffers.remove(&id);
                 self.objects.entry(id).or_default().menu = None;
                 if planar_model {

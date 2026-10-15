@@ -37,7 +37,7 @@ pub(super) fn mul_div(value: i32, multiplier: i32, divisor: i32) -> i32 {
 }
 
 impl Plane {
-    /// Default projection flags only; global world XYZ offsets are zero.
+    /// Default projection flags, including the native global image XYZ offset.
     /// `cached_center_y` is slot +56, *not* this candidate camera's center.
     pub fn clamp_camera(
         &self,
@@ -50,16 +50,13 @@ impl Plane {
             camera.focal_length <= 32767,
             "invalid signed camera focal length"
         );
-        let depth = self.depth.wrapping_sub(camera.position[2]);
+        let position = self.relative_position(&camera);
+        let depth = self.depth.wrapping_sub(position[2]);
         // Native 1004071b..100407ac uses signed MulDiv/fdiv without a
         // positive-depth guard. At zero, masked x87 invalids reach _ftol's
         // zero low word; the helper below preserves that conversion.
-        let left = self.origin[0]
-            .wrapping_neg()
-            .wrapping_sub(camera.position[0]);
-        let top = self.origin[1]
-            .wrapping_neg()
-            .wrapping_sub(camera.position[1]);
+        let left = self.origin[0].wrapping_neg().wrapping_sub(position[0]);
+        let top = self.origin[1].wrapping_neg().wrapping_sub(position[1]);
         let right = left.wrapping_add(self.size[0]);
         let bottom = top.wrapping_add(self.size[1]);
         // The window and bitmap widths are loaded with MOVSX from i16.
@@ -188,6 +185,7 @@ mod tests {
             depth: 5000,
             pitch_bias: 0,
             camera_relative: false,
+            offset: [0; 3],
         }
     }
     #[test]
@@ -268,6 +266,7 @@ mod tests {
             depth: 720,
             pitch_bias: 0,
             camera_relative: false,
+            offset: [0; 3],
         };
         let camera = Camera {
             angles_q4: [50000, 50000, 0],
