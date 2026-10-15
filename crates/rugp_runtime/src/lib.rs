@@ -15,6 +15,7 @@ pub mod motion;
 pub mod posture;
 pub mod profile_store;
 pub mod render;
+mod staffroll;
 pub mod video;
 pub mod world;
 pub use game::{Game, RunState};

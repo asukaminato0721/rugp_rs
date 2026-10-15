@@ -21,6 +21,7 @@ mod posture;
 mod profile;
 mod scroll;
 mod sound;
+mod staffroll;
 mod text_menu;
 mod var_data;
 mod video;
@@ -186,6 +187,8 @@ pub struct Game {
     sounds: Vec<SoundRequest>,
     video: Option<(u64, crate::video::VideoPlayer)>,
     video_wait: bool,
+    staffroll: Option<(u64, crate::staffroll::StaffRoll)>,
+    staffroll_wait: bool,
     profiles: crate::profile_store::ProfileStore,
     menus: BTreeMap<u64, crate::menu::MenuState>,
     selection: Option<menu::SelectionWait>,
@@ -242,6 +245,8 @@ impl Game {
             sounds: Vec::new(),
             video: None,
             video_wait: false,
+            staffroll: None,
+            staffroll_wait: false,
             profiles: crate::profile_store::ProfileStore::default(),
             menus: BTreeMap::new(),
             selection: None,
@@ -583,6 +588,7 @@ impl Game {
                 self.access_profile(&target, &message.class, &fields)?
             }
             "OM_PlayDeviceStreamVideo" => self.play_video(&target, &fields)?,
+            "OM_PlayTextStaffrollVideo" => self.play_staffroll(&target, &fields)?,
             "OM_Enable" => self.objects.entry(id).or_default().enabled = true,
             "OM_Disable" => self.objects.entry(id).or_default().enabled = false,
             "OM_Visible" => self.objects.entry(id).or_default().visible = true,
@@ -888,6 +894,15 @@ impl Game {
                         let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
                         return self.synchronize_sound(&reference, mode, timeout);
                     }
+                    if reference
+                        .class
+                        .as_ref()
+                        .is_some_and(|c| c.name == "CTextStaffrollSeq")
+                    {
+                        let mode = self.vm.evaluate(&instruction.arguments[1])?.integer()?;
+                        let timeout = self.vm.evaluate(&instruction.arguments[2])?.integer()?;
+                        return self.synchronize_staffroll(&reference, mode, timeout);
+                    }
                     ensure!(
                         reference
                             .class
@@ -944,6 +959,7 @@ impl Game {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }
         self.update_frame();
+        self.advance_staffroll(dt_ms)?;
         if let Some((_, player)) = &mut self.video {
             if player.advance(dt_ms)? {
                 self.frame.rgba.copy_from_slice(&player.image().rgba);
@@ -963,7 +979,7 @@ impl Game {
             self.parse_wait = false;
             self.vm.acknowledge_host()?;
         }
-        if self.video_wait || self.selection.is_some() {
+        if self.video_wait || self.staffroll_wait || self.selection.is_some() {
             return Ok(RunState::Waiting);
         }
         if self.dialogue.is_some() {
@@ -1013,6 +1029,7 @@ impl Game {
                         || self.audio_wait.is_some()
                         || self.posture_wait.is_some()
                         || self.video_wait
+                        || self.staffroll_wait
                         || self.selection.is_some()
                         || self.dialogue.is_some()
                     {

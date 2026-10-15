@@ -53,6 +53,10 @@ impl Game {
             "concurrent movie playback is not implemented"
         );
         ensure!(
+            self.staffroll.as_ref().is_none_or(|(_, p)| p.finished()),
+            "concurrent movie/staff-roll playback is not implemented"
+        );
+        ensure!(
             self.transition.is_none(),
             "concurrent movie/transition is not implemented"
         );

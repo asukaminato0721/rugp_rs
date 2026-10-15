@@ -345,9 +345,14 @@ metadata-only `message_stats` example accepts `CVmMsg` to audit all output
 modifier counts and one representative call site per family without printing
 retail text.
 `CLayoutTextImg` ending resources are decoded with their font/style fields,
-text, extent, and typed `CSbm` reference arrays. All four retail text-layout
-resources pass the parser regression; this alone does not implement staff-roll
-playback or its synchronization.
+text, extent, and typed `CSbm` reference arrays. `OM_PlayTextStaffrollVideo`
+scrolls the original labels in a separate window overlay with portable,
+centered CSV layout and outline fonts. The requested duration runs independently;
+mode-16 synchronization waits until its exact endpoint. Completion removes only
+the credits overlay, preserving the background/camera. All four original text
+sources and a real playback packet pass framebuffer/clock regressions. Native
+font faces/style/alignment, embedded bitmaps, looping, nonzero offsets, and
+non-default sequence settings remain unsupported or approximate.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

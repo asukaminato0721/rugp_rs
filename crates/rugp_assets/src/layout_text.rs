@@ -80,3 +80,37 @@ impl LayoutText {
         })
     }
 }
+
+/// Serialized defaults for CTextStaffrollSeq#2 (rvmm 10051e10).
+#[derive(Debug, Clone, Serialize)]
+pub struct TextRollDefaults {
+    pub sources: [ObjectRef; 2],
+    pub rectangle: [i16; 4],
+    pub parameters: [i32; 7],
+}
+impl TextRollDefaults {
+    pub fn parse(data: &[u8], schema: u16, shift: u32) -> Result<Self> {
+        ensure!(schema == 2, "unsupported CTextStaffrollSeq schema {schema}");
+        ensure!(data.len() <= 1024 * 1024, "oversized text sequence");
+        let mut r = ObjectReader::new(data);
+        r.input.skip(3)?;
+        r.scrambled = true;
+        let sources = [r.reference(shift)?, r.reference(shift)?];
+        let rectangle = [
+            r.input.u16()? as i16,
+            r.input.u16()? as i16,
+            r.input.u16()? as i16,
+            r.input.u16()? as i16,
+        ];
+        let mut parameters = [0; 7];
+        for p in &mut parameters {
+            *p = r.input.u32()? as i32;
+        }
+        ensure!(r.input.remaining() == 0, "trailing text-sequence data");
+        Ok(Self {
+            sources,
+            rectangle,
+            parameters,
+        })
+    }
+}

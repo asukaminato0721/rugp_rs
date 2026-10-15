@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
-use rugp_assets::{RioArchive, layout_text::LayoutText};
+use rugp_assets::{
+    RioArchive,
+    layout_text::{LayoutText, TextRollDefaults},
+};
 
 fn fixture(count: u16) -> Vec<u8> {
     let mut b = vec![0; 3];
@@ -81,6 +84,11 @@ fn layout_text_keeps_typed_styles_fonts_extent_and_reference_array() -> Result<(
 fn retail_ending_layout_text_and_null_bitmap_slots() -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
     let archive = RioArchive::open(root)?;
+    let defaults =
+        TextRollDefaults::parse(&archive.read_at(6_470_495, 44)?, 2, archive.address_shift)?;
+    assert!(defaults.sources.iter().all(|r| r.class.is_none()));
+    assert_eq!(defaults.rectangle, [0; 4]);
+    assert_eq!(defaults.parameters, [0; 7]);
     for (offset, size, width, slots, style) in [
         (0x6ad8fe2a, 5848, 472, 10, 0x80ffffff),
         (0x74a408d7, 5267, 1024, 10, 0x80ffffff),
@@ -96,5 +104,28 @@ fn retail_ending_layout_text_and_null_bitmap_slots() -> Result<()> {
         assert_eq!(layout.images.len(), slots);
         assert!(layout.images.iter().all(|r| r.class.is_none()));
     }
+    Ok(())
+}
+
+#[test]
+fn text_sequence_defaults_use_reference_context_and_reject_truncation() -> Result<()> {
+    let mut b = vec![0; 3];
+    b.push(2);
+    b.extend([0; 4]);
+    for n in [-2i16, 4, 472, 600] {
+        b.extend(n.to_le_bytes());
+    }
+    for n in [1i32, 2, 3, 4, 5, 6, 7] {
+        b.extend(n.to_le_bytes());
+    }
+    let defaults = TextRollDefaults::parse(&b, 2, 0)?;
+    assert_eq!(defaults.rectangle, [-2, 4, 472, 600]);
+    assert_eq!(defaults.parameters, [1, 2, 3, 4, 5, 6, 7]);
+    for n in 0..b.len() {
+        assert!(TextRollDefaults::parse(&b[..n], 2, 0).is_err());
+    }
+    assert!(TextRollDefaults::parse(&b, 1, 0).is_err());
+    b.push(0);
+    assert!(TextRollDefaults::parse(&b, 2, 0).is_err());
     Ok(())
 }

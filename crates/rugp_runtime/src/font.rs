@@ -99,6 +99,18 @@ impl TextFont {
     pub fn supports(&self, ch: char) -> bool {
         self.font.glyph_id(ch).0 != 0
     }
+    /// Share the loaded outline face, but keep an independent size/glyph cache.
+    pub fn resized(&self, size: u16) -> Result<Self> {
+        ensure!((4..=128).contains(&size), "invalid font pixel size");
+        Ok(Self {
+            font: self.font.clone(),
+            scale: PxScale::from(f32::from(size)),
+            source: self.source.clone(),
+            size,
+            cache: BTreeMap::new(),
+            cache_bytes: 0,
+        })
+    }
     pub fn glyph(&mut self, ch: char) -> Result<Arc<Glyph>> {
         if let Some(glyph) = self.cache.get(&ch) {
             return Ok(Arc::clone(glyph));
