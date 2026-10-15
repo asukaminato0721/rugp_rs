@@ -1,0 +1,9 @@
+[package]
+name = "rugp_scene_vm"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+rugp_assets = { path = "../rugp_assets" }
+anyhow.workspace = true
+serde.workspace = true
