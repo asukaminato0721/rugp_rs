@@ -505,15 +505,16 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         .get(&212259)
         .context("chapter background missing")?
         .camera;
-    assert_eq!(camera.focal_length, 2040, "{boundary:#}");
-    assert_eq!(camera.angles_q4, [-5840, -1200, 0], "{boundary:#}");
+    assert_eq!(camera.focal_length, 1728, "{boundary:#}");
+    assert_eq!(camera.angles_q4, [-5840, 734, 0], "{boundary:#}");
     assert_eq!(
-        camera.position, [0; 3],
+        camera.position,
+        [575, -1400, -8],
         "rejected target must not mutate state"
     );
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((79, 0x60)),
+        Some((79, 0x3a8)),
         "{boundary:#}"
     );
     let layers = game.objects[&212259].world_layers;
@@ -526,7 +527,7 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("camera boundary clamping is not implemented yet"),
+        format!("{boundary:#}").contains("camera style/transition is not implemented yet"),
         "{boundary:#}"
     );
     assert!(saw_ramp, "chapter must queue the real ramped playback");
@@ -538,12 +539,12 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
             message.fields.get("スタイル"),
             Some(rugp_scene_vm::vm::Value::Integer(0))
         ));
-        assert_eq!(message.fields["フェード方式"].integer()?, 0);
-        assert_eq!(message.fields["３ＤＸ"].integer()?, 575);
-        assert_eq!(message.fields["３ＤＹ"].integer()?, -1400);
-        assert_eq!(message.fields["３ＤＺ"].integer()?, -8);
+        assert_eq!(message.fields["フェード方式"].integer()?, 4);
+        assert_eq!(message.fields["３ＤＸ"].integer()?, 720);
+        assert_eq!(message.fields["３ＤＹ"].integer()?, -720);
+        assert_eq!(message.fields["３ＤＺ"].integer()?, -40);
     } else {
-        panic!("camera target requiring unimplemented clamping was acknowledged");
+        panic!("unimplemented mode-4 camera transition was acknowledged");
     }
     Ok(())
 }

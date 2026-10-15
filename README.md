@@ -223,8 +223,9 @@ unsupported dispatch, and unchanged fast-pass pixels.
 Chapter execution now passes the camera, layer-control messages and the
 extended background at scene 88, PC `0x7c`, and synchronized camera setup
 at scene 79, PC `0x428`. Correct synchronous ParseScreen waits now allow
-later camera setup; the next boundary is a translated camera target requiring
-native angular boundary clamping on re-entering scene 79 at PC `0x60`.
+later camera setup. Native default angular boundary correction now passes
+the translated target at scene 79, PC `0x60`; the next boundary is an
+mode-4 camera animation at scene 79, PC `0x3a8`.
 Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
@@ -238,17 +239,27 @@ replaces the start without changing an already prepared delta. Native easing
 uses repeated quantized Q16 squaring, with signed-floor component interpolation,
 not floating-point powers. Tests cover all sixteen easing styles, intermediate
 camera/pixel values, VM waits, zero zoom/duration, and capture cleanup.
-Independent mode 4, alternate mode 12, additive/relative styles, active-camera
-replacement and camera boundary clamping remain explicitly unsupported.
+Independent mode 4, alternate mode 12, additive/relative styles and active-camera
+replacement remain explicitly unsupported.
 Absolute XYZ camera positions now apply in instant and synchronized mode 8,
 including signed-floor interpolation, captured starts and combined screen-zoom
 commands. World planes subtract the camera position before projecting at their
 relative depth. Native slot mode 1 instead ignores XYZ translation while still
 applying angular pan and zoom. The chapter's far layer has that mode; its three
 foreground layers do not. An extended retail pixel oracle covers the unchanged
-far plane and independent foreground parallax. Targets requiring native angular
-boundary correction still fail before changing state, and nonpositive relative
-plane depths remain explicitly unsupported.
+far plane and independent foreground parallax. Nonpositive relative plane depths
+remain explicitly unsupported.
+Default angular boundary correction follows the native two-stage Q13 algorithm,
+including first-image pixel width, quantized sine terms, asymmetric bounds,
+the hardcoded reference height and the previous first-slot projected Y center.
+The projection cache is separate from staged camera targets, survives image
+staging, and follows active render snapshots. Correction runs at preparation,
+prepared-target lookup and synchronized sampling, not as a generic rectangle
+coverage clamp. `_ftol` low-word truncation/invalid results and signed MulDiv
+rounding have unit tests; metadata-only numerical vectors and an inverse pixel
+oracle cover corrected targets. The implementation uses f64 arithmetic, not
+bit-identical x87 extended intermediates; alternate boundary flags and full
+matrix modes remain unsupported.
 The sampled draw-ratio curve is a `CMimeFlat16LimitOne#1`, not a CFade:
 seventeen signed samples use a Q16 input, with arithmetic-shift interpolation
 and input clamping. Its strict asset parser, inline-object framing and native

@@ -143,9 +143,9 @@ impl Game {
         parse.elapsed = parse.elapsed.saturating_add(dt_ms).min(parse.duration);
         let progress = progress_q16(parse.elapsed, parse.duration);
         for (&id, tween) in &parse.cameras {
-            let camera = tween.sample(progress)?;
+            let mut camera = tween.sample(progress)?;
             if let Some(object) = parse.scene.get_mut(&id) {
-                object.validate_camera_boundary(&camera)?;
+                camera = object.prepare_camera(camera)?;
                 object.camera = camera;
             }
             if let Some(object) = self.objects.get_mut(&id) {
@@ -163,6 +163,11 @@ impl Game {
             }
         }
         let next = Self::render_objects(&parse.scene, size)?;
+        for (&id, snapshot) in &parse.scene {
+            if let Some(object) = self.objects.get(&id) {
+                object.camera_center_y.set(snapshot.camera_center_y.get());
+            }
+        }
         let finished = parse.elapsed == parse.duration;
         self.frame = next;
         // Native 10047170 releases synchronized curve state, not opacity.
@@ -240,6 +245,33 @@ mod tests {
                 draw_flags: 0,
             }],
         })
+    }
+    #[test]
+    fn projection_cache_updates_on_render_and_snapshot_copies_are_independent() -> Result<()> {
+        let mut object = ObjectState {
+            rect: (0, 0, 4, 4),
+            camera: Camera {
+                focal_length: 1440,
+                angles_q4: [0, -32, 0],
+                ..Camera::default()
+            },
+            ..ObjectState::default()
+        };
+        object.layers.insert(512, image([255; 4]));
+        let snapshot = object.clone();
+        let mut frame = Framebuffer::new(4, 4)?;
+        object.render(&mut frame)?;
+        assert_eq!(object.camera_center_y.get(), 7);
+        assert_eq!(snapshot.camera_center_y.get(), 0);
+        snapshot.render(&mut frame)?;
+        assert_eq!(snapshot.camera_center_y.get(), 7);
+        // Preparing another camera does not overwrite cached geometry.
+        object.camera.angles_q4 = [0; 3];
+        assert_eq!(object.camera_center_y.get(), 7);
+        object.render(&mut frame)?;
+        assert_eq!(object.camera_center_y.get(), 2);
+        assert_eq!(snapshot.camera_center_y.get(), 7);
+        Ok(())
     }
     #[test]
     fn object_opacity_is_applied_to_each_world_plane_in_draw_order() -> Result<()> {
@@ -759,6 +791,7 @@ mod tests {
             },
             255,
         );
+        assert_eq!(game.objects[&212259].camera_center_y.get(), 7);
         assert!(game.parse_transition.is_none());
         assert!(game.objects[&212259].pending_camera.is_none());
         assert!(game.objects[&212259].camera_start.is_none());
@@ -907,6 +940,30 @@ mod tests {
             game.objects[&212259].camera_start.unwrap().position,
             [3, -1, 40]
         );
+        // A target whose uncorrected bounds miss the viewport is corrected,
+        // not rejected. Native integer angular bounds are not equivalent to
+        // forcing the projected rectangle to cover every fractional edge.
+        game.message(call(false, BTreeMap::new()))?;
+        game.message(call(true, BTreeMap::new()))?;
+        game.message(call(
+            false,
+            BTreeMap::from([
+                ("３ＤＸ".into(), Value::Integer(7)),
+                ("３ＤＹ".into(), Value::Integer(7)),
+            ]),
+        ))?;
+        assert_eq!(game.objects[&212259].camera.angles_q4, [-11, -11, 0]);
+        game.message(trigger(0))?;
+        verify(
+            &game,
+            Camera {
+                focal_length: 720,
+                position: [7, 7, 0],
+                angles_q4: [-11, -11, 0],
+            },
+            255,
+        );
+        assert_eq!(game.objects[&212259].camera_center_y.get(), 2);
         assert!(game.wait_ms.is_some());
         Ok(())
     }

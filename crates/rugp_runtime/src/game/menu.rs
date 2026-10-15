@@ -83,12 +83,13 @@ impl Game {
         Ok(())
     }
     pub(super) fn present_scene(&mut self) -> Result<()> {
+        let next = self.scene_frame()?;
         if let Some(parse) = &mut self.parse_transition {
             // An explicit presentation (e.g. live dialogue) refreshes the
-            // captured scene; ordinary staged image commands do not.
+            // captured scene, including projection caches updated by rendering;
+            // ordinary staged image commands do not.
             parse.scene = self.objects.clone();
         }
-        let next = self.scene_frame()?;
         if let Some(transition) = &mut self.transition {
             transition.to = next.rgba;
             self.update_frame();

@@ -9,7 +9,7 @@ use rugp_scene_vm::{
     Instruction,
     vm::{Message, Program, Step, Value, Vm},
 };
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{cell::Cell, collections::BTreeMap, path::Path, sync::Arc};
 
 mod blit;
 mod camera;
@@ -58,6 +58,8 @@ pub struct ObjectState {
     /// Native camera command style 0x800 records a start without applying it.
     camera_start: Option<Camera>,
     pending_camera: Option<crate::world::CameraTween>,
+    /// Native first slot's cached projected center (+56), updated on render.
+    camera_center_y: Cell<i16>,
     pub world_layers: crate::world::WorldLayerFlags,
     pub opacity: u8,
     pending_draw_ratio: Option<rugp_assets::mime::MimeCurve>,
@@ -78,6 +80,7 @@ impl Default for ObjectState {
             camera: Camera::default(),
             camera_start: None,
             pending_camera: None,
+            camera_center_y: Cell::new(0),
             world_layers: crate::world::WorldLayerFlags::default(),
             opacity: 255,
             pending_draw_ratio: None,
@@ -95,6 +98,13 @@ impl ObjectState {
         for layer in self.layers.values() {
             match layer {
                 Layer::World(image) => {
+                    if let Some(first) = image.planes.first() {
+                        self.camera_center_y.set(
+                            first
+                                .plane
+                                .projected_camera_center_y(&self.camera, self.rect)?,
+                        );
+                    }
                     for layer in &image.planes {
                         if layer.draw_flags & 2 != 0 {
                             continue;

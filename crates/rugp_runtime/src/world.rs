@@ -21,6 +21,7 @@
 //! trigonometric matrix. Full-matrix modes require separate implementation.
 use crate::render::Texture;
 use anyhow::{Result, ensure};
+mod bounds;
 mod camera;
 pub use camera::CameraTween;
 
@@ -82,6 +83,31 @@ pub struct Plane {
     camera_relative: bool,
 }
 impl Plane {
+    pub(crate) fn projected_camera_center_y(
+        &self,
+        camera: &Camera,
+        viewport: (i32, i32, u32, u32),
+    ) -> Result<i16> {
+        let depth = if self.camera_relative {
+            self.depth
+        } else {
+            self.depth.wrapping_sub(camera.position[2])
+        };
+        ensure!(
+            depth > 0,
+            "camera at/behind a world plane is not implemented yet"
+        );
+        let pan = camera.angles_q4[1]
+            .wrapping_add(i32::from(self.pitch_bias))
+            .wrapping_mul(depth)
+            .wrapping_shl(3);
+        let projected = bounds::mul_div(pan.wrapping_neg(), i32::from(camera.focal_length), depth);
+        let center = viewport
+            .1
+            .wrapping_add((viewport.3 / 2) as i32)
+            .wrapping_shl(16);
+        Ok((projected.wrapping_add(center) >> 16) as i16)
+    }
     pub fn bitmap(texture: &Texture) -> Result<Self> {
         let scale = f64::from(texture.display_scale);
         ensure!(
@@ -268,14 +294,10 @@ impl Plane {
             let coordinate = coordinate.wrapping_sub(position[axis]);
             let pan = angles[axis].wrapping_mul(depth).wrapping_shl(3);
             let value = coordinate.wrapping_shl(16).wrapping_sub(pan);
-            let product = i64::from(value) * i64::from(camera.focal_length);
-            let magnitude = (product.abs() + i64::from(depth) / 2) / i64::from(depth);
-            let result = magnitude * product.signum();
             // KERNEL32.MulDiv returns -1 when its rounded result overflows.
             // 1003c44a..1003c477 adds the signed screen origin in Q16,
             // also wrapping before storing the cached projected rectangle.
-            let screen = i32::try_from(result)
-                .unwrap_or(-1)
+            let screen = bounds::mul_div(value, i32::from(camera.focal_length), depth)
                 .wrapping_add(center[axis].wrapping_shl(16));
             f64::from(screen) / 65536.0
         };

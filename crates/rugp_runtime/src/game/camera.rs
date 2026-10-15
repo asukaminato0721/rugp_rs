@@ -3,32 +3,26 @@ use super::*;
 use crate::world::CameraTween;
 
 impl ObjectState {
-    pub(super) fn camera_target(&self) -> Camera {
+    pub(super) fn camera_target(&self) -> Result<Camera> {
         self.pending_camera
             .as_ref()
-            .map_or(self.camera, CameraTween::target)
+            .map_or(Ok(self.camera), |t| self.prepare_camera(t.target()))
     }
-    pub(super) fn validate_camera_boundary(&self, camera: &Camera) -> Result<()> {
-        if camera.focal_length == 0
-            || (camera.angles_q4[..2] == [0; 2] && camera.position == [0; 3])
-        {
-            return Ok(());
-        }
-        for plane in self.layers.values().filter_map(|layer| match layer {
-            Layer::World(image) => Some(&image.boundary),
+    pub(super) fn prepare_camera(&self, mut camera: Camera) -> Result<Camera> {
+        for image in self.layers.values().filter_map(|layer| match layer {
+            Layer::World(image) => Some(image),
             Layer::Screen(_) => None,
         }) {
-            let q = plane.quad(camera, self.rect)?;
-            let (x, y, w, h) = self.rect;
-            ensure!(
-                q[0][0] <= f64::from(x)
-                    && q[0][1] <= f64::from(y)
-                    && q[2][0] >= f64::from(x) + f64::from(w)
-                    && q[2][1] >= f64::from(y) + f64::from(h),
-                "camera boundary clamping is not implemented yet"
-            );
+            if let Some(first) = image.planes.first() {
+                camera = image.boundary.clamp_camera(
+                    camera,
+                    self.rect,
+                    first.texture.width,
+                    self.camera_center_y.get(),
+                )?;
+            }
         }
-        Ok(())
+        Ok(camera)
     }
 }
 impl Game {
@@ -53,7 +47,7 @@ impl Game {
         );
         number(&fields, "総処理時間基", 0)?; // synchronized mode uses the ParseScreen clock
         let object = self.objects.get(&id);
-        let mut target = object.map_or(Camera::default(), ObjectState::camera_target);
+        let mut target = object.map_or(Ok(Camera::default()), ObjectState::camera_target)?;
         if screen {
             ensure!(
                 number(&fields, "スクリーン座標Ｘ", 0)? == 0
@@ -85,7 +79,7 @@ impl Game {
             }
         }
         if let Some(object) = object {
-            object.validate_camera_boundary(&target)?;
+            target = object.prepare_camera(target)?;
         }
         let pending = if style == 0x800 {
             object
@@ -98,9 +92,6 @@ impl Game {
         } else {
             None
         };
-        if let (Some(object), Some(tween)) = (object, pending) {
-            object.validate_camera_boundary(&tween.target())?;
-        }
         let object = self.objects.entry(id).or_default();
         if style == 0x800 {
             object.camera_start = Some(target);
