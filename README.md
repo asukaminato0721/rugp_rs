@@ -224,24 +224,30 @@ Chapter execution now passes the camera, layer-control messages and the
 extended background at scene 88, PC `0x7c`, and synchronized camera setup
 at scene 79, PC `0x428`. Correct synchronous ParseScreen waits now allow
 later camera setup. Native default angular boundary correction now passes
-the translated target at scene 79, PC `0x60`; the next boundary is an
-mode-4 camera animation at scene 79, PC `0x3a8`.
+the translated target at scene 79, PC `0x60`, and mode-4 camera setup
+at scene 79, PC `0x3a8`. The chapter now reaches the next unsupported
+`OM_AddPostureMomentum` request at scene 64, PC `0x0`.
 Camera style `0x800` is supported for both screen and angular
 messages: the prepared start state is stored separately without changing
 the visible camera or starting a duration clock. A zero zoom can be stored
 without attempting to project it. Host tests check stored zoom/Q4 angles,
 unchanged pixels/current camera, and rejection of unsupported fade modes
-without corrupting the stored state. Fade mode 8 now interpolates staged
+without corrupting the stored state. Fade modes 4 and 8 interpolate staged
 screen zoom and angular targets on ParseScreen's shared clock, including
 camera-only transitions and synchronized opacity curves. Separate screen
 and angular commands combine through the prepared target; a later capture
 replaces the start without changing an already prepared delta. Native easing
 uses repeated quantized Q16 squaring, with signed-floor component interpolation,
 not floating-point powers. Tests cover all sixteen easing styles, intermediate
-camera/pixel values, VM waits, zero zoom/duration, and capture cleanup.
-Independent mode 4, alternate mode 12, additive/relative styles and active-camera
+camera/pixel values, VM waits, zero zoom/duration, and capture cleanup in both
+modes, including mixed-mode screen/angular commands. Native mode 4 clears
+the window backing-cache flag that mode 8 sets, but both receive the same
+ParseScreen progress and easing; neither starts a timer from the camera
+message's duration field. The full-scene renderer rebuilds pixels instead of
+using those incremental window backing caches.
+Alternate mode 12, additive/relative styles and active-camera
 replacement remain explicitly unsupported.
-Absolute XYZ camera positions now apply in instant and synchronized mode 8,
+Absolute XYZ camera positions now apply in instant mode and animated modes 4/8,
 including signed-floor interpolation, captured starts and combined screen-zoom
 commands. World planes subtract the camera position before projecting at their
 relative depth. Native slot mode 1 instead ignores XYZ translation while still

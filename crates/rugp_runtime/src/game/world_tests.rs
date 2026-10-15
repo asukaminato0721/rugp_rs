@@ -84,7 +84,7 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
         "OM_SetWorldCameraAsScreen",
         BTreeMap::from([
             ("スタイル".into(), Value::Integer(0x800)),
-            ("フェード方式".into(), Value::Integer(4)),
+            ("フェード方式".into(), Value::Integer(12)),
             ("ズーム率".into(), Value::Integer(2000)),
         ]),
     ));

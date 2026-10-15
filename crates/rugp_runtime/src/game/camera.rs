@@ -1,4 +1,12 @@
-//! Camera commands prepare absolute targets; mode 8 uses ParseScreen time.
+//! Camera commands prepare absolute targets; modes 4/8 use ParseScreen time.
+//!
+//! Vm60 1004046a sets flags 0x20 for mode 4, whereas 10040483 sets
+//! 0x21 for mode 8. Both reach 10044f90 via vtable +1cc from
+//! 10044b2a..10044b3d with the same ParseScreen progress, then share
+//! 10046d3a interpolation. The bit-1 difference selects native window backing
+//! caches (1004348e), not a separate camera timer. Our full-scene redraw does
+//! not need those incremental window caches; staged logical snapshots remain
+//! necessary in both modes.
 use super::*;
 use crate::world::CameraTween;
 
@@ -42,7 +50,7 @@ impl Game {
         let style = number(&fields, "スタイル", 0)?;
         let fade = number(&fields, "フェード方式", 0)?;
         ensure!(
-            matches!(style, 0..=15 | 0x800) && matches!(fade, 0 | 8),
+            matches!(style, 0..=15 | 0x800) && matches!(fade, 0 | 4 | 8),
             "camera style/transition is not implemented yet"
         );
         number(&fields, "総処理時間基", 0)?; // synchronized mode uses the ParseScreen clock
@@ -86,7 +94,7 @@ impl Game {
                 .and_then(|o| o.pending_camera)
                 .map(|t| t.rebase_start(target))
                 .transpose()?
-        } else if fade == 8 {
+        } else if matches!(fade, 4 | 8) {
             let start = object.map_or(Camera::default(), |o| o.camera_start.unwrap_or(o.camera));
             Some(CameraTween::new(start, target, style as u8)?)
         } else {

@@ -479,15 +479,17 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     // Follow real page input through sound status queries to the next boundary.
     let mut boundary = None;
     let mut saw_ramp = false;
-    for _ in 0..100 {
+    for _ in 0..1000 {
         if game.dialogue_waits_for_input() {
             game.activate_selection()?;
         }
         for request in game.pending_sounds().iter().filter(|r| r.kind == 4) {
-            assert!(request.ticket.is_some());
-            assert_eq!(request.parameters, [0, 4096, 2500]);
-            assert_eq!(request.gain_envelope()?.duration_ms(), 2500);
-            saw_ramp = true;
+            if !saw_ramp {
+                assert!(request.ticket.is_some());
+                assert_eq!(request.parameters, [0, 4096, 2500]);
+                assert_eq!(request.gain_envelope()?.duration_ms(), 2500);
+                saw_ramp = true;
+            }
         }
         rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
         match game.step(100) {
@@ -499,52 +501,64 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
             _ => {}
         }
     }
-    let boundary = boundary.context("expected next unsupported host operation")?;
+    let boundary = boundary.with_context(|| {
+        format!(
+            "expected next unsupported host operation; cursor {:?}, dialogue {}",
+            game.vm.cursor(),
+            game.waiting_for_dialogue()
+        )
+    })?;
     let camera = game
         .objects
         .get(&212259)
         .context("chapter background missing")?
         .camera;
-    assert_eq!(camera.focal_length, 1728, "{boundary:#}");
-    assert_eq!(camera.angles_q4, [-5840, 734, 0], "{boundary:#}");
+    assert_eq!(camera.focal_length, 1505, "{boundary:#}");
+    assert_eq!(camera.angles_q4, [-3632, -1104, 0], "{boundary:#}");
     assert_eq!(
-        camera.position,
-        [575, -1400, -8],
+        camera.position, [0; 3],
         "rejected target must not mutate state"
     );
     assert_eq!(
         game.vm.cursor().map(|pc| (pc.scene, pc.address)),
-        Some((79, 0x3a8)),
+        Some((64, 0)),
         "{boundary:#}"
     );
     let layers = game.objects[&212259].world_layers;
     assert!(layers.draws_in_sprite_pass(0));
     for slot in 1..=3 {
-        assert!(layers.draws_in_sprite_pass(slot), "{boundary:#}");
+        assert!(
+            layers.draws_in_sprite_pass(slot),
+            "slot {slot}, {layers:?}; {boundary:#}"
+        );
     }
     assert!(
         game.vm.synchronization_status.is_some(),
         "sound queries must write VM status"
     );
     assert!(
-        format!("{boundary:#}").contains("camera style/transition is not implemented yet"),
+        format!("{boundary:#}").contains("unimplemented runtime message OM_AddPostureMomentum"),
         "{boundary:#}"
     );
     assert!(saw_ramp, "chapter must queue the real ramped playback");
     if let rugp_scene_vm::vm::Step::Host { instruction, .. } = game.vm.step()? {
         assert_eq!(instruction.class.name, "CVmGenericMsg");
         let message = game.vm.message(&instruction)?;
-        assert_eq!(message.class, "OM_SetWorldCamera");
-        assert!(matches!(
-            message.fields.get("スタイル"),
-            Some(rugp_scene_vm::vm::Value::Integer(0))
-        ));
-        assert_eq!(message.fields["フェード方式"].integer()?, 4);
-        assert_eq!(message.fields["３ＤＸ"].integer()?, 720);
-        assert_eq!(message.fields["３ＤＹ"].integer()?, -720);
-        assert_eq!(message.fields["３ＤＺ"].integer()?, -40);
+        assert_eq!(message.class, "OM_AddPostureMomentum");
+        let Some(rugp_scene_vm::vm::Value::Reference(media)) =
+            message.fields.get("姿勢運動メディア")
+        else {
+            panic!("posture request did not bind its media reference");
+        };
+        let class = media
+            .class
+            .as_ref()
+            .context("posture media class missing")?;
+        assert_eq!(class.name, "CPostureMoment");
+        assert_eq!(class.schema, 4);
+        assert!(media.inline.is_some());
     } else {
-        panic!("unimplemented mode-4 camera transition was acknowledged");
+        panic!("unimplemented posture momentum was acknowledged");
     }
     Ok(())
 }

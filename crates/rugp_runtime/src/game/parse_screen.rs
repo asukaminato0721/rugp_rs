@@ -645,6 +645,12 @@ mod tests {
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_camera_parse_clock_zoom_pan_and_opacity_match_inverse_pixel_oracle() -> Result<()> {
+        for mode in [4, 8] {
+            camera_parse_clock_pixels(mode)?;
+        }
+        Ok(())
+    }
+    fn camera_parse_clock_pixels(mode: i32) -> Result<()> {
         let mut game = waiting_game()?;
         let texture = Arc::new(Texture {
             width: 16,
@@ -729,7 +735,7 @@ mod tests {
             true,
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(1440)),
-                ("フェード方式".into(), Value::Integer(8)),
+                ("フェード方式".into(), Value::Integer(mode)),
                 ("スタイル".into(), Value::Integer(1)),
                 ("総処理時間基".into(), Value::Integer(10000)),
             ]),
@@ -740,7 +746,7 @@ mod tests {
                 ("ロール角".into(), Value::Integer(1)),
                 ("ピッチ角".into(), Value::Integer(-2)),
                 ("バンク角".into(), Value::Integer(3)),
-                ("フェード方式".into(), Value::Integer(8)),
+                ("フェード方式".into(), Value::Integer(12 - mode)), // combine modes 4/8
                 ("スタイル".into(), Value::Integer(1)),
             ]),
         ))?;
@@ -808,7 +814,7 @@ mod tests {
             true,
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(720)),
-                ("フェード方式".into(), Value::Integer(8)),
+                ("フェード方式".into(), Value::Integer(mode)),
                 ("スタイル".into(), Value::Integer(1)),
             ]),
         ))?;
@@ -842,7 +848,7 @@ mod tests {
             true,
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(1000)),
-                ("フェード方式".into(), Value::Integer(8)),
+                ("フェード方式".into(), Value::Integer(mode)),
                 ("スタイル".into(), Value::Integer(1)),
             ]),
         ))?;
@@ -865,7 +871,7 @@ mod tests {
             false,
             BTreeMap::from([
                 ("ロール角".into(), Value::Integer(1)),
-                ("フェード方式".into(), Value::Integer(8)),
+                ("フェード方式".into(), Value::Integer(mode)),
                 ("スタイル".into(), Value::Integer(1)),
             ]),
         ))?;
@@ -895,7 +901,7 @@ mod tests {
                 ("３ＤＸ".into(), Value::Integer(3)),
                 ("３ＤＹ".into(), Value::Integer(-1)),
                 ("３ＤＺ".into(), Value::Integer(40)),
-                ("フェード方式".into(), Value::Integer(8)),
+                ("フェード方式".into(), Value::Integer(mode)),
                 ("スタイル".into(), Value::Integer(1)),
             ]),
         ))?;
@@ -903,7 +909,7 @@ mod tests {
             true,
             BTreeMap::from([
                 ("ズーム率".into(), Value::Integer(1440)),
-                ("フェード方式".into(), Value::Integer(8)),
+                ("フェード方式".into(), Value::Integer(mode)),
                 ("スタイル".into(), Value::Integer(1)),
             ]),
         ))?;

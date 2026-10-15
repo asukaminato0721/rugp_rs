@@ -136,7 +136,7 @@ fn native_background_geometry_and_instant_camera_pan_reach_real_pixels() -> Resu
     );
     add(
         "CVmGenericMsg",
-        message("OM_SetWorldCamera", vec![n("フェード方式", 4)]),
+        message("OM_SetWorldCamera", vec![n("フェード方式", 12)]),
     ); // not silently accepted
     let mut program = Program::default();
     program.insert(
