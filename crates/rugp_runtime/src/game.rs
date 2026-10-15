@@ -17,6 +17,8 @@ mod blit;
 mod camera;
 mod character;
 mod dialogue;
+#[cfg(test)]
+mod ending_tests;
 mod menu;
 mod parse_screen;
 mod posture;

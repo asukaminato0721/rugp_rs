@@ -385,6 +385,10 @@ while preserving its image and restoring opacity. A real helper packet tests
 variable writeback, framebuffer blending, query/cancellation and exact cleanup. Concurrent
 fades on the same window, other display/mode combinations and timed blocking waits
 remain unsupported.
+An opt-in integration regression initializes the real title and then enters
+ending-script branch 10, exercising its original roll, image helpers, waits,
+queries and return to the original title selection with no skipped host operations. This isolated ending test
+does not replace a complete story-route/title-return run or visual verification.
 
 Billboard queue parameters, character posture/scaling parameters and character
 material property 100 and shading packets are retained without exact

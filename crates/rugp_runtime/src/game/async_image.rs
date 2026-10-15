@@ -14,7 +14,7 @@ impl ImageFade {
     fn identity(&self) -> InlineIdentity {
         self.handle.inline.as_ref().unwrap().identity()
     }
-    fn finished(&self) -> bool {
+    pub(super) fn finished(&self) -> bool {
         self.cancelled || self.elapsed >= self.total
     }
     fn alpha(&self) -> u8 {
