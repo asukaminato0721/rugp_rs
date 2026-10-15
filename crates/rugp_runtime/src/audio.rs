@@ -23,6 +23,9 @@ pub struct AudioResources {
     bytes: usize,
 }
 impl AudioResources {
+    pub(crate) fn uses_archive(&self, archive: &Arc<RioArchive>) -> bool {
+        Arc::ptr_eq(&self.archive, archive)
+    }
     pub fn new(archive: Arc<RioArchive>) -> Result<Self> {
         let root = archive.volumes[0]
             .path

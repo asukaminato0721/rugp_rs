@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+flate2 = "1.1"
 sha1 = "0.10"
 ab_glyph = "0.2.32"
 fontdb = { version = "0.24", default-features = false, features = ["std", "fs", "fontconfig"] }
@@ -15,6 +17,3 @@ kira = { version = "0.9", default-features = false, features = ["cpal"], optiona
 
 [features]
 device-audio = ["dep:kira"]
-
-[dev-dependencies]
-serde_json.workspace = true

@@ -318,6 +318,10 @@ impl RestoredActors {
     /// finished events, redraw a movie over the scene, or acknowledge a wait.
     pub fn apply(self, game: &mut Game) -> Result<()> {
         self.validate_scene(|id| game.objects.contains_key(&id), game.size())?;
+        self.commit(game);
+        Ok(())
+    }
+    pub(super) fn commit(self, game: &mut Game) {
         game.wait_ms = self.wait_ms;
         game.timers = self.timers;
         game.timer_wait = self.timer_wait;
@@ -327,7 +331,6 @@ impl RestoredActors {
         game.video_wait = self.video_wait;
         game.staffroll = self.staffroll;
         game.staffroll_wait = self.staffroll_wait;
-        Ok(())
     }
 }
 

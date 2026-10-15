@@ -253,6 +253,26 @@ impl Game {
         Ok(snapshot)
     }
 }
+impl SceneSnapshot {
+    pub(super) fn wait_count(&self) -> usize {
+        usize::from(self.parse_wait) + usize::from(self.posture_wait.is_some())
+    }
+    pub(super) fn validate_vm(&self, vm: &Vm) -> Result<()> {
+        if self.wait_count() > 0 {
+            let expected = if self.parse_wait {
+                "CVmGenericMsg"
+            } else {
+                "CVmSync"
+            };
+            ensure!(
+                vm.pending_instruction()
+                    .is_some_and(|i| i.class.name == expected),
+                "scene snapshot has a different pending VM instruction"
+            );
+        }
+        Ok(())
+    }
+}
 fn capture_properties(
     properties: &BTreeMap<String, Value>,
     references: &mut ReferenceSnapshotWriter,
@@ -726,6 +746,11 @@ impl RestoredScene {
                 && (self.frame.width, self.frame.height) == game.size(),
             "scene restore target changed during preparation"
         );
+        self.commit(game);
+        Ok(())
+    }
+    /// All compatibility checks must have succeeded before the full-game swap.
+    pub(super) fn commit(self, game: &mut Game) {
         game.frame = self.frame;
         game.objects = self.objects;
         game.buffers = self.buffers;
@@ -733,7 +758,6 @@ impl RestoredScene {
         game.parse_transition = self.parse_transition;
         game.parse_wait = self.parse_wait;
         game.posture_wait = self.posture_wait;
-        Ok(())
     }
 }
 

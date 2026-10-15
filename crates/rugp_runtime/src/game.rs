@@ -24,8 +24,10 @@ mod menu;
 mod parse_screen;
 mod posture;
 mod profile;
+pub mod save;
 pub mod scene_snapshot;
 mod scroll;
+pub mod snapshot;
 mod sound;
 mod staffroll;
 #[cfg(test)]
@@ -287,27 +289,20 @@ impl Game {
     pub fn size(&self) -> (u32, u32) {
         (self.frame.width, self.frame.height)
     }
-    /// Script permission flag only; complete VM/game save slots are not yet implemented.
+    /// Script permission flag; the save operation additionally checks lifecycle/waits.
     pub fn script_save_enabled(&self) -> bool {
         self.script_save_enabled
     }
     /// Desktop sessions use a per-game user-data folder. The ordinary `open`
     /// remains volatile for deterministic diagnostics and tests.
     pub fn open_persistent(root: &Path, data_root: &Path) -> Result<Self> {
-        use sha1::{Digest, Sha1};
         let mut game = Self::open(root)?;
-        let mut digest = Sha1::new();
-        digest.update(game.archive.manifest.title.as_bytes());
-        digest.update(&game.archive.project_data);
-        for volume in &game.archive.volumes {
-            digest.update(volume.size.to_le_bytes());
-        }
         let data_root = if data_root.is_absolute() {
             data_root.to_owned()
         } else {
             std::env::current_dir()?.join(data_root)
         };
-        let directory = data_root.join(format!("{:x}", digest.finalize()));
+        let directory = data_root.join(game.project_key());
         let original = game.archive.volumes[0]
             .path
             .parent()

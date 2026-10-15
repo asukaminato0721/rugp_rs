@@ -174,6 +174,18 @@ settings and lifecycle state are preserved, but global CStdb progress is not
 rewound. A non-persistent physical press latch prevents an old/load-button
 release from confirming restored dialogue or menus. Retail packet/title checks
 exercise these round trips, including suspended text choices and timed speech.
+The full runtime checkpoint now coordinates all of these components with
+logical audio in one shared reference graph. Compatibility/resource validation
+finishes before any live state is swapped. A load discards stale output requests,
+allocates fresh playback tickets, and reconstructs muted PCM deadlines from the
+original epochs; device hosts must reset output and resume the returned plans.
+Ten portable slots (0–9) are available through the runtime API in the locked,
+per-game user-data directory. Files are versioned gzip JSON with compressed and
+expanded size limits, CRC checking, and atomic temporary-file replacement.
+They do not import or overwrite Windows UUC saves. Script-disabled/ended states
+cannot be saved, global CStdb progress is not rolled back, and project/layout
+identity plus the complete script fingerprint guard compatibility (not full
+retail-asset authentication). Desktop slot controls are still being connected.
 
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.

@@ -180,6 +180,9 @@ impl Game {
     }
 }
 impl UiSnapshot {
+    pub(super) fn ended(&self) -> bool {
+        self.ended
+    }
     pub(crate) fn wait_count(&self) -> usize {
         usize::from(self.selection.is_some()) + usize::from(self.dialogue.is_some())
     }
@@ -503,6 +506,10 @@ impl RestoredUi {
             game.size() == self.size,
             "UI restore target size changed during preparation"
         );
+        self.commit(game);
+        Ok(())
+    }
+    pub(super) fn commit(self, game: &mut Game) {
         game.menus = self.menus;
         game.message_windows = self.windows;
         game.text_menus = self.text_menus;
@@ -520,7 +527,6 @@ impl RestoredUi {
         game.pointer_inside = false;
         game.dialogue_pressed = false;
         game.pointer_armed = false;
-        Ok(())
     }
 }
 
