@@ -8,13 +8,14 @@ pub(super) struct ImageFade {
     total: u32,
     fade_in: u32,
     fade_out: u32,
+    cancelled: bool,
 }
 impl ImageFade {
     fn identity(&self) -> InlineIdentity {
         self.handle.inline.as_ref().unwrap().identity()
     }
     fn finished(&self) -> bool {
-        self.elapsed >= self.total
+        self.cancelled || self.elapsed >= self.total
     }
     fn alpha(&self) -> u8 {
         let elapsed = u64::from(self.elapsed);
@@ -120,6 +121,7 @@ impl Game {
             total: total as u32,
             fade_in: fade_in as u32,
             fade_out: fade_out as u32,
+            cancelled: false,
         };
         fade.apply(self.objects.get_mut(&window).unwrap());
         self.async_images.push(fade);
@@ -132,7 +134,7 @@ impl Game {
         timeout: i32,
     ) -> Result<()> {
         ensure!(
-            [0, 16, 32].contains(&mode) && timeout == 0,
+            ([0, 16].contains(&mode) && timeout == 0) || [32, 33, 34].contains(&mode),
             "unsupported async image synchronization mode/timeout"
         );
         let identity = reference
@@ -143,10 +145,25 @@ impl Game {
         let actor = self
             .async_images
             .iter()
-            .find(|a| a.identity() == identity)
+            .position(|a| a.identity() == identity)
             .context("unknown async image event")?;
-        let active = !actor.finished();
-        if mode == 32 {
+        let active = !self.async_images[actor].finished();
+        if mode & 0x30 == 0x20 {
+            // Vm60 10072bb3..10072c70 never reads the timeout word for a
+            // query. It samples status first, then 10072f15 sends event 3
+            // (mode 32) or 1 (33); low bits 2 (34) leave it alone.
+            // CGenericUso forwards both cancellation events to the actor's
+            // completion callback, which hides/reset-sizes this mode-1 fade.
+            if mode != 34 && active {
+                let actor = &mut self.async_images[actor];
+                actor.cancelled = true;
+                actor.apply(
+                    self.objects
+                        .get_mut(&actor.window)
+                        .context("async image window missing")?,
+                );
+                self.present_scene()?;
+            }
             self.vm.acknowledge_sync_query(active)
         } else if active {
             self.image_wait = Some(identity);
@@ -320,7 +337,8 @@ mod tests {
         )?;
         game.vm = Vm::new(Arc::new(program), 1)?;
         assert_eq!(game.step(0)?, RunState::Waiting);
-        let Value::Reference(handle) = game.vm.evaluate(&Argument::Reference(output))? else {
+        let Value::Reference(handle) = game.vm.evaluate(&Argument::Reference(output.clone()))?
+        else {
             bail!("fade output was not written to script variable");
         };
         assert_eq!(handle.class.as_ref().unwrap().name, "CGenericUso");
@@ -336,7 +354,8 @@ mod tests {
             query.address = 0;
             query.next_address = 0;
             query.arguments[0] = Argument::Reference(handle.clone());
-            query.arguments[1] = Argument::Number(32);
+            query.arguments[1] = Argument::Number(34);
+            query.arguments[2] = Argument::Number(4000);
             program.insert(
                 0,
                 Scenario {
@@ -348,8 +367,10 @@ mod tests {
                 },
             )?;
             let original = std::mem::replace(&mut game.vm, Vm::new(Arc::new(program), 1)?);
-            assert!(matches!(game.vm.step()?, Step::Host { .. }));
-            game.synchronize_image(&handle.clone(), 32, 0)?;
+            let Step::Host { instruction, .. } = game.vm.step()? else {
+                bail!("query did not yield")
+            };
+            game.host(&instruction)?;
             assert_eq!(game.vm.synchronization_status, Some(active));
             game.vm = original;
             Ok(())
@@ -374,6 +395,79 @@ mod tests {
         };
         assert!(Arc::ptr_eq(texture, &red));
         assert!(game.pending_sounds().is_empty());
+        // The ending uses mode 32 with a nonzero, ignored time word. It
+        // reports the pre-cancellation state, then cleans up immediately;
+        // mode 33 selects the other native cancellation event.
+        let ending = Scenario::decode_with_schema(
+            &Script::load(&game.archive, 244)?,
+            game.archive.address_shift,
+            Some(&native),
+        )?;
+        let ending_query = ending
+            .instructions
+            .iter()
+            .find(|i| i.address == 0x3b7c)
+            .context("ending fade query")?;
+        assert!(matches!(ending_query.arguments[1], Argument::Number(32)));
+        assert!(matches!(ending_query.arguments[2], Argument::Number(4000)));
+        let Value::Reference(destination) = game.vm.resolve_object(&ending_query.arguments[0])?
+        else {
+            bail!("ending query destination missing")
+        };
+        assert_eq!(destination.offset, output.offset);
+        for (mode, ignored_time) in [(32, 4000), (33, u32::MAX)] {
+            let mut query = ending_query.clone();
+            query.address = 0;
+            query.next_address = 24;
+            query.arguments[1] = Argument::Number(mode);
+            query.arguments[2] = Argument::Number(ignored_time);
+            let mut program = Program::default();
+            program.insert(
+                0,
+                Scenario {
+                    object_id: 1,
+                    memory_size: 40,
+                    null_records: vec![],
+                    trailing_bytes: 0,
+                    instructions: vec![
+                        query,
+                        Instruction {
+                            index: 1,
+                            stream_offset: 0,
+                            class: ClassId {
+                                name: "CVmRet".into(),
+                                schema: 17,
+                            },
+                            address: 24,
+                            next_address: u32::MAX,
+                            flags: 0,
+                            arguments: vec![],
+                        },
+                    ],
+                },
+            )?;
+            let program = Arc::new(program);
+            game.vm = Vm::new(Arc::clone(&program), 1)?;
+            game.ended = false;
+            game.objects.get_mut(&id).unwrap().rect = (1, 1, 2, 2);
+            game.fade_image(target, &message.fields)?;
+            game.wait_ms = None;
+            assert_eq!(game.step(0)?, RunState::Ended);
+            assert_eq!(game.vm.synchronization_status, Some(true));
+            let actor = game.async_images.last().unwrap();
+            assert!(actor.cancelled && actor.finished());
+            assert_eq!(actor.elapsed, 0); // query does not advance any clock
+            let handle = actor.handle.clone();
+            assert!(!game.objects[&id].visible);
+            assert_eq!(game.objects[&id].rect, (1, 1, 0, 0));
+            assert_eq!(game.objects[&id].opacity, 255);
+            assert!(game.wait_ms.is_none() && game.image_wait.is_none());
+            game.vm = Vm::new(program, 1)?;
+            game.ended = false;
+            game.vm.write_object(&output, Value::Reference(handle))?;
+            assert_eq!(game.step(0)?, RunState::Ended);
+            assert_eq!(game.vm.synchronization_status, Some(false));
+        }
         Ok(())
     }
 
@@ -389,6 +483,7 @@ mod tests {
             total: 5000,
             fade_in: 2000,
             fade_out: 1000,
+            cancelled: false,
         };
         for (elapsed, alpha) in [
             (0, 0),

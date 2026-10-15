@@ -377,11 +377,13 @@ regression verifies exact waits, nonblocking queries and no audio/frame changes.
 `OM_ImageASyncFadeinout` supports the retail helper's display-0/mode-1
 image-window fade with its native Q8 opacity envelope and exact duration.
 The returned `CGenericUso` is a distinct in-memory object written to the real
-script destination; copies retain identity, mode-0/16 synchronization waits,
-and mode-32 queries report activity. Completion hides and zero-sizes the window
+script destination; copies retain identity and mode-0/16 synchronization waits.
+Mode-32/33 queries report pre-cancellation activity, then complete/cancel the
+actor; mode 34 queries without cancelling. Query time words are ignored natively,
+including the ending's mode-32/time-4000 packet. Completion hides and zero-sizes the window
 while preserving its image and restoring opacity. A real helper packet tests
-variable writeback, framebuffer blending, query and exact cleanup. Concurrent
-fades on the same window, other display/mode combinations and cancellation
+variable writeback, framebuffer blending, query/cancellation and exact cleanup. Concurrent
+fades on the same window, other display/mode combinations and timed blocking waits
 remain unsupported.
 
 Billboard queue parameters, character posture/scaling parameters and character
