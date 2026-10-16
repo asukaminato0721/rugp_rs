@@ -3,7 +3,7 @@
 Native Rust game port of rUGP, targeting the 2008 **君が望む永遠
 ～Latest Edition～** disc. It runs the original archives and scripts directly:
 startup/title, dialogue and choices, backgrounds/portraits, voice/BGM/effects,
-movies, credits, portable saves and the original Premium menus.
+movies, credits, original UUC loading and the original Premium menus.
 
 All three original True End story routes have returned from new game to the
 original title. Scenes 241 and 249 have continuous scene-pixel-rendered runs;
@@ -15,8 +15,8 @@ Detailed scopes and reproducible probes are below.
 
 Playability takes priority over exact presentation. The software renderer uses
 static portrait/planar-model approximations and simplified weather, transitions
-and text styling instead of complete native 3D/GDI behavior. Rust-port save slots
-do not import Windows UUC saves or profiles. This is a game-specific playable
+and text styling instead of complete native 3D/GDI behavior. Original UUC loading
+has the checkpoint restrictions described below. This is a game-specific playable
 port, not a pixel-exact or general-purpose rUGP replacement; unsupported formats
 or operation variants outside the covered flows still report explicit errors.
 
@@ -77,31 +77,41 @@ The pinned Nix shell supplies the Linux audio/window build dependencies:
 nix develop --command cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE play
 ```
 
-Enter/Space or a left-click reveals/advances dialogue; arrows and Enter choose
-menu items. **F5** opens Save, **F9** opens Load, and Escape cancels the slot
-chooser. The ten Rust-port slots are separate from original Windows UUC saves.
+Enter/Space or a left-click reveals or advances dialogue. Arrows and Enter choose
+menu items. Right-click or Escape opens the game menu. **F2** opens settings.
+Settings include text speed, master volume, BGM, voice, effects, and fullscreen.
+The runtime stores these preferences in the per-game `settings.json` file.
+**Ctrl** activates skip while held. **S** toggles continuous skip.
+Skip stops at choices, explicit non-text confirmations, and Load requests.
+A left-click stops skip. During the OP, Escape, Ctrl, Enter, Space, or a
+left-click skips the movie. The script then continues to the title menu.
 Audio playback is included in every build. `play` enables audio automatically.
-During the OP, press Escape, Ctrl, Enter, or Space to skip the movie.
-A left-click also skips the movie. The script then continues to the title menu.
 
 If the installed game has no `Setup.ini`, the runtime uses the Latest Edition
 disc defaults for the message window. An invalid existing file reports an error.
 
-Import an original Windows save into a Rust-port slot:
+**F9** opens the original UUC Load chooser. The runtime detects `Vmreg` under
+Documents or the Wine prefix. Use `play --save-dir /path/to/Vmreg` to select
+another directory. The chooser supports arrows, Page Up/Down, mouse clicks,
+Enter, and Escape. It lists original `vmrNNNNN.uuc` files, including later slots.
+The title's Load command opens the same chooser. The VM and audio pause while
+a menu is open. Cancel resumes the current game without confirming dialogue.
+
+To start directly from a Windows save:
 
 ```sh
-cargo run --release -- --project-dir /path/to/game import-save /path/to/Vmreg/vmr00001.uuc --slot 0
+cargo run --release -- --project-dir /path/to/game play --load-uuc /path/to/Vmreg/vmr00001.uuc
 ```
 
-Then use F9 to load slot 0. To start directly from a Windows save, use
-`play --load-uuc /path/to/Vmreg/vmr00001.uuc`.
-The importer reads the original files without changing them.
+The loader reads original files without changing them.
 It supports v19 dialogue checkpoints with an empty native call stack.
 It reconstructs the scene through script execution and restores native integer
 and Boolean variables. Audio and animation clocks restart at that dialogue page.
 For a branched route, repeat `--choice ID` for each selection after New Game.
-The importer checks the game version, instruction identity, and dialogue text.
+The loader checks the game version, instruction identity, and dialogue text.
 Unsupported checkpoints report an error. Global `gdb`/`sedb` progress is not imported.
+Native UUC writing is not implemented. **F5** currently reports this limitation.
+The port-specific save format and `import-save` command were removed.
 
 ## Inspection and diagnostics
 
@@ -236,7 +246,7 @@ another root. Saves are atomically replaced with a process-exclusive lock;
 corrupt or oversized saved profiles return errors instead of being reset.
 The original game directory is rejected as an output location. Diagnostics and
 `Game::open` remain volatile. CStdb progress is shared across playthroughs and
-is deliberately not rolled back by portable game slots.
+is independent of reconstructed dialogue checkpoints.
 The asset layer now provides a versioned reference-graph snapshot foundation:
 inline-instance aliases (including bitmap-header references) survive a round
 trip without saving process addresses or inventing archive offsets. It rejects
@@ -289,26 +299,10 @@ logical audio in one shared reference graph. Compatibility/resource validation
 finishes before any live state is swapped. A load discards stale output requests,
 allocates fresh playback tickets, and reconstructs muted PCM deadlines from the
 original epochs; device hosts must reset output and resume the returned plans.
-Ten portable slots (0–9) are available through the runtime API in the locked,
-per-game user-data directory. Files are versioned gzip JSON with compressed and
-expanded size limits, CRC checking, and atomic temporary-file replacement.
-They do not import or overwrite Windows UUC saves. Script-disabled/ended states
-cannot be saved, global CStdb progress is not rolled back, and project/layout
-identity plus the complete script fingerprint guard compatibility (not full
-retail-asset authentication).
-
-In desktop play, **F5** opens Save and **F9** opens Load. Choose a slot with
-0–9, arrows, or the mouse; Enter/the action button confirms and Escape cancels.
-Replacing an occupied slot needs a second confirmation. The title's original
-load command opens the same portable chooser; cancelling resumes its pending
-script instead of inventing a successful load. While a chooser is open the
-VM/media clock is paused and output is suspended, then rebuilt at the same PCM
-epoch on return. Input used to close/load the chooser cannot confirm a restored
-page. Invalid/incompatible saves report a nonfatal error in the chooser and
-leave the current game intact. These are Rust-port saves, not Windows UUC files.
-The desktop integration regression covers saving, loading, cancellation,
-corrupt slots, and held/released input. It requires game assets, a Japanese font,
-and a working audio device.
+Disk loading uses original Windows UUC files through the desktop chooser or
+`play --load-uuc`. Internal snapshots support runtime validation and replay.
+They are not exposed as another disk save format. Invalid native saves leave
+the live game unchanged. Native writing and global progress import remain open.
 
 Gallery database selectors now honor the native per-item rule: decimal-prefix
 conversion must equal exactly 1 to enable an item; other values disable it.
@@ -756,7 +750,7 @@ changing its completion deadline. Device output ramps from current gain to the
 target (rather than reproducing the native initial-gain reset); zero duration
 uses the packet's start gain. Kira mock samples verify the live looping handle.
 `OM_SetUucSaveSwitch` retains the script's save-enable state even when sent to
-the global/unbound system target; portable save slots honor that permission.
+the global/unbound system target; internal checkpoints honor that permission.
 `OM_ParseImageBuild` renders the world and visible portraits into an offscreen
 surface without presenting it; `OM_UpdateAllView` explicitly refreshes the
 logical scene; `OM_AgesRecalc` refreshes the portable geometry/rendered view.
@@ -982,3 +976,8 @@ implicit stops or waits. Both device and muted paths preserve active channels.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for format research and attribution. Game
 assets, original binaries, extracted scripts, and dialogue are not included.
+
+Desktop animation clocks retain fractional milliseconds and slow-frame time.
+Motion ticks during a synchronized opacity transition update the captured pose
+without publishing staged replacement images. Specialized spatial fades and
+native character deformation still use the approximations described above.

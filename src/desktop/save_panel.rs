@@ -12,53 +12,51 @@ pub(super) enum Mode {
 pub(super) enum Action {
     None,
     Cancel,
-    Save(u8),
-    Load(u8),
+    Save(u32),
+    Load(u32),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Hit {
-    Slot(u8),
+    Slot(usize),
     Confirm,
     Cancel,
 }
 pub(super) struct Panel {
     pub mode: Mode,
-    pub slot: u8,
-    occupied: [bool; 10],
-    overwrite: bool,
+    pub slot: usize,
+    slots: Vec<(u32, bool)>,
     pressed: Option<Hit>,
     pub notice: String,
 }
 impl Panel {
-    pub fn new(mode: Mode, slot: u8, occupied: [bool; 10]) -> Self {
+    pub fn new(mode: Mode, slot: usize, slots: Vec<(u32, bool)>) -> Self {
         Self {
             mode,
-            slot: slot.min(9),
-            occupied,
-            overwrite: false,
+            slot: slot.min(slots.len() - 1),
+            slots,
             pressed: None,
-            notice: String::new(),
+            notice: if mode == Mode::Save {
+                "原版セーブの書き込みは未対応です。".into()
+            } else {
+                String::new()
+            },
         }
     }
-    fn select(&mut self, slot: u8) {
+    fn select(&mut self, slot: usize) {
         self.slot = slot;
-        self.overwrite = false;
-        self.notice.clear();
+        if self.mode == Mode::Load {
+            self.notice.clear();
+        }
     }
     fn confirm(&mut self) -> Action {
         if self.mode == Mode::Load {
-            if !self.occupied[self.slot as usize] {
-                self.notice = "This slot is empty.".into();
+            if !self.slots[self.slot].1 {
+                self.notice = "このセーブは空です。".into();
                 return Action::None;
             }
-            return Action::Load(self.slot);
+            return Action::Load(self.slots[self.slot].0);
         }
-        if self.occupied[self.slot as usize] && !self.overwrite {
-            self.overwrite = true;
-            self.notice = "Replace this save? Press Enter or Save again.".into();
-            return Action::None;
-        }
-        Action::Save(self.slot)
+        Action::Save(self.slots[self.slot].0)
     }
     pub fn key(&mut self, key: KeyCode) -> Action {
         self.pressed = None;
@@ -66,26 +64,51 @@ impl Panel {
             KeyCode::Escape => return Action::Cancel,
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => return self.confirm(),
             KeyCode::ArrowDown | KeyCode::ArrowRight | KeyCode::Tab => {
-                self.select((self.slot + 1) % 10)
+                self.select((self.slot + 1) % self.slots.len())
             }
-            KeyCode::ArrowUp | KeyCode::ArrowLeft => self.select((self.slot + 9) % 10),
-            KeyCode::Digit0 | KeyCode::Numpad0 => self.select(0),
-            KeyCode::Digit1 | KeyCode::Numpad1 => self.select(1),
-            KeyCode::Digit2 | KeyCode::Numpad2 => self.select(2),
-            KeyCode::Digit3 | KeyCode::Numpad3 => self.select(3),
-            KeyCode::Digit4 | KeyCode::Numpad4 => self.select(4),
-            KeyCode::Digit5 | KeyCode::Numpad5 => self.select(5),
-            KeyCode::Digit6 | KeyCode::Numpad6 => self.select(6),
-            KeyCode::Digit7 | KeyCode::Numpad7 => self.select(7),
-            KeyCode::Digit8 | KeyCode::Numpad8 => self.select(8),
-            KeyCode::Digit9 | KeyCode::Numpad9 => self.select(9),
+            KeyCode::ArrowUp | KeyCode::ArrowLeft => {
+                self.select((self.slot + self.slots.len() - 1) % self.slots.len())
+            }
+            KeyCode::PageDown => self.select((self.slot + 10).min(self.slots.len() - 1)),
+            KeyCode::PageUp => self.select(self.slot.saturating_sub(10)),
+            KeyCode::Digit0 | KeyCode::Numpad0 => {
+                self.select((self.slot / 10 * 10).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit1 | KeyCode::Numpad1 => {
+                self.select((self.slot / 10 * 10 + 1).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit2 | KeyCode::Numpad2 => {
+                self.select((self.slot / 10 * 10 + 2).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit3 | KeyCode::Numpad3 => {
+                self.select((self.slot / 10 * 10 + 3).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit4 | KeyCode::Numpad4 => {
+                self.select((self.slot / 10 * 10 + 4).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit5 | KeyCode::Numpad5 => {
+                self.select((self.slot / 10 * 10 + 5).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit6 | KeyCode::Numpad6 => {
+                self.select((self.slot / 10 * 10 + 6).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit7 | KeyCode::Numpad7 => {
+                self.select((self.slot / 10 * 10 + 7).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit8 | KeyCode::Numpad8 => {
+                self.select((self.slot / 10 * 10 + 8).min(self.slots.len() - 1))
+            }
+            KeyCode::Digit9 | KeyCode::Numpad9 => {
+                self.select((self.slot / 10 * 10 + 9).min(self.slots.len() - 1))
+            }
             _ => {}
         }
         Action::None
     }
-    fn hit(x: i32, y: i32) -> Option<Hit> {
+    fn hit(&self, x: i32, y: i32) -> Option<Hit> {
         if (170..850).contains(&x) && (118..428).contains(&y) {
-            return Some(Hit::Slot(((y - 118) / 31) as u8));
+            let index = self.slot / 10 * 10 + ((y - 118) / 31) as usize;
+            return (index < self.slots.len()).then_some(Hit::Slot(index));
         }
         if (464..502).contains(&y) {
             if (580..850).contains(&x) {
@@ -98,7 +121,7 @@ impl Panel {
         None
     }
     pub fn button(&mut self, x: i32, y: i32, down: bool) -> Action {
-        let hit = Self::hit(x, y);
+        let hit = self.hit(x, y);
         if down {
             self.pressed = hit;
             return Action::None;
@@ -143,19 +166,21 @@ impl Panel {
             font,
             170,
             70,
-            &format!("{mode} GAME  -  Portable Rust slots"),
+            &format!("{mode}  -  原版 UUC セーブ"),
         )?;
-        for slot in 0..10 {
-            let y = 118 + i32::from(slot) * 31;
+        for slot in (self.slot / 10 * 10)..((self.slot / 10 * 10 + 10).min(self.slots.len())) {
+            let y = 118 + (slot % 10) as i32 * 31;
             if slot == self.slot {
                 rect(&mut frame, (170, y, 850, y + 30), [38, 93, 125, 255]);
             }
-            let status = if self.occupied[slot as usize] {
-                "Saved"
-            } else {
-                "Empty"
-            };
-            text(&mut frame, font, 186, y + 2, &format!("{slot}   {status}"))?;
+            let status = if self.slots[slot].1 { "Saved" } else { "Empty" };
+            text(
+                &mut frame,
+                font,
+                186,
+                y + 2,
+                &format!("vmr{:05}.uuc   {status}", self.slots[slot].0),
+            )?;
         }
         text(&mut frame, font, 170, 435, &self.notice)?;
         rect(&mut frame, (170, 464, 440, 502), [48, 58, 74, 255]);
@@ -167,7 +192,7 @@ impl Panel {
             font,
             170,
             514,
-            "0-9 / Arrows: slot    F5: Save    F9: Load",
+            "↑↓: 選択   PgUp/PgDn: ページ   F5: Save   F9: Load",
         )?;
         Ok(frame)
     }
@@ -208,26 +233,25 @@ pub(super) fn text(
 mod tests {
     use super::*;
     #[test]
-    fn empty_slots_overwrite_confirmation_navigation_and_held_release_are_safe() {
-        let mut occupied = [false; 10];
-        occupied[1] = true;
-        let mut panel = Panel::new(Mode::Load, 0, occupied);
+    fn empty_slots_navigation_and_held_release_are_safe() {
+        let mut occupied: Vec<_> = (1..=10).map(|n| (n, false)).collect();
+        occupied[1].1 = true;
+        let mut panel = Panel::new(Mode::Load, 0, occupied.clone());
         assert_eq!(panel.key(KeyCode::Enter), Action::None);
         panel.key(KeyCode::ArrowDown);
-        assert_eq!(panel.key(KeyCode::Enter), Action::Load(1));
+        assert_eq!(panel.key(KeyCode::Enter), Action::Load(2));
         assert_eq!(panel.button(600, 480, false), Action::None);
         panel.button(600, 480, true);
         panel.cancel_press();
         assert_eq!(panel.button(600, 480, false), Action::None);
         let mut panel = Panel::new(Mode::Save, 1, occupied);
-        assert_eq!(panel.key(KeyCode::Enter), Action::None);
+        assert_eq!(panel.key(KeyCode::Enter), Action::Save(2));
         panel.key(KeyCode::ArrowDown);
         panel.key(KeyCode::ArrowUp);
-        assert_eq!(panel.key(KeyCode::Enter), Action::None);
-        assert_eq!(panel.key(KeyCode::Enter), Action::Save(1));
+        assert_eq!(panel.key(KeyCode::Enter), Action::Save(2));
         panel.button(180, 120, true);
         panel.button(180, 120, false);
-        assert_eq!(panel.key(KeyCode::Enter), Action::Save(0));
+        assert_eq!(panel.key(KeyCode::Enter), Action::Save(1));
         assert_eq!(panel.key(KeyCode::Escape), Action::Cancel);
     }
 }

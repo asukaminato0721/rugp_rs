@@ -155,7 +155,12 @@ impl Game {
         if !self.objects.values().any(|o| !o.postures.is_empty()) {
             return Ok(());
         }
-        for object in self.objects.values_mut() {
+        let mut changed = Vec::new();
+        for (&id, object) in &mut self.objects {
+            if object.postures.is_empty() {
+                continue;
+            }
+            changed.push(id);
             let mut remaining = Vec::with_capacity(object.postures.len());
             // Validate the next state before committing either camera/history.
             // Apply bounds after EACH native moment, newest first.
@@ -168,6 +173,20 @@ impl Game {
             }
             object.camera = camera;
             object.postures = remaining;
+        }
+        let size = self.size();
+        if let Some(parse) = &mut self.parse_transition {
+            // A media tick changes the captured pose, not staged images. An
+            // explicit presentation remains responsible for publishing them.
+            for id in changed {
+                if let Some(snapshot) = parse.scene.get_mut(&id) {
+                    let live = &self.objects[&id];
+                    snapshot.camera = live.camera;
+                    snapshot.postures.clone_from(&live.postures);
+                }
+            }
+            self.frame = Self::render_objects_mode(&parse.scene, size, self.rasterize_scene)?;
+            return Ok(());
         }
         self.present_scene()
     }
@@ -348,6 +367,55 @@ pub(super) mod tests {
         game.finish_posture(&identity, false)?;
         assert!(!game.posture_active(&identity));
         assert_eq!(game.objects[&212259].camera, held);
+        Ok(())
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_motion_during_fade_keeps_staged_images_hidden() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        game.objects.clear();
+        game.frame = Framebuffer::new(4, 4)?;
+        let screen = |rgba: [u8; 4]| {
+            Layer::Screen(Arc::new(Texture {
+                width: 4,
+                height: 4,
+                display_scale: 1.0,
+                rgba: rgba.repeat(16),
+            }))
+        };
+        let mut object = ObjectState {
+            rect: (0, 0, 4, 4),
+            ..Default::default()
+        };
+        object.layers.insert(0, screen([255, 0, 0, 255]));
+        object.pending_draw_ratio = Some(rugp_assets::mime::MimeCurve::alpha_ramp(false));
+        game.objects.insert(212259, object);
+        game.add_posture(
+            &target(),
+            &BTreeMap::from([("姿勢運動メディア".into(), Value::Reference(media(400, 1)))]),
+        )?;
+        assert!(game.start_parse_transition(400)?);
+        game.objects
+            .get_mut(&212259)
+            .unwrap()
+            .layers
+            .insert(0, screen([0, 255, 0, 255]));
+        game.advance_parse_transition(100)?;
+        game.advance_postures(100)?;
+        assert_eq!(&game.frame()[..4], &[64, 0, 0, 255]);
+        assert_eq!(game.objects[&212259].camera.position, [1, 0, 0]);
+        assert_eq!(
+            game.parse_transition.as_ref().unwrap().scene[&212259]
+                .camera
+                .position,
+            [1, 0, 0]
+        );
+        game.advance_parse_transition(100)?;
+        game.advance_postures(100)?;
+        assert_eq!(&game.frame()[..4], &[128, 0, 0, 255]);
+        game.present_scene()?;
+        assert_eq!(&game.frame()[..4], &[0, 128, 0, 255]);
         Ok(())
     }
     #[test]

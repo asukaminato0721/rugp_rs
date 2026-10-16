@@ -416,7 +416,10 @@ mod tests {
                 .context("text selection not waiting")?;
             let result = game.selection.as_ref().unwrap().result.clone();
             assert_eq!(game.text_menus[&target].entries.len(), 2);
-            assert_eq!(game.step(100000)?, RunState::Waiting);
+            for _ in 0..10 {
+                assert_eq!(game.fast_forward_step(1000)?, RunState::Waiting);
+                assert!(game.waiting_for_selection());
+            }
             assert_eq!(game.vm.cursor().unwrap().address, 56);
             super::ui_snapshot::test_roundtrip(&mut game)?;
             game.activate_selection()?; // No hover: no implicit default choice.

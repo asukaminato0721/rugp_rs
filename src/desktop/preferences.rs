@@ -5,7 +5,10 @@ use std::{
     fs,
     io::{Read, Write},
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,7 +56,11 @@ impl Preferences {
         let Some(directory) = directory else {
             return Ok(());
         };
-        let temporary = directory.join(format!("settings-{}.pending", std::process::id()));
+        let temporary = directory.join(format!(
+            "settings-{}-{}.pending",
+            std::process::id(),
+            TEMPORARY_ID.fetch_add(1, Ordering::Relaxed)
+        ));
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -69,5 +76,41 @@ impl Preferences {
             let _ = fs::remove_file(temporary);
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn settings_persist_and_reject_invalid_or_oversized_files() -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "rugp-settings-{}-{}",
+            std::process::id(),
+            TEMPORARY_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory)?;
+        assert_eq!(Preferences::load(Some(&directory))?, Preferences::default());
+        let settings = Preferences {
+            text_speed_ms: 35,
+            levels: [80, 25, 100, 45],
+            fullscreen: true,
+        };
+        settings.save(Some(&directory))?;
+        assert_eq!(Preferences::load(Some(&directory))?, settings);
+        let mut invalid = settings.clone();
+        invalid.levels[1] = 101;
+        assert!(invalid.save(Some(&directory)).is_err());
+        assert_eq!(Preferences::load(Some(&directory))?, settings);
+        let path = directory.join("settings.json");
+        fs::write(
+            &path,
+            br#"{"text_speed_ms":101,"levels":[100,100,100,100],"fullscreen":false}"#,
+        )?;
+        assert!(Preferences::load(Some(&directory)).is_err());
+        fs::write(&path, vec![b' '; 4097])?;
+        assert!(Preferences::load(Some(&directory)).is_err());
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

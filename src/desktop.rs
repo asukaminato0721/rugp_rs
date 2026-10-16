@@ -17,6 +17,7 @@ use winit::{
 };
 mod controls;
 mod menu_panel;
+mod native_store;
 mod preferences;
 mod save_panel;
 use menu_panel::{Action as MenuAction, MenuPanel, Page};
@@ -27,10 +28,14 @@ pub fn run(
     game: Game,
     quit_after_ms: Option<u32>,
     initial_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
+    save_dir: Option<std::path::PathBuf>,
+    choices: Vec<u32>,
 ) -> Result<()> {
     let event_loop = EventLoop::new().context("create desktop event loop")?;
     let preferences = Preferences::load(game.user_data_dir())?;
-    let mut app = App::new(game, quit_after_ms);
+    let native_saves = native_store::NativeStore::detect(&game, save_dir, choices)?;
+    eprintln!("Original saves: {}", native_saves.directory.display());
+    let mut app = App::new(game, quit_after_ms, native_saves);
     app.apply_preferences(preferences)?;
     app.panel_audio = initial_audio;
     event_loop
@@ -47,6 +52,7 @@ struct App {
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     last: Instant,
     elapsed: u32,
+    tick_remainder: Duration,
     error: Option<String>,
     quit_after_ms: Option<u32>,
     audio_resources: Option<rugp_runtime::audio::AudioResources>,
@@ -55,7 +61,8 @@ struct App {
     panel_frame: Option<rugp_runtime::render::Framebuffer>,
     panel_font: Option<rugp_runtime::font::TextFont>,
     panel_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
-    slot: u8,
+    slot: usize,
+    native_saves: native_store::NativeStore,
     menu: Option<MenuPanel>,
     preferences: Preferences,
     controls: controls::Controls,
@@ -65,7 +72,11 @@ struct App {
     audio_tickets: std::collections::BTreeMap<u64, u64>,
 }
 impl App {
-    fn new(game: Game, quit_after_ms: Option<u32>) -> Self {
+    fn new(
+        game: Game,
+        quit_after_ms: Option<u32>,
+        native_saves: native_store::NativeStore,
+    ) -> Self {
         Self {
             game,
             quit_after_ms,
@@ -73,6 +84,7 @@ impl App {
             surface: None,
             last: Instant::now(),
             elapsed: 0,
+            tick_remainder: Duration::ZERO,
             error: None,
             audio_resources: None,
             cursor: None,
@@ -81,6 +93,7 @@ impl App {
             panel_font: None,
             panel_audio: Vec::new(),
             slot: 0,
+            native_saves,
             menu: None,
             preferences: Preferences::default(),
             controls: controls::Controls::default(),
@@ -168,6 +181,17 @@ impl App {
         self.menu = Some(MenuPanel::new(page, self.preferences.clone()));
         self.refresh_panel()
     }
+    fn right_button(&mut self, down: bool) -> Result<()> {
+        if down {
+            self.right_pressed = true;
+        } else if std::mem::take(&mut self.right_pressed) {
+            if self.modal_open() {
+                return self.close_panel();
+            }
+            return self.open_menu(Page::Context);
+        }
+        Ok(())
+    }
     fn menu_action(&mut self, action: MenuAction) -> Result<()> {
         match action {
             MenuAction::None => self.refresh_panel(),
@@ -200,10 +224,7 @@ impl App {
         if self.game.waiting_for_load() && mode == PanelMode::Save {
             return Ok(());
         }
-        let mut occupied = [false; 10];
-        for info in self.game.save_slots()? {
-            occupied[info.slot as usize] = true;
-        }
+        let occupied = self.native_saves.slots()?;
         self.pause_game()?;
         self.menu = None;
         self.panel = Some(Panel::new(mode, self.slot, occupied));
@@ -238,35 +259,33 @@ impl App {
         Ok(())
     }
     fn panel_action(&mut self, action: PanelAction) -> Result<()> {
+        if let Some(panel) = &self.panel {
+            self.slot = panel.slot;
+        }
         let result = match action {
             PanelAction::None => return self.refresh_panel(),
             PanelAction::Cancel => return self.close_panel(),
-            PanelAction::Save(slot) => {
-                self.slot = slot;
-                self.game.save_slot(slot)
-            }
-            PanelAction::Load(slot) => {
-                self.slot = slot;
-                self.game
-                    .load_slot(
-                        slot,
-                        self.audio_resources
-                            .as_mut()
-                            .context("slot audio resources missing")?,
-                    )
-                    .map(|resumes| {
-                        self.panel_audio = resumes;
-                    })
-            }
+            PanelAction::Save(_) => Err(anyhow::anyhow!("native UUC writing is not implemented")),
+            PanelAction::Load(slot) => self
+                .game
+                .import_uuc(
+                    &self.native_saves.path(slot),
+                    &self.native_saves.choices,
+                    self.audio_resources
+                        .as_mut()
+                        .context("load audio resources missing")?,
+                )
+                .map(|resumes| {
+                    self.panel_audio = resumes;
+                }),
         };
         if let Err(error) = result {
             eprintln!("Slot {}: {error:#}", self.slot);
             if let Some(panel) = &mut self.panel {
-                panel.notice = if panel.mode == PanelMode::Save && !self.game.script_save_enabled()
-                {
-                    "Saving is disabled here by the game script."
+                panel.notice = if panel.mode == PanelMode::Save {
+                    "原版セーブの書き込みは未対応です。"
                 } else {
-                    "Operation failed; current game is unchanged. See terminal."
+                    "ロードできません。現在のゲームは変更されていません。詳細は端末。"
                 }
                 .into();
             }
@@ -282,6 +301,7 @@ impl App {
                 "loaded"
             }
         );
+        self.apply_preferences(self.preferences.clone())?;
         self.close_panel()
     }
     fn sounds(&mut self) -> Result<()> {
@@ -502,17 +522,8 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } if self.error.is_none() => {
-                if state == ElementState::Pressed {
-                    self.right_pressed = true;
-                } else if std::mem::take(&mut self.right_pressed) {
-                    let result = if self.modal_open() {
-                        self.close_panel()
-                    } else {
-                        self.open_menu(Page::Context)
-                    };
-                    if let Err(error) = result {
-                        self.fail(error);
-                    }
+                if let Err(error) = self.right_button(state == ElementState::Pressed) {
+                    self.fail(error);
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -579,7 +590,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                let dt = now.duration_since(self.last).as_millis().min(100) as u32;
+                let (dt, remainder) =
+                    controls::elapsed_ms(now.duration_since(self.last) + self.tick_remainder);
+                self.tick_remainder = remainder;
                 self.last = now;
                 if self.error.is_none() && !self.modal_open() {
                     if let Some(audio) = &self.audio {
@@ -605,6 +618,12 @@ impl ApplicationHandler for App {
                         Ok(RunState::Ended) => event_loop.exit(),
                         Ok(_) => {}
                         Err(e) => self.fail(e),
+                    }
+                    if self.game.waiting_for_selection()
+                        || self.game.waiting_for_input()
+                        || self.game.waiting_for_load()
+                    {
+                        self.controls.stop();
                     }
                     if !selecting
                         && self.game.waiting_for_selection()
@@ -671,81 +690,80 @@ mod tests {
     use super::*;
     #[test]
     #[ignore = "set RUGP_TEST_GAME; requires a Japanese outline font"]
-    fn retail_desktop_chooser_saves_loads_cancels_and_survives_corrupt_slots_without_click_through()
+    fn retail_settings_and_context_menu_pause_preserve_input_and_handle_invalid_native_loads()
     -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let directory = std::env::temp_dir().join(format!(
-            "rugp-desktop-slot-test-{}-{}",
+            "rugp-menu-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos()
         ));
-        let mut game = Game::open_persistent(root.as_ref(), &directory)?;
-        let mut audio = None;
-        let mut title = false;
-        for _ in 0..300 {
-            game.step(1000)?;
-            rugp_runtime::audio::mute_requests(&mut game, &mut audio)?;
-            if game.waiting_for_dialogue() {
-                break;
-            }
-            if game.waiting_for_selection() && !title {
-                title = true;
-                game.navigate_selection(1)?;
-                game.activate_selection()?;
-            }
-        }
-        anyhow::ensure!(title && game.waiting_for_dialogue(), "story not reached");
-        let mut app = App::new(game, None);
+        let game = Game::open_persistent(root.as_ref(), &directory)?;
+        let saves = directory.join("Vmreg");
+        std::fs::create_dir(&saves)?;
+        std::fs::write(saves.join("vmr00001.uuc"), b"damaged native save")?;
+        let native_saves = native_store::NativeStore::detect(&game, Some(saves.clone()), vec![])?;
+        let mut app = App::new(game, None, native_saves);
+        app.apply_preferences(Preferences::default())?;
         let cursor = app.game.vm.cursor().cloned();
         let pixels = app.game.frame().to_vec();
-        let navigation = app.game.navigation.clone();
-        app.open_panel(PanelMode::Save)?;
-        assert!(app.panel_frame.is_some());
-        let action = app.panel.as_mut().unwrap().key(KeyCode::Enter);
-        assert_eq!(action, PanelAction::Save(0));
-        app.panel_action(action)?;
-        assert!(app.panel.is_none());
-        assert!(app.error.is_none());
-        let slot = app.game.user_data_dir().unwrap().join("slot-0.rugpsave");
-        let saved = std::fs::read(&slot)?;
-        app.game.navigation = "after-save marker".into();
-        app.game.activate_selection()?;
-        app.game.step(33)?;
-        app.open_panel(PanelMode::Load)?;
-        let action = app.panel.as_mut().unwrap().key(KeyCode::Enter);
-        app.panel_action(action)?;
-        assert!(app.panel.is_none());
+        app.right_button(false)?;
+        assert!(!app.modal_open());
+        app.controls.toggle();
+        app.right_button(true)?;
+        app.right_button(false)?;
+        assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Context));
+        assert!(!app.controls.active());
+        for _ in 0..3 {
+            app.menu.as_mut().unwrap().key(KeyCode::ArrowDown);
+        }
+        let action = app.menu.as_mut().unwrap().key(KeyCode::Enter);
+        app.menu_action(action)?;
+        assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Settings));
+        let action = app.menu.as_mut().unwrap().key(KeyCode::ArrowRight);
+        app.menu_action(action)?;
+        assert_eq!(app.preferences.text_speed_ms, 5);
+        assert_eq!(
+            Preferences::load(app.game.user_data_dir())?,
+            app.preferences
+        );
+        // A setting made before the first dialogue also remains a valid UI state.
+        app.game.snapshot_ui(&mut Default::default())?;
+        if let Some(path) = std::env::var_os("RUGP_TEST_MENU_PNG") {
+            let frame = app.panel_frame.as_ref().context("menu frame missing")?;
+            let mut encoder =
+                png::Encoder::new(std::fs::File::create(path)?, frame.width, frame.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header()?.write_image_data(&frame.rgba)?;
+        }
+        app.right_button(true)?;
+        app.right_button(false)?;
+        assert!(!app.modal_open());
         assert_eq!(app.game.vm.cursor(), cursor.as_ref());
-        assert!(app.game.frame() == pixels);
-        assert_eq!(app.game.navigation, navigation);
+        assert_eq!(app.game.frame(), pixels);
         app.game.pointer_button(false)?;
         assert_eq!(app.game.vm.cursor(), cursor.as_ref());
-        assert!(app.game.waiting_for_dialogue());
-        app.open_panel(PanelMode::Save)?;
-        let action = app.panel.as_mut().unwrap().key(KeyCode::Enter);
-        assert_eq!(action, PanelAction::None);
-        app.panel_action(action)?;
-        assert!(std::fs::read(&slot)? == saved);
-        app.panel_action(PanelAction::Cancel)?;
-        std::fs::write(&slot, b"corrupted test save")?;
         app.open_panel(PanelMode::Load)?;
-        app.panel_action(PanelAction::Load(0))?;
-        assert!(app.panel.is_some() && app.error.is_none());
+        app.panel_action(PanelAction::Load(1))?;
+        assert!(app.panel.is_some());
         assert!(!app.panel.as_ref().unwrap().notice.is_empty());
         assert_eq!(app.game.vm.cursor(), cursor.as_ref());
-        assert!(app.game.frame() == pixels);
-        app.panel_action(PanelAction::Cancel)?;
-        assert!(app.panel.is_none() && app.error.is_none());
-        let game_data = app.game.user_data_dir().unwrap().to_owned();
+        assert_eq!(app.game.frame(), pixels);
+        app.close_panel()?;
+        app.open_panel(PanelMode::Save)?;
+        app.panel_action(PanelAction::Save(2))?;
+        assert!(!saves.join("vmr00002.uuc").exists());
+        assert!(app.panel.is_some());
+        assert_eq!(
+            std::fs::read(saves.join("vmr00001.uuc"))?,
+            b"damaged native save"
+        );
+        assert_eq!(app.game.vm.cursor(), cursor.as_ref());
         drop(app);
-        std::fs::remove_file(slot)?;
-        for entry in std::fs::read_dir(&game_data)? {
-            std::fs::remove_file(entry?.path())?;
-        }
-        std::fs::remove_dir(game_data)?;
-        std::fs::remove_dir(directory)?;
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

@@ -58,13 +58,7 @@ impl Game {
     }
     pub fn set_text_speed(&mut self, speed_ms: u32) -> Result<()> {
         ensure!(speed_ms <= 3000, "invalid message output speed");
-        if self.message_config.is_none() {
-            let root = self.archive.volumes[0]
-                .path
-                .parent()
-                .context("game root missing")?;
-            self.message_config = Some(MessageConfig::load(root)?);
-        }
+        self.ensure_text_font()?;
         self.message_config.as_mut().unwrap().speed_ms = speed_ms;
         if let Some(dialogue) = &mut self.dialogue
             && !dialogue.forced_clock

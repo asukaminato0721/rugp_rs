@@ -288,41 +288,6 @@ mod tests {
                 .read_string("key", ""),
             "newer"
         );
-        let directory = std::env::temp_dir().join(format!(
-            "rugp-slots-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        fresh.profiles = crate::profile_store::ProfileStore::persistent(&directory)?;
-        ensure!(
-            fresh.script_save_enabled(),
-            "real dialogue unexpectedly disables saving"
-        );
-        fresh.save_slot(0)?;
-        assert_eq!(fresh.save_slots()?.len(), 1);
-        let slot = directory.join("slot-0.rugpsave");
-        let valid = std::fs::read(&slot)?;
-        let saved_frame = fresh.frame().to_vec();
-        let saved_cursor = fresh.vm.cursor().cloned();
-        fresh.script_save_enabled = false;
-        assert!(fresh.save_slot(0).is_err());
-        assert!(std::fs::read(&slot)? == valid);
-        fresh.script_save_enabled = true;
-        fresh.activate_selection()?;
-        fresh.step(100)?;
-        fresh.load_slot(0, &mut resources)?;
-        assert!(fresh.frame() == saved_frame);
-        assert_eq!(fresh.vm.cursor(), saved_cursor.as_ref());
-        std::fs::write(&slot, b"invalid portable save")?;
-        assert!(fresh.load_slot(0, &mut resources).is_err());
-        assert!(fresh.frame() == saved_frame);
-        assert_eq!(fresh.vm.cursor(), saved_cursor.as_ref());
-        drop(fresh);
-        std::fs::remove_file(slot)?;
-        std::fs::remove_file(directory.join("profiles.lock"))?;
-        std::fs::remove_dir(directory)?;
         game.script_save_enabled = false;
         assert!(game.snapshot().is_err());
         game.script_save_enabled = true;

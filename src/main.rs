@@ -30,6 +30,9 @@ enum Command {
         /// User-owned configuration/progress root; never written into the game archive directory.
         #[arg(long)]
         user_data_dir: Option<PathBuf>,
+        /// Original Windows Vmreg directory. Detect its location when omitted.
+        #[arg(long)]
+        save_dir: Option<PathBuf>,
         /// Development diagnostic: execute the real VM on a muted virtual clock before opening a window.
         #[arg(long)]
         fast_forward_ms: Option<u32>,
@@ -37,7 +40,7 @@ enum Command {
         #[arg(long)]
         load_uuc: Option<PathBuf>,
         /// Native route selector ID after New Game. Repeat for each choice.
-        #[arg(long, requires = "load_uuc")]
+        #[arg(long)]
         choice: Vec<u32>,
         /// Japanese outline font; no font file is distributed with this port.
         #[arg(long)]
@@ -51,21 +54,6 @@ enum Command {
         output: PathBuf,
         #[arg(long, default_value_t = 1000)]
         time_ms: u32,
-        #[arg(long)]
-        font: Option<PathBuf>,
-        #[arg(long, default_value_t = 0, requires = "font")]
-        font_index: u32,
-    },
-    /// Import a Windows v19 UUC dialogue checkpoint into a Rust-port slot.
-    ImportSave {
-        input: PathBuf,
-        #[arg(long, value_parser = clap::value_parser!(u8).range(0..10))]
-        slot: u8,
-        #[arg(long)]
-        user_data_dir: Option<PathBuf>,
-        /// Native route selector IDs after New Game, in execution order.
-        #[arg(long)]
-        choice: Vec<u32>,
         #[arg(long)]
         font: Option<PathBuf>,
         #[arg(long, default_value_t = 0, requires = "font")]
@@ -157,6 +145,7 @@ fn main() -> Result<()> {
             quit_after_ms,
             user_data_dir,
             fast_forward_ms,
+            save_dir,
             load_uuc,
             choice,
             font,
@@ -185,28 +174,7 @@ fn main() -> Result<()> {
             if let Some(path) = game.user_data_dir() {
                 eprintln!("User data: {}", path.display());
             }
-            desktop::run(game, quit_after_ms, initial_audio)?;
-        }
-        Command::ImportSave {
-            input,
-            slot,
-            user_data_dir,
-            choice,
-            font,
-            font_index,
-        } => {
-            let directory =
-                user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
-            let mut game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
-            if let Some(path) = font {
-                game.set_font_file(&path, font_index)?;
-            }
-            game.convert_uuc_to_slot(&input, &choice, slot)?;
-            println!(
-                "Imported {} into slot {slot}; user data: {}",
-                input.display(),
-                game.user_data_dir().context("user data missing")?.display()
-            );
+            desktop::run(game, quit_after_ms, initial_audio, save_dir, choice)?;
         }
         Command::Frame {
             output,

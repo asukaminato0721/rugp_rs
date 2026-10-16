@@ -208,6 +208,29 @@ impl MenuPanel {
 mod tests {
     use super::*;
     #[test]
+    fn context_menu_dispatches_settings_and_skip_and_quit_needs_confirmation() {
+        let mut panel = MenuPanel::new(Page::Context, Preferences::default());
+        for _ in 0..3 {
+            panel.key(KeyCode::ArrowDown);
+        }
+        assert_eq!(panel.key(KeyCode::Enter), Action::Settings);
+        panel.key(KeyCode::ArrowDown);
+        assert_eq!(panel.key(KeyCode::Enter), Action::Skip);
+        panel.key(KeyCode::ArrowDown);
+        assert_eq!(panel.key(KeyCode::Enter), Action::QuitPrompt);
+        let mut quit = MenuPanel::new(Page::Quit, Preferences::default());
+        assert_eq!(quit.key(KeyCode::Enter), Action::Resume);
+        quit.key(KeyCode::ArrowDown);
+        assert_eq!(quit.key(KeyCode::Enter), Action::Quit);
+        let mut settings = MenuPanel::new(Page::Settings, Preferences::default());
+        settings.button(600, 120, true);
+        settings.button(100, 120, false);
+        assert_eq!(settings.button(600, 120, false), Action::None);
+        settings.button(600, 120, true);
+        settings.cancel_press();
+        assert_eq!(settings.button(600, 120, false), Action::None);
+    }
+    #[test]
     fn settings_are_bounded_and_unpaired_or_dragged_releases_do_not_activate() {
         let mut panel = MenuPanel::new(Page::Settings, Preferences::default());
         assert_eq!(panel.button(600, 120, false), Action::None);

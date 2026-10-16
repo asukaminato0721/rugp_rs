@@ -1,106 +1,12 @@
-//! Portable slots in the already locked per-game user-data directory. Original
-//! Windows saves are neither read nor overwritten. Failed writes leave the old
-//! slot intact; bounded, versioned gzip JSON is checked before runtime mutation.
+//! Internal checkpoint serialization for runtime regression tests only.
 use super::{snapshot::GameSnapshot, *};
-use crate::{audio::AudioResources, audio_state::snapshot::PlaybackResume};
+use crate::audio::AudioResources;
 use flate2::{Compression, bufread::GzDecoder, write::GzEncoder};
 use serde::{Serialize, de::DeserializeOwned};
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{BufWriter, Cursor, Read, Write},
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-    time::SystemTime,
-};
-
+use std::io::{BufWriter, Cursor, Read, Write};
 const MAGIC: &[u8; 8] = b"RUGPRS\0\x01";
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_JSON: u64 = 256 * 1024 * 1024;
-static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
-pub const SLOT_COUNT: u8 = 10;
-
-#[derive(Debug)]
-pub struct SlotInfo {
-    pub slot: u8,
-    pub bytes: u64,
-    pub modified: Option<SystemTime>,
-}
-fn path(directory: &Path, slot: u8) -> Result<PathBuf> {
-    ensure!(slot < SLOT_COUNT, "save slot must be between 0 and 9");
-    Ok(directory.join(format!("slot-{slot}.rugpsave")))
-}
-impl Game {
-    pub fn save_slots(&self) -> Result<Vec<SlotInfo>> {
-        let directory = self
-            .user_data_dir()
-            .context("persistent user data is not enabled")?;
-        let mut slots = Vec::new();
-        for slot in 0..SLOT_COUNT {
-            match fs::metadata(path(directory, slot)?) {
-                Ok(info) => {
-                    ensure!(info.is_file(), "save slot is not a regular file");
-                    slots.push(SlotInfo {
-                        slot,
-                        bytes: info.len(),
-                        modified: info.modified().ok(),
-                    });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        Ok(slots)
-    }
-    pub fn save_slot(&self, slot: u8) -> Result<()> {
-        self.write_slot(slot, &self.snapshot()?)
-    }
-    pub(super) fn write_slot(&self, slot: u8, snapshot: &GameSnapshot) -> Result<()> {
-        let directory = self
-            .user_data_dir()
-            .context("persistent user data is not enabled")?;
-        let destination = path(directory, slot)?;
-        let temporary = directory.join(format!(
-            "slot-{slot}-{}-{}.pending",
-            std::process::id(),
-            TEMPORARY_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)?;
-        let result = (|| -> Result<()> {
-            snapshot.write(&mut file)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&temporary, &destination)?;
-            #[cfg(unix)]
-            File::open(directory)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            // Only this invocation's freshly-created temporary is removed.
-            // A failed rename never removes/truncates the existing slot.
-            let _ = fs::remove_file(&temporary);
-        }
-        result
-    }
-    pub fn load_slot(
-        &mut self,
-        slot: u8,
-        resources: &mut AudioResources,
-    ) -> Result<Vec<PlaybackResume>> {
-        let directory = self
-            .user_data_dir()
-            .context("persistent user data is not enabled")?;
-        let file = File::open(path(directory, slot)?)?;
-        ensure!(
-            file.metadata()?.is_file(),
-            "save slot is not a regular file"
-        );
-        let snapshot = GameSnapshot::read(file)?;
-        self.restore_snapshot(&snapshot, resources)
-    }
-}
 impl GameSnapshot {
     pub fn write(&self, output: impl Write) -> Result<()> {
         write_wire(self, output, MAX_JSON)
@@ -179,7 +85,7 @@ fn read_wire<T: DeserializeOwned>(input: impl Read, json_limit: u64) -> Result<T
 mod tests {
     use super::*;
     #[test]
-    fn portable_format_roundtrip_rejects_truncation_trailing_bytes_crc_and_expansion() -> Result<()>
+    fn checkpoint_wire_roundtrip_rejects_truncation_trailing_bytes_crc_and_expansion() -> Result<()>
     {
         let value = vec!["synthetic".repeat(500)];
         let mut bytes = Vec::new();
@@ -201,7 +107,6 @@ mod tests {
         let mut invalid = bytes.clone();
         invalid[7] += 1;
         assert!(read_wire::<Vec<String>>(invalid.as_slice(), MAX_JSON).is_err());
-        assert!(path(Path::new("."), SLOT_COUNT).is_err());
         Ok(())
     }
     #[test]

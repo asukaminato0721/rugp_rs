@@ -17,6 +17,8 @@ mod async_image;
 mod blit;
 mod camera;
 mod character;
+#[cfg(test)]
+mod checkpoint_test_wire;
 mod dialogue;
 #[cfg(test)]
 mod ending_tests;
@@ -28,7 +30,6 @@ pub mod native_save;
 mod parse_screen;
 mod posture;
 mod profile;
-pub mod save;
 pub mod scene_snapshot;
 mod scroll;
 pub mod snapshot;

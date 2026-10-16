@@ -7,10 +7,12 @@ edition.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-flate2 = "1.1"
 sha1 = "0.10"
 ab_glyph = "0.2.32"
 fontdb = { version = "0.24", default-features = false, features = ["std", "fs", "fontconfig"] }
 rugp_assets = { path = "../rugp_assets" }
 rugp_scene_vm = { path = "../rugp_scene_vm" }
 kira = { version = "0.9", default-features = false, features = ["cpal"] }
+
+[dev-dependencies]
+flate2 = "1.1"

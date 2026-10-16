@@ -462,6 +462,50 @@ mod tests {
         Mixer::new(manager)
     }
     #[test]
+    fn settings_mix_buses_without_restarting_or_replacing_script_gain() -> Result<()> {
+        let data = SoundData {
+            sample_rate: 1000,
+            channels: 1,
+            pcm: vec![8192; 32],
+        };
+        for (bus, channel) in [(Bus::Bgm, 1), (Bus::Voice, 2), (Bus::Effect, 3)] {
+            let mut mixer = mock_mixer(1000)?;
+            let ticket = mixer.play_with_envelope(
+                7,
+                bus,
+                &data,
+                true,
+                GainEnvelope::from_native([2048, 2048, 0])?,
+            )?;
+            mixer.manager.backend_mut().on_start_processing();
+            let mut baseline = 0.0f32;
+            for _ in 0..1000 {
+                baseline = mixer.manager.backend_mut().process().left;
+            }
+            let next = mixer.next;
+            let mut levels = [100; 4];
+            levels[0] = 50;
+            levels[channel] = 40;
+            mixer.set_output_levels(levels)?;
+            mixer.manager.backend_mut().on_start_processing();
+            let mut reduced = 0.0;
+            for _ in 0..1000 {
+                reduced = mixer.manager.backend_mut().process().left;
+            }
+            assert!((reduced / baseline - 0.2).abs() < 0.01, "bus {bus:?}");
+            assert_eq!(mixer.next, next);
+            assert!(!mixer.finished(ticket));
+            mixer.set_output_levels([100; 4])?;
+            mixer.manager.backend_mut().on_start_processing();
+            for _ in 0..1000 {
+                reduced = mixer.manager.backend_mut().process().left;
+            }
+            assert!((reduced / baseline - 1.0).abs() < 0.01);
+            assert!(mixer.set_output_levels([101; 4]).is_err());
+        }
+        Ok(())
+    }
+    #[test]
     fn spatial_channels_survive_gain_motion_and_resumed_pcm_without_touching_the_source()
     -> Result<()> {
         let data = SoundData {

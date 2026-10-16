@@ -1,6 +1,6 @@
 //! Import native dialogue checkpoints by replaying the original program.
 //! Replay uses a separate, volatile Game. Validation and resource preparation
-//! must finish before the live game or any portable slot changes.
+//! must finish before the live game changes.
 use super::*;
 use crate::{audio::AudioResources, audio_state::snapshot::PlaybackResume};
 use rugp_assets::{script::Script, uuc::NativeSave};
@@ -19,17 +19,6 @@ impl Game {
     ) -> Result<Vec<PlaybackResume>> {
         let snapshot = self.native_checkpoint(path, choices)?;
         self.restore_snapshot(&snapshot, resources)
-    }
-
-    /// Convert an existing Windows checkpoint without changing the live game.
-    /// The reconstructed script save switch remains part of the checkpoint.
-    pub fn convert_uuc_to_slot(&self, path: &Path, choices: &[u32], slot: u8) -> Result<()> {
-        ensure!(slot < save::SLOT_COUNT, "save slot must be between 0 and 9");
-        ensure!(
-            self.user_data_dir().is_some(),
-            "persistent user data is not enabled"
-        );
-        self.write_slot(slot, &self.native_checkpoint(path, choices)?)
     }
 
     fn native_checkpoint(&self, path: &Path, choices: &[u32]) -> Result<snapshot::GameSnapshot> {
@@ -115,7 +104,7 @@ impl Game {
         let mut title = false;
         let mut choice_at = 0;
         // Bound work even for a damaged save or a route that cannot reach the
-        // saved instruction. No profile or portable slot is written by replay.
+        // saved instruction. Replay does not write profiles or save files.
         for _ in 0..100_000 {
             crate::audio::mute_requests(&mut replay, &mut audio)?;
             if replay.vm.cursor() == Some(&cursor) && replay.waiting_for_dialogue() {
@@ -207,7 +196,7 @@ mod tests {
 
     #[test]
     #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR (contains vmr00001.uuc and vmr00002.uuc)"]
-    fn retail_uuc_conversion_load_continuation_and_failed_import_are_atomic() -> Result<()> {
+    fn retail_uuc_load_continuation_and_failed_import_are_atomic() -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let saves = PathBuf::from(std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?);
         let directory = std::env::temp_dir().join(format!(
@@ -219,15 +208,10 @@ mod tests {
         ));
         let mut game = Game::open_persistent(root.as_ref(), &directory)?;
         let mut resources = AudioResources::new(Arc::clone(&game.archive))?;
-        for (slot, name, address) in [(0, "vmr00001.uuc", 0x6dd0), (1, "vmr00002.uuc", 0x8330)] {
+        for (name, address) in [("vmr00001.uuc", 0x6dd0), ("vmr00002.uuc", 0x8330)] {
             let original = std::fs::read(saves.join(name))?;
-            let cursor = game.vm.cursor().cloned();
-            let pixels = game.frame().to_vec();
-            game.convert_uuc_to_slot(&saves.join(name), &[], slot)?;
-            assert_eq!(game.vm.cursor(), cursor.as_ref());
-            assert_eq!(game.frame(), pixels);
+            game.import_uuc(&saves.join(name), &[], &mut resources)?;
             assert_eq!(std::fs::read(saves.join(name))?, original);
-            game.load_slot(slot, &mut resources)?;
             assert!(game.waiting_for_dialogue());
             assert_eq!(
                 game.vm.cursor().map(|c| (c.scene, c.address)),
@@ -258,12 +242,6 @@ mod tests {
             game.vm.cursor().map(|c| (c.scene, c.address)),
             Some((483, 0x6dd0))
         );
-        // Import preserves the reconstructed switch. Conversion does not grant
-        // permission for subsequent user saves when the script disables them.
-        if !game.script_save_enabled() {
-            assert!(game.save_slot(2).is_err());
-        }
-        assert_eq!(game.save_slots()?.len(), 2);
         drop(game);
         std::fs::remove_dir_all(directory)?;
         Ok(())
