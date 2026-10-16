@@ -11,6 +11,7 @@ const KEY: u32 = 0x0732ce9a;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 
 pub mod character;
+pub mod message;
 pub mod metadata;
 pub mod reference_writer;
 pub mod state;

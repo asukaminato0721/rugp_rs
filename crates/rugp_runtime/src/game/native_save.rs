@@ -92,6 +92,15 @@ impl Game {
                         data.as_slice().try_into()?,
                     )))
                 }
+                "CVmVarObj" => {
+                    use rugp_assets::uuc::value::{ScalarValue, read_scalar};
+                    read_scalar(data)?.map(|value| match value {
+                        ScalarValue::Null => Value::Null,
+                        ScalarValue::Integer(value) => Value::Integer(value),
+                        ScalarValue::Real(value) => Value::Real(value),
+                        ScalarValue::Text(value) => Value::Text(value),
+                    })
+                }
                 _ => None,
             };
             if let Some(value) = value {
