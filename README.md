@@ -256,12 +256,22 @@ runs with resources and clocks active, not pixel-rendered route verification.
 
 The post-clear New Game chooser also has a separate first-chapter alternate
 mode, distinct from those three Premium extras. Four opt-in
-`retail_earned_first_chapter_if_` probes are being run for the original terminal
+`retail_earned_first_chapter_if_` probes have passed for the original terminal
 prefixes 213/229/304/369. Each first earns permission via unchanged ending tail
 249, selects the actual New Game/alternate-mode entries, and then plays the
 whole first-chapter prefix from SC483 through its original ending/credits to
-the title. They never assign plot, counter or unlock flags. Merely adding these
-fixtures does not prove that their long playback has passed.
+the title. They never assign plot, counter or unlock flags. All four observed
+their own final story scene, a newly running SC238 credit roll, its completion
+and the exact original title cursor. These are host-logic runs with resources,
+text rasterization and media clocks active, not scene-pixel verification; the
+prerequisite ending tail is not a complete second-chapter playthrough.
+
+| Final story scene | Dialogue confirmations | Selections | Return tick |
+| --- | ---: | ---: | ---: |
+| 213 | 3,648 | 7 | 6,537 |
+| 229 | 5,412 | 10 | 9,325 |
+| 304 | 8,019 | 15 | 14,019 |
+| 369 | 4,846 | 10 | 8,233 |
 
 The Rust-port progress database uses versioned, stable stored-resource keys,
 not Windows' private reference-stream text encoding. Bindings come from the
