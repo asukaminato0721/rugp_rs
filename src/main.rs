@@ -173,23 +173,40 @@ fn main() -> Result<()> {
             }
             let mut initial_audio = Vec::new();
             if let Some(path) = load_uuc {
-                let mut resources = rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
+                let mut resources =
+                    rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
                 initial_audio = game.import_uuc(&path, &choice, &mut resources)?;
                 eprintln!("Imported UUC at {:?}", game.vm.cursor());
+            } else if fast_forward_ms.is_some() {
+                let mut resources =
+                    rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
+                initial_audio = game.rebuild_audio_output(&mut resources)?;
             }
             if let Some(path) = game.user_data_dir() {
                 eprintln!("User data: {}", path.display());
             }
             desktop::run(game, quit_after_ms, initial_audio)?;
         }
-        Command::ImportSave { input, slot, user_data_dir, choice, font, font_index } => {
-            let directory = user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
+        Command::ImportSave {
+            input,
+            slot,
+            user_data_dir,
+            choice,
+            font,
+            font_index,
+        } => {
+            let directory =
+                user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
             let mut game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
-            if let Some(path) = font { game.set_font_file(&path, font_index)?; }
-            let mut resources = rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
-            game.import_uuc(&input, &choice, &mut resources)?;
-            game.save_slot(slot)?;
-            println!("Imported {} into slot {slot} at {:?}; user data: {}", input.display(), game.vm.cursor(), game.user_data_dir().context("user data missing")?.display());
+            if let Some(path) = font {
+                game.set_font_file(&path, font_index)?;
+            }
+            game.convert_uuc_to_slot(&input, &choice, slot)?;
+            println!(
+                "Imported {} into slot {slot}; user data: {}",
+                input.display(),
+                game.user_data_dir().context("user data missing")?.display()
+            );
         }
         Command::Frame {
             output,

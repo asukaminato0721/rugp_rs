@@ -56,6 +56,23 @@ impl Game {
     pub fn dialogue_waits_for_input(&self) -> bool {
         self.dialogue.as_ref().is_some_and(|d| d.stream.waiting())
     }
+    pub fn set_text_speed(&mut self, speed_ms: u32) -> Result<()> {
+        ensure!(speed_ms <= 3000, "invalid message output speed");
+        if self.message_config.is_none() {
+            let root = self.archive.volumes[0]
+                .path
+                .parent()
+                .context("game root missing")?;
+            self.message_config = Some(MessageConfig::load(root)?);
+        }
+        self.message_config.as_mut().unwrap().speed_ms = speed_ms;
+        if let Some(dialogue) = &mut self.dialogue
+            && !dialogue.forced_clock
+        {
+            dialogue.stream.set_speed(speed_ms)?;
+        }
+        Ok(())
+    }
     pub(super) fn ensure_message_window(&mut self, reference: &ObjectRef) -> Result<u64> {
         let id = reference.offset.context("message box has no identity")?;
         if !self.message_windows.contains_key(&id) {
@@ -83,7 +100,10 @@ impl Game {
                 .path
                 .parent()
                 .context("game directory missing")?;
-            let config = MessageConfig::load(root)?;
+            let config = self
+                .message_config
+                .clone()
+                .map_or_else(|| MessageConfig::load(root), Ok)?;
             let font = if let Some((path, index)) = &self.font_file {
                 TextFont::from_file(path, *index, config.font_size)?
             } else {

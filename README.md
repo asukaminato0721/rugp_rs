@@ -81,6 +81,27 @@ Enter/Space or a left-click reveals/advances dialogue; arrows and Enter choose
 menu items. **F5** opens Save, **F9** opens Load, and Escape cancels the slot
 chooser. The ten Rust-port slots are separate from original Windows UUC saves.
 Audio playback is included in every build. `play` enables audio automatically.
+During the OP, press Escape, Ctrl, Enter, or Space to skip the movie.
+A left-click also skips the movie. The script then continues to the title menu.
+
+If the installed game has no `Setup.ini`, the runtime uses the Latest Edition
+disc defaults for the message window. An invalid existing file reports an error.
+
+Import an original Windows save into a Rust-port slot:
+
+```sh
+cargo run --release -- --project-dir /path/to/game import-save /path/to/Vmreg/vmr00001.uuc --slot 0
+```
+
+Then use F9 to load slot 0. To start directly from a Windows save, use
+`play --load-uuc /path/to/Vmreg/vmr00001.uuc`.
+The importer reads the original files without changing them.
+It supports v19 dialogue checkpoints with an empty native call stack.
+It reconstructs the scene through script execution and restores native integer
+and Boolean variables. Audio and animation clocks restart at that dialogue page.
+For a branched route, repeat `--choice ID` for each selection after New Game.
+The importer checks the game version, instruction identity, and dialogue text.
+Unsupported checkpoints report an error. Global `gdb`/`sedb` progress is not imported.
 
 ## Inspection and diagnostics
 
@@ -119,7 +140,8 @@ Fallback fonts and portable rasterization can change glyph metrics/appearance.
 Click or press Enter/Space to reveal/advance dialogue; held-key repeats do not
 advance multiple messages. Exact GDI layout and speaker styling remain incomplete.
 
-On Linux, building the audio output requires ALSA development files. The pinned Nix development shell supplies the audio/window dependencies:
+On Linux, building the audio output requires ALSA development files.
+The pinned Nix development shell supplies the audio/window dependencies:
 
 ```sh
 nix develop
@@ -284,10 +306,9 @@ VM/media clock is paused and output is suspended, then rebuilt at the same PCM
 epoch on return. Input used to close/load the chooser cannot confirm a restored
 page. Invalid/incompatible saves report a nonfatal error in the chooser and
 leave the current game intact. These are Rust-port saves, not Windows UUC files.
-The current audio-enabled release has also passed an isolated Xvfb/XTest window
-smoke check with audio output: physical key presses enter the game, save slot 0,
-cancel Load, reopen and load slot 0, and advance dialogue afterward. The separate
-desktop integration regression covers corrupt slots and held/released input.
+The desktop integration regression covers saving, loading, cancellation,
+corrupt slots, and held/released input. It requires game assets, a Japanese font,
+and a working audio device.
 
 Gallery database selectors now honor the native per-item rule: decimal-prefix
 conversion must equal exactly 1 to enable an item; other values disable it.

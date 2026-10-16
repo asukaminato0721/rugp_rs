@@ -76,8 +76,9 @@ impl Game {
         self.sounds.clear();
         Ok(audio.playbacks)
     }
-    /// Also used by internal diagnostics during script-disabled startup/title.
-    fn capture_snapshot(&self) -> Result<GameSnapshot> {
+    /// Also used by diagnostics and native checkpoint conversion. Loading an
+    /// existing checkpoint does not require permission to create a new save.
+    pub(super) fn capture_snapshot(&self) -> Result<GameSnapshot> {
         let mut references = ReferenceSnapshotWriter::default();
         let mut textures = TextureSnapshotWriter::default();
         let snapshot = GameSnapshot {

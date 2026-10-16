@@ -52,11 +52,13 @@ impl Game {
         Ok(slots)
     }
     pub fn save_slot(&self, slot: u8) -> Result<()> {
+        self.write_slot(slot, &self.snapshot()?)
+    }
+    pub(super) fn write_slot(&self, slot: u8, snapshot: &GameSnapshot) -> Result<()> {
         let directory = self
             .user_data_dir()
             .context("persistent user data is not enabled")?;
         let destination = path(directory, slot)?;
-        let snapshot = self.snapshot()?;
         let temporary = directory.join(format!(
             "slot-{slot}-{}-{}.pending",
             std::process::id(),

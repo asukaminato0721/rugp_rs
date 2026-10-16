@@ -24,6 +24,7 @@ rugp_runtime = { path = "crates/rugp_runtime" }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 png = "0.18"
 
 [features]

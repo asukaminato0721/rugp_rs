@@ -15,7 +15,12 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
+mod controls;
+mod menu_panel;
+mod preferences;
 mod save_panel;
+use menu_panel::{Action as MenuAction, MenuPanel, Page};
+use preferences::Preferences;
 use save_panel::{Action as PanelAction, Mode as PanelMode, Panel};
 
 pub fn run(
@@ -24,7 +29,9 @@ pub fn run(
     initial_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
 ) -> Result<()> {
     let event_loop = EventLoop::new().context("create desktop event loop")?;
+    let preferences = Preferences::load(game.user_data_dir())?;
     let mut app = App::new(game, quit_after_ms);
+    app.apply_preferences(preferences)?;
     app.panel_audio = initial_audio;
     event_loop
         .run_app(&mut app)
@@ -49,6 +56,11 @@ struct App {
     panel_font: Option<rugp_runtime::font::TextFont>,
     panel_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
     slot: u8,
+    menu: Option<MenuPanel>,
+    preferences: Preferences,
+    controls: controls::Controls,
+    right_pressed: bool,
+    exit_requested: bool,
     audio: Option<rugp_runtime::audio_device::DeviceAudio>,
     audio_tickets: std::collections::BTreeMap<u64, u64>,
 }
@@ -69,6 +81,11 @@ impl App {
             panel_font: None,
             panel_audio: Vec::new(),
             slot: 0,
+            menu: None,
+            preferences: Preferences::default(),
+            controls: controls::Controls::default(),
+            right_pressed: false,
+            exit_requested: false,
             audio: None,
             audio_tickets: std::collections::BTreeMap::new(),
         }
@@ -94,8 +111,90 @@ impl App {
                 self.game.size(),
                 self.panel_font.as_mut().context("slot UI font missing")?,
             )?);
+        } else if let Some(menu) = &self.menu {
+            self.panel_frame = Some(menu.render(
+                self.game.frame(),
+                self.game.size(),
+                self.panel_font.as_mut().context("menu font missing")?,
+            )?);
         }
         Ok(())
+    }
+    fn modal_open(&self) -> bool {
+        self.panel.is_some() || self.menu.is_some()
+    }
+    fn apply_preferences(&mut self, preferences: Preferences) -> Result<()> {
+        self.game.set_text_speed(preferences.text_speed_ms)?;
+        if let Some(audio) = &mut self.audio {
+            audio.set_output_levels(preferences.levels)?;
+        }
+        if let Some(window) = &self.window {
+            window.set_fullscreen(
+                preferences
+                    .fullscreen
+                    .then(|| winit::window::Fullscreen::Borderless(window.current_monitor())),
+            );
+        }
+        self.preferences = preferences;
+        Ok(())
+    }
+    fn pause_game(&mut self) -> Result<()> {
+        self.controls.stop();
+        self.right_pressed = false;
+        if self.panel_font.is_none() {
+            self.panel_font = Some(self.game.interface_font(20)?);
+        }
+        if !self.modal_open() {
+            self.game.pointer_move(-1, -1)?;
+            self.game.pointer_button(false)?;
+            if self.audio_resources.is_none() {
+                self.audio_resources = Some(rugp_runtime::audio::AudioResources::new(Arc::clone(
+                    &self.game.archive,
+                ))?);
+            }
+            self.panel_audio = self
+                .game
+                .rebuild_audio_output(self.audio_resources.as_mut().unwrap())?;
+            if let Some(audio) = &mut self.audio {
+                audio.reset();
+            }
+            self.audio_tickets.clear();
+        }
+        Ok(())
+    }
+    fn open_menu(&mut self, page: Page) -> Result<()> {
+        self.pause_game()?;
+        self.panel = None;
+        self.menu = Some(MenuPanel::new(page, self.preferences.clone()));
+        self.refresh_panel()
+    }
+    fn menu_action(&mut self, action: MenuAction) -> Result<()> {
+        match action {
+            MenuAction::None => self.refresh_panel(),
+            MenuAction::Resume => self.close_panel(),
+            MenuAction::Save => self.open_panel(PanelMode::Save),
+            MenuAction::Load => self.open_panel(PanelMode::Load),
+            MenuAction::Settings => self.open_menu(Page::Settings),
+            MenuAction::QuitPrompt => self.open_menu(Page::Quit),
+            MenuAction::Quit => {
+                self.exit_requested = true;
+                Ok(())
+            }
+            MenuAction::Skip => {
+                self.close_panel()?;
+                self.controls.toggle();
+                Ok(())
+            }
+            MenuAction::Change(preferences) => {
+                if let Err(error) = preferences.save(self.game.user_data_dir()) {
+                    self.menu.as_mut().unwrap().notice = format!("設定を保存できません: {error}");
+                } else {
+                    self.menu.as_mut().unwrap().notice.clear();
+                }
+                self.apply_preferences(preferences)?;
+                self.refresh_panel()
+            }
+        }
     }
     fn open_panel(&mut self, mode: PanelMode) -> Result<()> {
         if self.game.waiting_for_load() && mode == PanelMode::Save {
@@ -105,49 +204,32 @@ impl App {
         for info in self.game.save_slots()? {
             occupied[info.slot as usize] = true;
         }
-        if self.panel_font.is_none() {
-            self.panel_font = Some(self.game.interface_font(20)?);
-        }
-        if self.panel.is_none() {
-            self.game.pointer_move(-1, -1)?;
-            self.game.pointer_button(false)?;
-            if self.audio_resources.is_none() {
-                self.audio_resources = Some(rugp_runtime::audio::AudioResources::new(Arc::clone(
-                    &self.game.archive,
-                ))?);
-            }
-            // Pause device time with the VM. Closing resumes PCM/gain at the
-            // unchanged virtual epoch, regardless of time spent in this UI.
-            self.panel_audio = self
-                .game
-                .rebuild_audio_output(self.audio_resources.as_mut().unwrap())?;
-            {
-                if let Some(audio) = &mut self.audio {
-                    audio.reset();
-                }
-                self.audio_tickets.clear();
-            }
-        }
+        self.pause_game()?;
+        self.menu = None;
         self.panel = Some(Panel::new(mode, self.slot, occupied));
         self.refresh_panel()
     }
     fn close_panel(&mut self) -> Result<()> {
         self.game.cancel_load_request()?;
         for playback in std::mem::take(&mut self.panel_audio) {
-            {
-                if self.audio.is_none() {
-                    self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
-                        &self.game.archive,
-                    ))?);
-                }
-                if let Some(ticket) = self.audio.as_mut().unwrap().resume(&playback)? {
-                    self.audio_tickets.insert(playback.ticket, ticket);
-                } else {
-                    self.game.finish_audio_ticket(playback.ticket);
-                }
+            if self.audio.is_none() {
+                self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
+                    &self.game.archive,
+                ))?);
+                self.audio
+                    .as_mut()
+                    .unwrap()
+                    .set_output_levels(self.preferences.levels)?;
+            }
+            if let Some(ticket) = self.audio.as_mut().unwrap().resume(&playback)? {
+                self.audio_tickets.insert(playback.ticket, ticket);
+            } else {
+                self.game.finish_audio_ticket(playback.ticket);
             }
         }
         self.panel = None;
+        self.menu = None;
+        self.controls.stop();
         self.panel_frame = None;
         self.last = Instant::now();
         if let Some((x, y)) = self.cursor {
@@ -204,22 +286,42 @@ impl App {
     }
     fn sounds(&mut self) -> Result<()> {
         for request in self.game.take_sounds() {
+            if self.controls.active()
+                && [2, 4].contains(&request.kind)
+                && let (Some(source), Some(ticket)) = (&request.source, request.ticket)
             {
-                if self.audio.is_none() {
-                    if request.source.is_none() && [254, 255].contains(&request.kind) {
-                        continue;
-                    }
-                    self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
-                        &self.game.archive,
-                    ))?);
+                if self.audio_resources.is_none() {
+                    self.audio_resources = Some(rugp_runtime::audio::AudioResources::new(
+                        Arc::clone(&self.game.archive),
+                    )?);
                 }
-                let runtime_ticket = request.ticket;
-                if let Some(ticket) = self.audio.as_mut().unwrap().request(request)? {
-                    self.audio_tickets.insert(
-                        runtime_ticket.context("play request lacks runtime identity")?,
-                        ticket,
-                    );
+                if let Some(duration) = self
+                    .audio_resources
+                    .as_mut()
+                    .unwrap()
+                    .muted_duration(source)?
+                {
+                    self.game.time_audio_ticket(ticket, duration);
                 }
+            }
+            if self.audio.is_none() {
+                if request.source.is_none() && [254, 255].contains(&request.kind) {
+                    continue;
+                }
+                self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
+                    &self.game.archive,
+                ))?);
+                self.audio
+                    .as_mut()
+                    .unwrap()
+                    .set_output_levels(self.preferences.levels)?;
+            }
+            let runtime_ticket = request.ticket;
+            if let Some(ticket) = self.audio.as_mut().unwrap().request(request)? {
+                self.audio_tickets.insert(
+                    runtime_ticket.context("play request lacks runtime identity")?,
+                    ticket,
+                );
             }
         }
         Ok(())
@@ -275,10 +377,8 @@ impl App {
         // A failing VM tick may already have queued playback. Do not start it
         // after dropping the output device, or reopen a device on the error UI.
         self.game.take_sounds();
-        {
-            self.audio = None;
-            self.audio_tickets.clear();
-        }
+        self.audio = None;
+        self.audio_tickets.clear();
         let message = format!("{error:#}");
         eprintln!("{message}");
         if let Some(window) = &self.window {
@@ -308,6 +408,7 @@ impl ApplicationHandler for App {
                 .map_err(|e| anyhow::anyhow!("create software surface: {e}"))?;
             self.window = Some(window);
             self.surface = Some(surface);
+            self.apply_preferences(self.preferences.clone())?;
             if !self.panel_audio.is_empty() {
                 self.close_panel()?;
             }
@@ -327,7 +428,17 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::CursorMoved { position, .. } if self.error.is_none() => {
                 self.cursor = Some((position.x, position.y));
-                if self.panel.is_none()
+                if let Some(menu) = &mut self.menu {
+                    let (width, height) = self.game.size();
+                    let size = self.window.as_ref().unwrap().inner_size();
+                    let (x, y) = Viewport::fit(size.width, size.height, width, height)
+                        .and_then(|v| v.point(position.x, position.y))
+                        .unwrap_or((-1, -1));
+                    menu.pointer(x, y);
+                    if let Err(error) = self.refresh_panel() {
+                        self.fail(error);
+                    }
+                } else if !self.modal_open()
                     && let Err(error) = self.move_pointer(position.x, position.y)
                 {
                     self.fail(error);
@@ -337,6 +448,12 @@ impl ApplicationHandler for App {
                 if self.error.is_none() =>
             {
                 self.cursor = None;
+                self.controls.stop();
+                self.right_pressed = false;
+                if let Some(menu) = &mut self.menu {
+                    menu.cancel_press();
+                    return;
+                }
                 if let Some(panel) = &mut self.panel {
                     panel.cancel_press();
                     return;
@@ -362,11 +479,53 @@ impl ApplicationHandler for App {
                             .unwrap()
                             .button(x, y, state == ElementState::Pressed);
                     self.panel_action(action)
+                } else if self.menu.is_some() {
+                    let (x, y) = self.cursor.map_or((-1, -1), |(x, y)| self.point(x, y));
+                    let action =
+                        self.menu
+                            .as_mut()
+                            .unwrap()
+                            .button(x, y, state == ElementState::Pressed);
+                    self.menu_action(action)
+                } else if self.controls.active() {
+                    self.controls.stop();
+                    Ok(())
                 } else {
                     self.game.pointer_button(state == ElementState::Pressed)
                 };
                 if let Err(error) = result {
                     self.fail(error);
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Right,
+                ..
+            } if self.error.is_none() => {
+                if state == ElementState::Pressed {
+                    self.right_pressed = true;
+                } else if std::mem::take(&mut self.right_pressed) {
+                    let result = if self.modal_open() {
+                        self.close_panel()
+                    } else {
+                        self.open_menu(Page::Context)
+                    };
+                    if let Err(error) = result {
+                        self.fail(error);
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if matches!(
+                    event.physical_key,
+                    PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight)
+                ) =>
+            {
+                if let PhysicalKey::Code(key) = event.physical_key {
+                    let down = event.state == ElementState::Pressed
+                        && !self.modal_open()
+                        && self.error.is_none();
+                    self.controls.key(key, down);
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -377,12 +536,31 @@ impl ApplicationHandler for App {
                 let result = match event.physical_key {
                     PhysicalKey::Code(KeyCode::F5) => self.open_panel(PanelMode::Save),
                     PhysicalKey::Code(KeyCode::F9) => self.open_panel(PanelMode::Load),
+                    PhysicalKey::Code(KeyCode::F2) => {
+                        if self.menu.as_ref().is_some_and(|m| m.page == Page::Settings) {
+                            self.close_panel()
+                        } else {
+                            self.open_menu(Page::Settings)
+                        }
+                    }
+                    PhysicalKey::Code(key) if self.menu.is_some() => {
+                        let action = self.menu.as_mut().unwrap().key(key);
+                        self.menu_action(action)
+                    }
                     PhysicalKey::Code(key) if self.panel.is_some() => {
                         let action = self.panel.as_mut().unwrap().key(key);
                         self.panel_action(action)
                     }
-                    PhysicalKey::Code(KeyCode::Escape | KeyCode::ControlLeft | KeyCode::ControlRight) => {
-                        self.game.skip_video().map(|_| ())
+                    PhysicalKey::Code(KeyCode::Escape) => {
+                        if self.game.video().is_some_and(|v| !v.finished()) {
+                            self.game.skip_video().map(|_| ())
+                        } else {
+                            self.open_menu(Page::Context)
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::KeyS) => {
+                        self.controls.toggle();
+                        Ok(())
                     }
                     PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::ArrowRight | KeyCode::Tab) => {
                         self.game.navigate_selection(1)
@@ -403,7 +581,7 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let dt = now.duration_since(self.last).as_millis().min(100) as u32;
                 self.last = now;
-                if self.error.is_none() && self.panel.is_none() {
+                if self.error.is_none() && !self.modal_open() {
                     if let Some(audio) = &self.audio {
                         self.audio_tickets.retain(|&runtime, &mut ticket| {
                             if audio.finished(ticket) {
@@ -415,7 +593,15 @@ impl ApplicationHandler for App {
                         });
                     }
                     let selecting = self.game.waiting_for_selection();
-                    match self.game.step(dt) {
+                    if selecting || self.game.waiting_for_input() || self.game.waiting_for_load() {
+                        self.controls.stop();
+                    }
+                    let result = if self.controls.active() {
+                        self.game.fast_forward_step(dt)
+                    } else {
+                        self.game.step(dt)
+                    };
+                    match result {
                         Ok(RunState::Ended) => event_loop.exit(),
                         Ok(_) => {}
                         Err(e) => self.fail(e),
@@ -439,6 +625,9 @@ impl ApplicationHandler for App {
                         self.fail(e);
                     }
                 }
+                if self.exit_requested {
+                    event_loop.exit();
+                }
                 if let Err(e) = self.present() {
                     self.fail(e);
                     event_loop.exit();
@@ -453,7 +642,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(_) => {
                 if self.error.is_none()
-                    && self.panel.is_none()
+                    && !self.modal_open()
                     && let Some((x, y)) = self.cursor
                     && let Err(error) = self.move_pointer(x, y)
                 {

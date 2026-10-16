@@ -441,6 +441,32 @@ fn invariant_edge(p: &Texture, horizontal: bool) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn missing_setup_uses_disc_defaults_but_invalid_existing_setup_fails() -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "rugp-message-defaults-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory)?;
+        let config = MessageConfig::load(&directory)?;
+        assert_eq!(config.family, "ＭＳ Ｐゴシック");
+        assert_eq!(config.font_size, 24);
+        assert_eq!(config.speed_ms, 0);
+        assert_eq!(config.backdrop.color, [32, 32, 160]);
+        assert_eq!(config.backdrop.source, 192);
+        assert_eq!(config.backdrop.destination_shift, 6);
+        std::fs::write(directory.join("Setup.ini"), b"invalid settings")?;
+        assert!(MessageConfig::load(&directory).is_err());
+        std::fs::remove_file(directory.join("Setup.ini"))?;
+        std::fs::create_dir(directory.join("Setup.ini"))?;
+        assert!(MessageConfig::load(&directory).is_err());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
     fn additive_window_background_uses_shift_not_opacity() -> Result<()> {
         let mut frame = Framebuffer::new(3, 1)?;
         frame.clear([200, 120, 40]);

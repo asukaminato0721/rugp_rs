@@ -1803,6 +1803,7 @@ dependencies = [
  "rugp_assets",
  "rugp_runtime",
  "rugp_scene_vm",
+ "serde",
  "serde_json",
  "softbuffer",
  "winit",

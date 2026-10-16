@@ -172,14 +172,14 @@ impl Panel {
         Ok(frame)
     }
 }
-fn rect(frame: &mut Framebuffer, bounds: (i32, i32, i32, i32), color: [u8; 4]) {
+pub(super) fn rect(frame: &mut Framebuffer, bounds: (i32, i32, i32, i32), color: [u8; 4]) {
     for y in bounds.1..bounds.3 {
         for x in bounds.0..bounds.2 {
             frame.pixel(x, y, color);
         }
     }
 }
-fn text(
+pub(super) fn text(
     frame: &mut Framebuffer,
     font: &mut TextFont,
     mut x: i32,

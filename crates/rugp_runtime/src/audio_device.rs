@@ -17,6 +17,7 @@ use kira::{
         PlaybackPosition, PlaybackState,
         static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings},
     },
+    track::{TrackBuilder, TrackHandle},
     tween::Tween,
 };
 use rugp_assets::{RioArchive, sound::Sample};
@@ -38,16 +39,40 @@ struct PlaybackStart {
 }
 pub struct Mixer<B: Backend> {
     manager: AudioManager<B>,
+    tracks: [TrackHandle; 3],
     playing: BTreeMap<u64, Playing>,
     next: u64,
 }
 impl<B: Backend> Mixer<B> {
-    pub fn new(manager: AudioManager<B>) -> Self {
-        Self {
+    pub fn new(mut manager: AudioManager<B>) -> Result<Self> {
+        let mut track = || {
+            manager
+                .add_sub_track(TrackBuilder::new())
+                .map_err(|e| anyhow::anyhow!("create audio channel: {e}"))
+        };
+        let tracks = [track()?, track()?, track()?];
+        Ok(Self {
             manager,
+            tracks,
             playing: BTreeMap::new(),
             next: 1,
+        })
+    }
+    /// Host levels use separate mixer tracks. Script gain envelopes and fades
+    /// continue without replacing or restarting active sounds.
+    pub fn set_output_levels(&mut self, levels: [u8; 4]) -> Result<()> {
+        ensure!(levels.iter().all(|&v| v <= 100), "invalid audio level");
+        self.manager.main_track().set_volume(
+            Volume::Amplitude(f64::from(levels[0]) / 100.0),
+            Tween::default(),
+        );
+        for (track, level) in self.tracks.iter_mut().zip(&levels[1..]) {
+            track.set_volume(
+                Volume::Amplitude(f64::from(*level) / 100.0),
+                Tween::default(),
+            );
         }
+        Ok(())
     }
     pub fn play(&mut self, source: u64, bus: Bus, data: &SoundData, looped: bool) -> Result<u64> {
         self.play_with_envelope(source, bus, data, looped, GainEnvelope::UNITY)
@@ -157,6 +182,13 @@ impl<B: Backend> Mixer<B> {
         };
         let envelope = start.envelope;
         let settings = settings
+            .output_destination(
+                &self.tracks[match bus {
+                    Bus::Bgm => 0,
+                    Bus::Voice => 1,
+                    Bus::Effect => 2,
+                }],
+            )
             .start_position(PlaybackPosition::Samples(start.position))
             .volume(Volume::Amplitude(
                 envelope.start_amplitude() * start.gain_scale,
@@ -295,7 +327,7 @@ impl DeviceAudio {
             .map_err(|e| anyhow::anyhow!("open audio device: {e}"))?;
         let resources = AudioResources::new(Arc::clone(&archive))?;
         Ok(Self {
-            mixer: Mixer::new(manager),
+            mixer: Mixer::new(manager)?,
             resources,
             archive,
         })
@@ -372,6 +404,9 @@ impl DeviceAudio {
     pub fn finished(&self, ticket: u64) -> bool {
         self.mixer.finished(ticket)
     }
+    pub fn set_output_levels(&mut self, levels: [u8; 4]) -> Result<()> {
+        self.mixer.set_output_levels(levels)
+    }
     /// A coordinated game restore must stop the old output before rebuilding
     /// its runtime/device ticket mapping. Decoded resource caches may survive.
     pub fn reset(&mut self) {
@@ -424,7 +459,7 @@ mod tests {
             ..Default::default()
         })
         .map_err(|_| anyhow::anyhow!("mock init"))?;
-        Ok(Mixer::new(manager))
+        Mixer::new(manager)
     }
     #[test]
     fn spatial_channels_survive_gain_motion_and_resumed_pcm_without_touching_the_source()
@@ -628,7 +663,7 @@ mod tests {
             ..Default::default()
         })
         .map_err(|_| anyhow::anyhow!("mock init"))?;
-        let mut mixer = Mixer::new(manager);
+        let mut mixer = Mixer::new(manager)?;
         let data = SoundData {
             sample_rate: 1000,
             channels: 1,
@@ -666,7 +701,7 @@ mod tests {
             ..Default::default()
         })
         .map_err(|_| anyhow::anyhow!("mock init"))?;
-        let mut mixer = Mixer::new(manager);
+        let mut mixer = Mixer::new(manager)?;
         let data = SoundData {
             sample_rate: 1000,
             channels: 1,
@@ -698,7 +733,7 @@ mod tests {
         };
         let manager =
             AudioManager::<MockBackend>::new(settings).map_err(|_| anyhow::anyhow!("mock init"))?;
-        let mut mixer = Mixer::new(manager);
+        let mut mixer = Mixer::new(manager)?;
         let data = SoundData {
             sample_rate: 44100,
             channels: 1,
@@ -724,7 +759,7 @@ mod tests {
             ..Default::default()
         })
         .map_err(|_| anyhow::anyhow!("mock init"))?;
-        let mut mixer = Mixer::new(manager);
+        let mut mixer = Mixer::new(manager)?;
         let data = SoundData {
             sample_rate: 44100,
             channels: 1,
@@ -756,7 +791,7 @@ mod tests {
                 ..Default::default()
             })
             .map_err(|_| anyhow::anyhow!("mock init"))?;
-            let mut mixer = Mixer::new(manager);
+            let mut mixer = Mixer::new(manager)?;
             let data = SoundData {
                 sample_rate: 1000,
                 channels: 1,

@@ -20,6 +20,7 @@ mod character;
 mod dialogue;
 #[cfg(test)]
 mod ending_tests;
+mod fast_forward;
 mod gallery;
 mod input_wait;
 mod menu;

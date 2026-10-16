@@ -76,6 +76,12 @@ impl Dialogue {
     pub fn waiting(&self) -> bool {
         self.wait.is_some()
     }
+    pub fn set_speed(&mut self, speed_ms: u32) -> Result<()> {
+        ensure!(speed_ms <= 3000, "invalid message output speed");
+        self.speed_ms = speed_ms;
+        self.delay_ms = self.delay_ms.min(speed_ms);
+        Ok(())
+    }
     pub fn finished(&self) -> bool {
         self.wait.is_none() && self.tokens.is_empty() && self.delay_ms == 0
     }

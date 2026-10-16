@@ -723,4 +723,55 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+    fn retail_movie_skip_finishes_wait_without_selecting_the_title_menu() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let mut audio = None;
+        for _ in 0..300 {
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+            game.step(100)?;
+            if game.video_wait {
+                break;
+            }
+        }
+        ensure!(game.video_wait, "startup movie not reached");
+        let checkpoint = game.capture_snapshot()?;
+        let mut resources = crate::audio::AudioResources::new(Arc::clone(&game.archive))?;
+        for pointer in [false, true] {
+            game.restore_snapshot(&checkpoint, &mut resources)?;
+            let cursor = game.vm.cursor().cloned();
+            if pointer {
+                game.pointer_move(10, 10)?;
+                game.pointer_button(false)?; // An unpaired release must not skip.
+                assert!(!game.video.as_ref().unwrap().1.finished());
+                game.pointer_button(true)?;
+                assert!(!game.video.as_ref().unwrap().1.finished());
+                game.pointer_button(false)?;
+            } else {
+                game.activate_selection()?;
+            }
+            assert!(game.video.as_ref().unwrap().1.finished());
+            assert_eq!(game.vm.cursor(), cursor.as_ref());
+            assert!(!game.skip_video()?);
+            test_roundtrip(&mut game)?;
+            for _ in 0..10 {
+                game.step(1000)?;
+                crate::audio::mute_requests(&mut game, &mut audio)?;
+                if game.waiting_for_selection() {
+                    break;
+                }
+            }
+            assert!(!game.video_wait && game.waiting_for_selection());
+            let cursor = game.vm.cursor().cloned();
+            let title = game.frame().to_vec();
+            game.pointer_button(false)?;
+            game.step(0)?;
+            assert_eq!(game.vm.cursor(), cursor.as_ref());
+            assert_eq!(game.frame(), title);
+        }
+        Ok(())
+    }
 }

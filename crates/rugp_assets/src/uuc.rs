@@ -35,7 +35,10 @@ fn chunk(input: &mut Reader<'_>) -> Result<Vec<u8>> {
             let value = input.u8()? ^ key as u8;
             output.push(value);
             checksum = checksum.wrapping_add(u16::from(value) * (count - index) as u16);
-            key = !(key.wrapping_mul(2).wrapping_add(0xa3b376c9).wrapping_add((key >> 15) & 1));
+            key = !(key
+                .wrapping_mul(2)
+                .wrapping_add(0xa3b376c9)
+                .wrapping_add((key >> 15) & 1));
         }
         ensure!(input.u16()? == checksum, "UUC checksum mismatch");
     }
@@ -53,14 +56,25 @@ impl NativeSave {
         let metadata = chunk(&mut encrypted)?;
         ensure!(encrypted.remaining() == 0, "trailing data in UUC file");
         let mut reader = ObjectReader::new(&data);
-        ensure!(reader.input.u32()? == 19, "unsupported UUC version (expected 19)");
-        ensure!(reader.input.u32()? as usize == metadata_at, "invalid UUC metadata offset");
+        ensure!(
+            reader.input.u32()? == 19,
+            "unsupported UUC version (expected 19)"
+        );
+        ensure!(
+            reader.input.u32()? as usize == metadata_at,
+            "invalid UUC metadata offset"
+        );
         ensure!(reader.input.u8()? == 1, "unsupported UUC archive mode");
         ensure!(reader.input.u32()? == 0x431, "unsupported UUC engine build");
         ensure!(reader.input.u32()? == 20, "unsupported UUC archive flags");
         reader.pad(1)?;
         let root = reader.reference_without_count(shift)?;
-        ensure!(root.class.as_ref().is_some_and(|c| c.name == "CObjectOcean"), "invalid UUC root");
+        ensure!(
+            root.class
+                .as_ref()
+                .is_some_and(|c| c.name == "CObjectOcean"),
+            "invalid UUC root"
+        );
         ensure!(reader.input.u8()? == 0, "unsupported UUC root state");
         let title = reader.input.string()?;
         let registry = reader.input.string()?;
@@ -70,11 +84,14 @@ impl NativeSave {
         // The supported v3 host context has no active modal or extra process.
         // Reject different contexts until their runtime state can be restored.
         const CONTEXT: &[u8] = &[
-            1,0,0,0, 3,0,0,0, 0,0,2,0,0,0,0,0,0,0,128,255,255,0,128,255,255,
-            3,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,
+            1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 0, 128, 255, 255,
+            3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0,
         ];
         let context_at = reader.input.position;
-        ensure!(reader.input.bytes(CONTEXT.len())? == CONTEXT, "unsupported UUC host context at {context_at:#x}");
+        ensure!(
+            reader.input.bytes(CONTEXT.len())? == CONTEXT,
+            "unsupported UUC host context at {context_at:#x}"
+        );
         let mut objects = BTreeMap::new();
         while reader.input.remaining() > 0 {
             let named = reader.input.u8()?;
@@ -82,22 +99,34 @@ impl NativeSave {
                 // Two host managers follow the archive objects. A zero byte
                 // terminates this list before the navigation CString.
                 let name = reader.input.string()?;
-                ensure!(name == "_DevRoot/AbstThreadMediaMng", "unsupported UUC host manager {name}");
+                ensure!(
+                    name == "_DevRoot/AbstThreadMediaMng",
+                    "unsupported UUC host manager {name}"
+                );
                 let length = reader.input.u32()? as usize;
                 reader.input.skip(length)?;
                 ensure!(reader.input.u8()? == 0, "invalid UUC sound manager tag");
-                ensure!(reader.input.string()? == "_DevRoot/AbstSoundMng", "missing UUC sound manager");
+                ensure!(
+                    reader.input.string()? == "_DevRoot/AbstSoundMng",
+                    "missing UUC sound manager"
+                );
                 let length = reader.input.u32()? as usize;
                 reader.input.skip(length)?;
                 ensure!(reader.input.u8()? == 0, "invalid UUC object terminator");
                 break;
             }
-            ensure!(named == 1 && reader.input.u16()? == 2, "unsupported UUC object identity");
+            ensure!(
+                named == 1 && reader.input.u16()? == 2,
+                "unsupported UUC object identity"
+            );
             ensure!(objects.len() < 65536, "too many UUC objects");
             let offset = u64::from(reader.input.u32()?) << shift;
             let length = reader.input.u32()? as usize;
             let payload = reader.input.bytes(length)?.to_vec();
-            ensure!(objects.insert(offset, payload).is_none(), "duplicate UUC object identity");
+            ensure!(
+                objects.insert(offset, payload).is_none(),
+                "duplicate UUC object identity"
+            );
         }
         let navigation = reader.input.string()?;
         ensure!(reader.input.remaining() == 0, "trailing UUC runtime data");
@@ -105,36 +134,197 @@ impl NativeSave {
         // thumbnail block. The remaining image is not used to restore play.
         let mut metadata = Reader::new(&metadata);
         let application = metadata.string()?;
-        ensure!(application.ends_with(&registry), "UUC metadata project mismatch");
-        ensure!(metadata.string()? == registry, "UUC metadata title mismatch");
-        Ok(Self { title, registry, game_version, objects, navigation })
+        ensure!(
+            application.ends_with(&registry),
+            "UUC metadata project mismatch"
+        );
+        ensure!(
+            metadata.string()? == registry,
+            "UUC metadata title mismatch"
+        );
+        Ok(Self {
+            title,
+            registry,
+            game_version,
+            objects,
+            navigation,
+        })
     }
 
     /// Decode the empty-call-stack dialogue form of CVm60Thread schema 4.
     /// Other forms need a native stack/argument decoder and are rejected.
     pub fn dialogue_cursor(&self, process: u64, shift: u32) -> Result<(u64, u32)> {
-        let data = self.objects.get(&process).context("UUC process state missing")?;
+        let data = self
+            .objects
+            .get(&process)
+            .context("UUC process state missing")?;
         let mut reader = ObjectReader::new(data);
         reader.pad(1)?;
         let class = reader.class()?.context("UUC thread class missing")?;
-        ensure!(class.name == "CVm60Thread" && class.schema == 4 && reader.input.u16()? == 0xc040, "unsupported UUC thread");
+        ensure!(
+            class.name == "CVm60Thread" && class.schema == 4 && reader.input.u16()? == 0xc040,
+            "unsupported UUC thread"
+        );
         let scene = reader.reference_without_count(shift)?;
-        ensure!(scene.class.as_ref().is_some_and(|c| c.name == "CRsa"), "UUC thread scene missing");
+        ensure!(
+            scene.class.as_ref().is_some_and(|c| c.name == "CRsa"),
+            "UUC thread scene missing"
+        );
         // Vm60 10029820 saves the instruction identity (flags & 0xfffff),
         // rather than its in-memory byte address, immediately after CRsa.
         let instruction_id = reader.input.u32()?;
         // This suffix describes one empty CVmStackFrame and an empty CStdb.
         const EMPTY_STACK: &[u8] = b"\x01\0\0\0\xe8\x03\0\0\xff\0\0\0\xff\xff\x01\0\x0d\0CVmStackFrame\0\0\0\0\0\0\0\0\x01\0\0\0\xff\xff\x01\0\x05\0CStdb\x40\xc0\0";
-        ensure!(data.ends_with(EMPTY_STACK), "UUC call stack or local state is not supported");
-        ensure!(data.len() - EMPTY_STACK.len() >= reader.input.position, "invalid UUC thread cursor");
-        Ok((scene.offset.context("UUC scene offset missing")?, instruction_id))
+        ensure!(
+            data.ends_with(EMPTY_STACK),
+            "UUC call stack or local state is not supported"
+        );
+        ensure!(
+            data.len() - EMPTY_STACK.len() >= reader.input.position,
+            "invalid UUC thread cursor"
+        );
+        Ok((
+            scene.offset.context("UUC scene offset missing")?,
+            instruction_id,
+        ))
     }
 
     pub fn dialogue_text(&self, window: u64) -> Result<String> {
-        let data = self.objects.get(&window).context("UUC message window missing")?;
+        let data = self
+            .objects
+            .get(&window)
+            .context("UUC message window missing")?;
         let mut reader = Reader::new(data);
         ensure!(reader.u32()? == 2, "unsupported UUC box version");
         reader.skip(31)?; // CBox and CImgBox state before the retained text
         reader.string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encrypt(bytes: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        output.extend((!(bytes.len() as u32) ^ 0xc92e568b).to_le_bytes());
+        output.extend(((bytes.len() as u32 * 8) ^ 0xc92e568f).to_le_bytes());
+        let mut key = KEY;
+        for block in bytes.chunks(32) {
+            let checksum = block.iter().enumerate().fold(0u16, |sum, (i, &b)| {
+                sum.wrapping_add(u16::from(b) * (block.len() - i) as u16)
+            });
+            for &byte in block {
+                output.push(byte ^ key as u8);
+                key = !(key
+                    .wrapping_mul(2)
+                    .wrapping_add(0xa3b376c9)
+                    .wrapping_add((key >> 15) & 1));
+            }
+            output.extend(checksum.to_le_bytes());
+        }
+        output
+    }
+
+    #[test]
+    fn native_chunks_require_checksums_including_short_final_blocks() -> Result<()> {
+        for size in [0, 1, 31, 32, 33, 63, 64, 65, 1000] {
+            let bytes: Vec<_> = (0..size).map(|i| (i * 17) as u8).collect();
+            let encrypted = encrypt(&bytes);
+            let mut reader = Reader::new(&encrypted);
+            assert_eq!(chunk(&mut reader)?, bytes);
+            assert_eq!(reader.remaining(), 0);
+            for end in 0..encrypted.len() {
+                assert!(chunk(&mut Reader::new(&encrypted[..end])).is_err());
+            }
+            if size > 0 {
+                let mut corrupt = encrypted.clone();
+                let last = corrupt.len() - 1;
+                corrupt[last] ^= 1;
+                assert!(chunk(&mut Reader::new(&corrupt)).is_err());
+            }
+            let mut invalid = encrypted.clone();
+            invalid[4] ^= 8;
+            assert!(chunk(&mut Reader::new(&invalid)).is_err());
+        }
+        Ok(())
+    }
+
+    fn string(output: &mut Vec<u8>, value: &str) {
+        assert!(value.len() < 255 && value.is_ascii());
+        output.push(value.len() as u8);
+        output.extend(value.as_bytes());
+    }
+
+    fn fixture() -> (Vec<u8>, Vec<u8>) {
+        let mut data = Vec::new();
+        data.extend(19u32.to_le_bytes());
+        data.extend(0u32.to_le_bytes()); // second encrypted block offset
+        data.push(1);
+        data.extend(0x431u32.to_le_bytes());
+        data.extend(20u32.to_le_bytes());
+        data.extend([0xff, 0xff, 1, 0, 12, 0]);
+        data.extend(b"CObjectOcean");
+        data.extend([0; 14]); // stored reference, null owner, selector
+        data.push(0); // root state
+        for value in ["Test Game", "Example", "Script 1", "", "Test"] {
+            string(&mut data, value);
+        }
+        data.extend([
+            1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 0, 128, 255, 255,
+            3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0,
+        ]);
+        data.extend([1, 2, 0]); // archive object identity
+        data.extend(0x1234u32.to_le_bytes());
+        data.extend(4u32.to_le_bytes());
+        data.extend([1, 2, 3, 4]);
+        for name in ["_DevRoot/AbstThreadMediaMng", "_DevRoot/AbstSoundMng"] {
+            data.push(0);
+            string(&mut data, name);
+            data.extend(0u32.to_le_bytes());
+        }
+        data.push(0);
+        string(&mut data, "Chapter");
+        let offset = encrypt(&data).len() as u32;
+        data[4..8].copy_from_slice(&offset.to_le_bytes());
+        let mut metadata = Vec::new();
+        string(&mut metadata, "C:/Test/Example");
+        string(&mut metadata, "Example");
+        (data, metadata)
+    }
+
+    #[test]
+    fn native_files_reject_invalid_version_offset_truncation_and_trailing_data() -> Result<()> {
+        let (data, metadata) = fixture();
+        let mut bytes = encrypt(&data);
+        bytes.extend(encrypt(&metadata));
+        let saved = NativeSave::read(bytes.as_slice(), 0)?;
+        assert_eq!(saved.title, "Test Game");
+        assert_eq!(saved.registry, "Example");
+        assert_eq!(saved.game_version, "Script 1");
+        assert_eq!(saved.navigation, "Chapter");
+        assert_eq!(saved.objects[&0x1234], [1, 2, 3, 4]);
+        assert_eq!(
+            NativeSave::read(bytes.as_slice(), 2)?.objects[&0x48d0],
+            [1, 2, 3, 4]
+        );
+        for size in 0..bytes.len() {
+            assert!(NativeSave::read(&bytes[..size], 0).is_err());
+        }
+        bytes.push(0);
+        assert!(NativeSave::read(bytes.as_slice(), 0).is_err());
+        for (offset, value) in [(0, 20u32), (4, 0), (9, 0), (13, 0)] {
+            let mut invalid = data.clone();
+            invalid[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            let mut bytes = encrypt(&invalid);
+            bytes.extend(encrypt(&metadata));
+            assert!(NativeSave::read(bytes.as_slice(), 0).is_err());
+        }
+        let mut invalid_metadata = metadata;
+        *invalid_metadata.last_mut().unwrap() = b'?';
+        let mut bytes = encrypt(&data);
+        bytes.extend(encrypt(&invalid_metadata));
+        assert!(NativeSave::read(bytes.as_slice(), 0).is_err());
+        Ok(())
     }
 }
