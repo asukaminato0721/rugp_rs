@@ -120,6 +120,236 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Local control-flow overapproximation: every scene start and every label
+    /// is a possible entry, both sides of every scalar branch are included,
+    /// and calls may always return. Across the complete program this cannot
+    /// omit a direct CRsa/CLabel jump destination. It only excludes unlabelled
+    /// code after an unconditional jump/return with no other incoming edge.
+    fn static_reachable(
+        scene: &rugp_scene_vm::Scenario,
+    ) -> Result<std::collections::BTreeSet<u32>> {
+        use rugp_scene_vm::Argument;
+        let instructions = scene
+            .instructions
+            .iter()
+            .map(|ins| (ins.address, ins))
+            .collect::<BTreeMap<_, _>>();
+        ensure!(
+            instructions.len() == scene.instructions.len(),
+            "duplicate static PC"
+        );
+        let mut pending = vec![0];
+        pending.extend(
+            scene
+                .instructions
+                .iter()
+                .filter_map(|ins| (ins.class.name == "CVmLabel").then_some(ins.address)),
+        );
+        let mut reached = std::collections::BTreeSet::new();
+        while let Some(address) = pending.pop() {
+            if address == u32::MAX || !reached.insert(address) {
+                continue;
+            }
+            let ins = instructions
+                .get(&address)
+                .context("invalid static branch PC")?;
+            match ins.class.name.as_str() {
+                "CVmRet" => continue,
+                "CVmJump" => {
+                    ensure!(
+                        matches!(ins.arguments.first(), Some(Argument::Reference(r))
+                            if r.selector == 0 && r.offset.is_some()
+                            && r.class.as_ref().is_some_and(|c| matches!(c.name.as_str(), "CRsa" | "CLabel"))),
+                        "unresolved static jump target"
+                    );
+                    continue; // Its scene/label target is a separate entry.
+                }
+                "CVmFlagOp" => {
+                    let Some(Argument::Number(destination)) = ins.arguments.get(5) else {
+                        bail!("unresolved static flag branch target");
+                    };
+                    pending.push(*destination);
+                }
+                _ => {}
+            }
+            pending.push(ins.next_address);
+        }
+        Ok(reached)
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME; audits original static story-choice labels and hit rectangles"]
+    fn retail_static_text_selector_blocks_fit_native_default_windows() -> Result<()> {
+        use rugp_scene_vm::Argument;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        game.set_scene_rasterization(false);
+        if let Some(path) = std::env::var_os("RUGP_TEST_FONT") {
+            game.set_font_file(path.as_ref(), 0)?;
+        }
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let program = Arc::new(Program::load(&game.archive, &native)?);
+        let mut blocks = 0usize;
+        let mut labels = 0usize;
+        let mut unreachable_packets = 0usize;
+        for (&id, scene) in &program.scenes {
+            let reachable = static_reachable(scene)
+                .with_context(|| format!("static local reachability in {id}"))?;
+            game.vm = Vm::new(Arc::clone(&program), id)?;
+            for instruction in &scene.instructions {
+                let Some(Argument::Message { class, .. }) = instruction.arguments.get(1) else {
+                    continue;
+                };
+                if instruction.class.name != "CVmGenericMsg"
+                    || !["OM_AddSelecter", "OM_AskUserSelectEx"]
+                        .contains(&class.name.trim_start_matches(['&', '-']))
+                {
+                    continue;
+                }
+                if !reachable.contains(&instruction.address) {
+                    ensure!(
+                        id == 242 && instruction.address >= 17868,
+                        "unexpected dead selector packet"
+                    );
+                    if class.name.ends_with("OM_AskUserSelectEx") {
+                        let message = game.vm.message(instruction)?;
+                        ensure!(
+                            number(&message.fields, "スタイル", 0)? == 2,
+                            "unexpected unreachable selector style"
+                        );
+                    }
+                    unreachable_packets += 1;
+                    continue;
+                }
+                let message = game.vm.message(instruction)?;
+                let Value::Reference(target) = &message.target else {
+                    bail!("selection audit target is not an object");
+                };
+                if !target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CMsgSelBox")
+                {
+                    continue; // Image menus have separate retail coverage.
+                }
+                let target = target.offset.context("text selector target identity")?;
+                let asking = message.class == "OM_AskUserSelectEx";
+                // Exercise the original Add/Ask fields against real host text
+                // rendering and native window defaults. Conditional labels in
+                // a static block are included together, conservatively checking
+                // size/font coverage; VM branch execution and selection results
+                // are covered separately by actual story/replay playback.
+                game.message(message).with_context(|| {
+                    format!(
+                        "static text selector packet at {id}:{}",
+                        instruction.address
+                    )
+                })?;
+                if !asking {
+                    labels += 1;
+                    continue;
+                }
+                ensure!(game.waiting_for_selection(), "text choice did not wait");
+                let menu = &game.text_menus[&target];
+                let rect = game.objects[&target].rect;
+                ensure!(
+                    !menu.entries.is_empty() && menu.hits.len() == menu.entries.len(),
+                    "selector label was not laid out"
+                );
+                ensure!(
+                    menu.hits.iter().all(|&(x, y, w, h)| {
+                        x >= 0
+                            && y >= 0
+                            && w > 0
+                            && h > 0
+                            && i64::from(x) + i64::from(w) <= i64::from(rect.2)
+                            && i64::from(y) + i64::from(h) <= i64::from(rect.3)
+                    }),
+                    "selector hit rectangle escaped native window"
+                );
+                blocks += 1;
+                // Isolate the next static packet block, without inventing a
+                // user selection, acknowledging a VM instruction or setting
+                // the script's result variable.
+                game.selection = None;
+                game.text_menus.remove(&target);
+            }
+            ensure!(
+                game.text_menus.is_empty(),
+                "unfinished selector block in {id}"
+            );
+        }
+        ensure!(
+            (blocks, labels, unreachable_packets) == (132, 273, 40),
+            "incomplete retail text selector inventory"
+        );
+        eprintln!(
+            "static text selector audit finished: blocks={blocks}, labels={labels}, unreachable_packets={unreachable_packets}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn static_choice_audit_includes_branch_sides_labels_and_call_returns_but_not_dead_suffixes()
+    -> Result<()> {
+        use rugp_assets::object::ClassId;
+        use rugp_scene_vm::{Argument, Scenario};
+        let target = |class: &str, offset| {
+            Argument::Reference(ObjectRef {
+                class: Some(ClassId {
+                    name: class.into(),
+                    schema: 0,
+                }),
+                cache_index: None,
+                flags: 0xc108,
+                offset: Some(offset),
+                size: Some(4),
+                owner: None,
+                selector: 0,
+                inline: None,
+            })
+        };
+        let packet = |class: &str, address, next_address, arguments| Instruction {
+            index: address,
+            stream_offset: 0,
+            class: ClassId {
+                name: class.into(),
+                schema: 0,
+            },
+            address,
+            next_address,
+            flags: 0,
+            arguments,
+        };
+        let mut branch = vec![Argument::Number(0); 6];
+        branch[5] = Argument::Number(30);
+        let mut scene = Scenario {
+            object_id: 1,
+            memory_size: 70,
+            instructions: vec![
+                packet("CVmFlagOp", 0, 10, branch),
+                packet("CVmJump", 10, 20, vec![target("CRsa", 1000)]),
+                packet("CVmGenericMsg", 20, 30, vec![]),
+                packet("CVmRet", 30, u32::MAX, vec![]),
+                packet("CVmLabel", 40, 50, vec![target("CLabel", 2000)]),
+                packet("CVmCall", 50, 60, vec![target("CRsa", 3000)]),
+                packet("CVmRet", 60, u32::MAX, vec![]),
+            ],
+            null_records: vec![],
+            trailing_bytes: 0,
+        };
+        assert_eq!(static_reachable(&scene)?, [0, 10, 30, 40, 50, 60].into());
+        scene.instructions[0].arguments[5] = Argument::Number(999);
+        assert!(static_reachable(&scene).is_err());
+        scene.instructions[0].arguments[5] = Argument::Value {
+            descriptor: 0,
+            arguments: vec![],
+        };
+        assert!(static_reachable(&scene).is_err());
+        Ok(())
+    }
+
     #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_text_selection_waits_for_input_and_returns_each_branch() -> Result<()> {

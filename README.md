@@ -140,6 +140,13 @@ confirmations, 8,634 sounds and 70 sampled script scenes.
 The fresh third-entry plan returned at tick 37,878: 25,493 dialogue confirmations,
 53 selections, 1,148 non-text confirmations, 9,372 sounds and 74 sampled scenes.
 These are three choice strategies, not proof of all three True End story routes.
+A separate cursor-directed full new-game run now reaches True End scene 246
+and returns to the original title: tick 35,216, 22,883 dialogue confirmations,
+47 selections, 1,089 non-text confirmations, 8,589 sounds and 70 sampled scenes.
+It uses default entries except `--choice-at=422:38168:1`, with
+`--no-scene-raster --stop-on-title-return --expect-scene=246`; no ending or
+plot flags are assigned by the probe. Other True End full-route/render checks
+remain in progress.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
@@ -842,6 +849,22 @@ checks their primary window/voice-callback types and output families without
 logging original text. This is syntax coverage, not proof of execution, layout,
 trailing display-modifier fidelity or completion of every branch.
 The image manager and `image OFFSET` can load these indirect border resources.
+A separate default-window/font audit now rasterizes 100,748 isolated pages from
+all 100,923 dialogue bodies using the configured size and installed Noto Sans CJK
+JP fallback, including text before explicit clear controls. Empty records and
+standalone clears are valid and need not display a glyph page. This verifies
+font coverage and page bounds, not VM branch execution, script-time window
+overrides or retained-page combinations across separate message records.
+The static text-choice audit also renders all 132 potentially reachable
+Add/Ask blocks (273 original labels), checks their native-default hit rectangles,
+and includes conditional labels conservatively. Forty old selector packets in
+SC242's unlabelled suffix are excluded only after a control-flow overapproximation
+proves them unreachable: all scene/label entries, both scalar branch sides and
+call returns are retained, while unconditional jumps/returns have no fallthrough.
+These include five obsolete style-2 menus, not a missing live story-menu mode.
+Opt in with `retail_all_isolated_dialogue_pages_fit_the_native_default_windows`
+and `retail_static_text_selector_blocks_fit_native_default_windows`; provide
+`RUGP_TEST_GAME` and optionally `RUGP_TEST_FONT`.
 Eight-piece border placement and the configured non-gradient backdrop blend
 now compose in Rust, including the original additive/shift blend rather than
 ordinary opacity. Transparent UI layers preserve straight colour and alpha.

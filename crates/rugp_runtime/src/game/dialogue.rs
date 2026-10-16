@@ -353,6 +353,101 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "set RUGP_TEST_GAME; renders all retail dialogue pages with a Japanese outline font"]
+    fn retail_all_isolated_dialogue_pages_fit_the_native_default_windows() -> Result<()> {
+        use rugp_scene_vm::Argument;
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let archive = Arc::new(RioArchive::open(root)?);
+        let root = archive.volumes[0].path.parent().context("game directory")?;
+        let native = NativeSchema::from_directory(root)?;
+        let program = Program::load(&archive, &native)?;
+        let config = MessageConfig::load(root)?;
+        let mut font = if let Some(path) = std::env::var_os("RUGP_TEST_FONT") {
+            TextFont::from_file(path.as_ref(), 0, config.font_size)?
+        } else {
+            TextFont::system(&config.family, config.font_size)?
+        };
+        let mut images = ImageManager::new(Arc::clone(&archive));
+        let mut windows = BTreeMap::new();
+        let mut bodies = 0usize;
+        let mut pages = 0usize;
+        for scene in program.scenes.values() {
+            for instruction in scene
+                .instructions
+                .iter()
+                .filter(|i| i.class.name == "CVmMsg")
+            {
+                let location = || {
+                    format!(
+                        "isolated dialogue layout at {}:{:#x}",
+                        scene.object_id, instruction.address
+                    )
+                };
+                let [Argument::Reference(target), Argument::Text(text), ..] =
+                    instruction.arguments.as_slice()
+                else {
+                    bail!("unsupported operands in {}", location());
+                };
+                let id = target.offset.context("message window identity")?;
+                if let std::collections::btree_map::Entry::Vacant(entry) = windows.entry(id) {
+                    entry.insert(MessageWindow::load(&archive, &mut images, target)?);
+                }
+                let window = &windows[&id];
+                let [_, _, width, height] = window.data.rectangles[2];
+                ensure!(width > 0 && height > 0, "invalid native message extent");
+                // Independently audit each body with the stored window defaults.
+                // This does not execute VM branches, retain pages across distinct
+                // message records, or infer script-time window/layout overrides.
+                // Splitting explicit clear controls also checks text revealed
+                // before an in-record clear, rather than discarding it in one
+                // large clock tick. Other controls use the real Dialogue parser.
+                for segment in text.split('\u{5}') {
+                    let mut stream =
+                        Dialogue::new(segment, config.speed_ms, vec![]).with_context(location)?;
+                    let mut steps = 0;
+                    while !stream.finished() {
+                        ensure!(steps <= segment.len(), "dialogue audit made no progress");
+                        steps += 1;
+                        stream.tick(u32::MAX).with_context(location)?;
+                        if !stream.page.is_empty() {
+                            let texture = window
+                                .compose(&mut font, width as u32, height as u32, &stream.page)
+                                .with_context(location)?;
+                            ensure!(
+                                texture.width == width as u32
+                                    && texture.height == height as u32
+                                    && texture.rgba.len() == width as usize * height as usize * 4,
+                                "invalid composed page in {}",
+                                location()
+                            );
+                            pages += 1;
+                        }
+                        if stream.waiting() {
+                            stream.activate().with_context(location)?;
+                        }
+                    }
+                }
+                bodies += 1;
+                if bodies.is_multiple_of(10000) {
+                    eprintln!("dialogue layout audit: bodies={bodies}, pages={pages}");
+                }
+            }
+        }
+        ensure!(bodies == 100923, "incomplete retail dialogue inventory");
+        // Empty records and standalone clears legitimately have no glyph page.
+        ensure!(
+            pages == 100748 && windows.len() == 1,
+            "incomplete retail page inventory"
+        );
+        eprintln!(
+            "dialogue layout audit finished: bodies={bodies}, pages={pages}, windows={}, font={}",
+            windows.len(),
+            font.source
+        );
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
     fn retail_two_family_packet_keeps_text_input_wait_and_one_voice_callback() -> Result<()> {
         check_retail_packet(467, 0x7588, 0x22000000)
