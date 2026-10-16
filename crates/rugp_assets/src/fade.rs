@@ -107,6 +107,16 @@ pub struct Fade {
     /// Native COLORREF (B,G,R in the high-to-low three bytes).
     pub color: Option<[u8; 3]>,
     pub stretch: Option<Stretch>,
+    pub curtain: Option<Curtain>,
+}
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Curtain {
+    pub feather: i16,
+    pub auxiliary: i16,
+    /// 0: left to right, 1: right to left, 2: down, 3: up.
+    pub direction: u8,
+    pub options: u8,
 }
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,7 +134,17 @@ impl Fade {
     pub fn from_inline(class: &str, data: &[u8]) -> Result<Self> {
         let (prefix, extra) = envelope_layout(class)?;
         let mut r = Reader::new(data);
-        r.skip(prefix)?;
+        let curtain = if class == "CFadeCarten" {
+            Some(Curtain {
+                feather: r.u16()? as i16,
+                auxiliary: r.u16()? as i16,
+                direction: r.u8()?,
+                options: r.u8()?,
+            })
+        } else {
+            r.skip(prefix)?;
+            None
+        };
         let count = r.u16()? as usize;
         let mode = r.u16()?;
         let tail = 24 + count * 4 + extra;
@@ -196,6 +216,33 @@ impl Fade {
             curve: FadeCurve(knots),
             color,
             stretch,
+            curtain,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn curtain_prefix_precedes_the_common_reference_and_curve_envelope() -> Result<()> {
+        let mut body = vec![128, 0, 0, 0, 2, 0, 2, 0, 0x11, 0];
+        body.extend_from_slice(&[0; 6]);
+        for word in [0u16, 0, 1024, 600].into_iter().chain([0; 8]) {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        for word in [0u16, 0, 256, 8192] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        let fade = Fade::from_inline("CFadeCarten", &body)?;
+        let curtain = fade.curtain.unwrap();
+        assert_eq!(curtain.feather, 128);
+        assert_eq!(curtain.direction, 2);
+        assert_eq!(fade.mode, 0x11);
+        assert_eq!(fade.rectangles[0], [0, 0, 1024, 600]);
+        assert_eq!(fade.curve.alpha(128, 256), 128);
+        assert_eq!(fade.curve.alpha(256, 256), 256);
+        assert!(Fade::from_inline("CFadeCarten", &body[..5]).is_err());
+        Ok(())
     }
 }

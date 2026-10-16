@@ -164,7 +164,7 @@ mod tests {
     use crate::uuc::state::BoxState;
 
     fn word(offset: u32) -> u32 {
-        0x8000_0000 | offset * 0x010101
+        0x8000_0000 | (offset * 0x010101)
     }
 
     fn words_at<const N: usize>(offset: u32) -> [u32; N] {

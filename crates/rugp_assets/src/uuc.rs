@@ -10,6 +10,8 @@ use std::{
 const KEY: u32 = 0x0732ce9a;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 
+pub mod array;
+pub mod background;
 pub mod character;
 pub mod message;
 pub mod metadata;

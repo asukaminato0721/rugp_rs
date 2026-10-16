@@ -10,12 +10,13 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
 mod controls;
+mod history;
 mod menu_panel;
 mod native_store;
 mod preferences;
@@ -67,6 +68,8 @@ struct App {
     preferences: Preferences,
     controls: controls::Controls,
     right_pressed: bool,
+    text_hidden: bool,
+    history: history::History,
     exit_requested: bool,
     audio: Option<rugp_runtime::audio_device::DeviceAudio>,
     audio_tickets: std::collections::BTreeMap<u64, u64>,
@@ -98,6 +101,8 @@ impl App {
             preferences: Preferences::default(),
             controls: controls::Controls::default(),
             right_pressed: false,
+            text_hidden: false,
+            history: history::History::default(),
             exit_requested: false,
             audio: None,
             audio_tickets: std::collections::BTreeMap::new(),
@@ -118,7 +123,13 @@ impl App {
         self.game.pointer_move(x, y)
     }
     fn refresh_panel(&mut self) -> Result<()> {
-        if let Some(panel) = &self.panel {
+        if self.history.opened {
+            self.panel_frame = Some(self.history.render(
+                self.game.frame(),
+                self.game.size(),
+                self.panel_font.as_mut().context("history font missing")?,
+            )?);
+        } else if let Some(panel) = &self.panel {
             self.panel_frame = Some(panel.render(
                 self.game.frame(),
                 self.game.size(),
@@ -134,7 +145,35 @@ impl App {
         Ok(())
     }
     fn modal_open(&self) -> bool {
-        self.panel.is_some() || self.menu.is_some()
+        self.panel.is_some() || self.menu.is_some() || self.text_hidden || self.history.opened
+    }
+    fn remember_dialogue(&mut self) {
+        if self.game.dialogue_waits_for_input()
+            && let (Some(cursor), Some(page)) = (self.game.vm.cursor(), self.game.dialogue_page())
+        {
+            self.history.record((cursor.scene, cursor.address), page);
+        }
+    }
+    fn open_history(&mut self) -> Result<()> {
+        self.remember_dialogue();
+        self.pause_game()?;
+        self.panel = None;
+        self.menu = None;
+        self.text_hidden = false;
+        self.history.open();
+        self.refresh_panel()
+    }
+    fn hide_text(&mut self) -> Result<()> {
+        let Some(background) = self.game.dialogue_background()? else {
+            return self.close_panel();
+        };
+        self.pause_game()?;
+        self.panel = None;
+        self.menu = None;
+        self.history.close();
+        self.text_hidden = true;
+        self.panel_frame = Some(background);
+        Ok(())
     }
     fn apply_preferences(&mut self, preferences: Preferences) -> Result<()> {
         self.game.set_text_speed(preferences.text_speed_ms)?;
@@ -178,6 +217,8 @@ impl App {
     fn open_menu(&mut self, page: Page) -> Result<()> {
         self.pause_game()?;
         self.panel = None;
+        self.text_hidden = false;
+        self.history.close();
         self.menu = Some(MenuPanel::new(page, self.preferences.clone()));
         self.refresh_panel()
     }
@@ -196,7 +237,13 @@ impl App {
         match action {
             MenuAction::None => self.refresh_panel(),
             MenuAction::Resume => self.close_panel(),
-            MenuAction::Save => self.open_panel(PanelMode::Save),
+            MenuAction::HideText => self.hide_text(),
+            MenuAction::History => self.open_history(),
+            MenuAction::Auto => {
+                self.close_panel()?;
+                self.controls.toggle_auto();
+                Ok(())
+            }
             MenuAction::Load => self.open_panel(PanelMode::Load),
             MenuAction::Settings => self.open_menu(Page::Settings),
             MenuAction::QuitPrompt => self.open_menu(Page::Quit),
@@ -227,6 +274,8 @@ impl App {
         let occupied = self.native_saves.slots()?;
         self.pause_game()?;
         self.menu = None;
+        self.text_hidden = false;
+        self.history.close();
         self.panel = Some(Panel::new(mode, self.slot, occupied));
         self.refresh_panel()
     }
@@ -250,6 +299,8 @@ impl App {
         }
         self.panel = None;
         self.menu = None;
+        self.text_hidden = false;
+        self.history.close();
         self.controls.stop();
         self.panel_frame = None;
         self.last = Instant::now();
@@ -302,6 +353,7 @@ impl App {
             }
         );
         self.apply_preferences(self.preferences.clone())?;
+        self.history.forget_cursor();
         self.close_panel()
     }
     fn sounds(&mut self) -> Result<()> {
@@ -470,6 +522,7 @@ impl ApplicationHandler for App {
                 self.cursor = None;
                 self.controls.stop();
                 self.right_pressed = false;
+                self.history.cancel_press();
                 if let Some(menu) = &mut self.menu {
                     menu.cancel_press();
                     return;
@@ -491,7 +544,20 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } if self.error.is_none() => {
-                let result = if self.panel.is_some() {
+                let result = if self.text_hidden {
+                    if state == ElementState::Released {
+                        self.close_panel()
+                    } else {
+                        Ok(())
+                    }
+                } else if self.history.opened {
+                    let (x, y) = self.cursor.map_or((-1, -1), |(x, y)| self.point(x, y));
+                    if self.history.button(x, y, state == ElementState::Pressed) {
+                        self.close_panel()
+                    } else {
+                        self.refresh_panel()
+                    }
+                } else if self.panel.is_some() {
                     let (x, y) = self.cursor.map_or((-1, -1), |(x, y)| self.point(x, y));
                     let action =
                         self.panel
@@ -507,7 +573,7 @@ impl ApplicationHandler for App {
                             .unwrap()
                             .button(x, y, state == ElementState::Pressed);
                     self.menu_action(action)
-                } else if self.controls.active() {
+                } else if self.controls.active() || self.controls.automatic() {
                     self.controls.stop();
                     Ok(())
                 } else {
@@ -523,6 +589,26 @@ impl ApplicationHandler for App {
                 ..
             } if self.error.is_none() => {
                 if let Err(error) = self.right_button(state == ElementState::Pressed) {
+                    self.fail(error);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.error.is_none() => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+                    MouseScrollDelta::PixelDelta(position) => position.y,
+                };
+                let result = if self.history.opened && amount != 0.0 {
+                    self.history.move_entry(if amount > 0.0 { -1 } else { 1 });
+                    self.refresh_panel()
+                } else if !self.modal_open() && amount > 0.0 {
+                    self.open_history()
+                } else if !self.modal_open() && amount < 0.0 && self.game.waiting_for_dialogue() {
+                    self.controls.stop();
+                    self.game.activate_selection()
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = result {
                     self.fail(error);
                 }
             }
@@ -554,6 +640,17 @@ impl ApplicationHandler for App {
                             self.open_menu(Page::Settings)
                         }
                     }
+                    PhysicalKey::Code(
+                        KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape,
+                    ) if self.text_hidden => self.close_panel(),
+                    _ if self.text_hidden => Ok(()),
+                    PhysicalKey::Code(key) if self.history.opened => {
+                        if self.history.key(key) {
+                            self.close_panel()
+                        } else {
+                            self.refresh_panel()
+                        }
+                    }
                     PhysicalKey::Code(key) if self.menu.is_some() => {
                         let action = self.menu.as_mut().unwrap().key(key);
                         self.menu_action(action)
@@ -573,6 +670,14 @@ impl ApplicationHandler for App {
                         self.controls.toggle();
                         Ok(())
                     }
+                    PhysicalKey::Code(KeyCode::KeyA) => {
+                        self.controls.toggle_auto();
+                        Ok(())
+                    }
+                    PhysicalKey::Code(KeyCode::PageUp) => self.open_history(),
+                    PhysicalKey::Code(KeyCode::Space) if self.game.waiting_for_dialogue() => {
+                        self.hide_text()
+                    }
                     PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::ArrowRight | KeyCode::Tab) => {
                         self.game.navigate_selection(1)
                     }
@@ -580,6 +685,7 @@ impl ApplicationHandler for App {
                         self.game.navigate_selection(-1)
                     }
                     PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space) => {
+                        self.controls.stop();
                         self.game.activate_selection()
                     }
                     _ => Ok(()),
@@ -609,7 +715,18 @@ impl ApplicationHandler for App {
                     if selecting || self.game.waiting_for_input() || self.game.waiting_for_load() {
                         self.controls.stop();
                     }
-                    let result = if self.controls.active() {
+                    if self.controls.auto_ready(
+                        self.game.dialogue_waits_for_input(),
+                        self.game.dialogue_voice_playing(),
+                        dt,
+                        self.preferences.auto_delay_ms,
+                    ) && let Err(error) = self.game.activate_selection()
+                    {
+                        self.fail(error);
+                    }
+                    let result = if self.error.is_some() {
+                        Ok(RunState::Waiting)
+                    } else if self.controls.active() {
                         self.game.fast_forward_step(dt)
                     } else {
                         self.game.step(dt)
@@ -619,6 +736,7 @@ impl ApplicationHandler for App {
                         Ok(_) => {}
                         Err(e) => self.fail(e),
                     }
+                    self.remember_dialogue();
                     if self.game.waiting_for_selection()
                         || self.game.waiting_for_input()
                         || self.game.waiting_for_load()
@@ -716,7 +834,7 @@ mod tests {
         app.right_button(false)?;
         assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Context));
         assert!(!app.controls.active());
-        for _ in 0..3 {
+        for _ in 0..6 {
             app.menu.as_mut().unwrap().key(KeyCode::ArrowDown);
         }
         let action = app.menu.as_mut().unwrap().key(KeyCode::Enter);
@@ -742,6 +860,12 @@ mod tests {
         app.right_button(true)?;
         app.right_button(false)?;
         assert!(!app.modal_open());
+        assert_eq!(app.game.vm.cursor(), cursor.as_ref());
+        assert_eq!(app.game.frame(), pixels);
+        app.open_history()?;
+        assert!(app.history.opened);
+        assert!(!app.controls.active());
+        app.close_panel()?;
         assert_eq!(app.game.vm.cursor(), cursor.as_ref());
         assert_eq!(app.game.frame(), pixels);
         app.game.pointer_button(false)?;

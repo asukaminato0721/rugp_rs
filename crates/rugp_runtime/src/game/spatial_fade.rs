@@ -7,6 +7,9 @@ pub(super) enum Operator {
     Mosaic,
     Invert,
     RightCurtain,
+    Curtain {
+        direction: u8,
+    },
     Stretch {
         parameters: Stretch,
         source: [i16; 4],
@@ -40,7 +43,19 @@ impl SpatialFade {
     }
 
     pub fn from_fade(class: &str, fade: &Fade, source_size: (u32, u32)) -> Option<Self> {
-        let mut effect = if let Some(parameters) = fade.stretch.filter(|p| p.frames <= 0) {
+        let mut effect = if let Some(parameters) = fade
+            .curtain
+            .filter(|p| p.feather == 128 && p.direction <= 3)
+        {
+            Self {
+                operator: Operator::Curtain {
+                    direction: parameters.direction,
+                },
+                rectangle: fade.rectangles[1],
+                previous_alpha: None,
+                source_size,
+            }
+        } else if let Some(parameters) = fade.stretch.filter(|p| p.frames <= 0) {
             let mut rectangle = fade.rectangles[1];
             let mut parameters = parameters;
             if fade.mode & 1 != 0 {
@@ -81,7 +96,9 @@ impl SpatialFade {
     pub fn keeps_previous_frame(&self) -> bool {
         matches!(
             self.operator,
-            Operator::RightCurtain | Operator::Stretch { history: true, .. }
+            Operator::RightCurtain
+                | Operator::Curtain { .. }
+                | Operator::Stretch { history: true, .. }
         ) && self.previous_alpha.is_some()
     }
 
@@ -115,10 +132,22 @@ impl SpatialFade {
         let h = if h == 0 { height } else { h };
         let block = i64::from((256 - alpha) / 8 + 1);
         let previous = self.previous_alpha.replace(alpha).unwrap_or(0);
-        let position = i64::from(alpha) * (w + 128) / 256 - 128;
-        let old_position = i64::from(previous) * (w + 128) / 256 - 128;
-        let strip_start = position.min(old_position);
-        let strip_end = strip_start + (position - old_position).abs() + 128;
+        let direction = match self.operator {
+            Operator::Curtain { direction } => direction,
+            _ => 0,
+        };
+        let extent = if direction < 2 { w } else { h };
+        let position = i64::from(alpha) * (extent + 128) / 256 - 128;
+        let old_position = i64::from(previous) * (extent + 128) / 256 - 128;
+        let reverse = direction & 1 != 0;
+        let (strip_start, strip_end) = if reverse {
+            (
+                extent - 128 - position.max(old_position),
+                extent - position.min(old_position),
+            )
+        } else {
+            (position.min(old_position), position.max(old_position) + 128)
+        };
         for row in y.max(0)..(y + h).min(height) {
             for column in x.max(0)..(x + w).min(width) {
                 let target = ((row * width + column) * 4) as usize;
@@ -149,14 +178,20 @@ impl SpatialFade {
                                 >> 8) as u8;
                         }
                     }
-                    Operator::RightCurtain => {
-                        // rvmm 1003b8b0 updates only the moving strip. The
-                        // 128-pixel feather blends with the previous frame.
-                        let local = column - x;
+                    Operator::RightCurtain | Operator::Curtain { .. } => {
+                        // rvmm 1003b8b0/1003bb30 updates only the moving
+                        // strip. Reverse directions increment the blend
+                        // counter before sampling; forward directions decrement.
+                        let local = if direction < 2 { column - x } else { row - y };
                         if alpha == previous || local < strip_start || local >= strip_end {
                             continue;
                         }
-                        let weight = (position + 127 - local).clamp(0, 128) as u32;
+                        let weight = if reverse {
+                            position + 129 - extent + local
+                        } else {
+                            position + 127 - local
+                        }
+                        .clamp(0, 128) as u32;
                         for channel in 0..3 {
                             output[target + channel] = ((u32::from(source[target + channel])
                                 * weight
@@ -335,5 +370,36 @@ mod tests {
         fade.render(&mut output, &source, (256, 1), 160);
         assert_eq!(&output[127 * 4..][..4], &[239, 0, 15, 255]);
         assert_eq!(&output[239 * 4..][..4], &[0, 0, 255, 255]);
+    }
+    #[test]
+    fn general_curtains_follow_both_axes_and_reverse_counter_rounding() {
+        for direction in 0..4 {
+            let size = if direction < 2 { (256, 1) } else { (1, 256) };
+            let source = [255, 0, 0, 255].repeat(256);
+            let mut output = [0, 0, 255, 255].repeat(256);
+            let mut effect = SpatialFade {
+                operator: Operator::Curtain { direction },
+                rectangle: [0; 4],
+                previous_alpha: None,
+                source_size: size,
+            };
+            effect.render(&mut output, &source, size, 128);
+            assert_eq!(&output[127 * 4..][..4], &[127, 0, 127, 255]);
+            let reverse = direction & 1 != 0;
+            assert_eq!(output[0], if reverse { 0 } else { 255 });
+            assert_eq!(output[191 * 4], if reverse { 255 } else { 0 });
+            let half = output.clone();
+            effect.render(&mut output, &source, size, 128);
+            assert_eq!(output, half);
+            assert!(effect.keeps_previous_frame());
+            let mut restored: SpatialFade =
+                serde_json::from_slice(&serde_json::to_vec(&effect).unwrap()).unwrap();
+            let mut resumed = output.clone();
+            restored.render(&mut resumed, &source, size, 160);
+            effect.render(&mut output, &source, size, 160);
+            assert_eq!(resumed, output);
+            effect.render(&mut output, &source, size, 256);
+            assert_eq!(output, source);
+        }
     }
 }

@@ -77,13 +77,21 @@ The pinned Nix shell supplies the Linux audio/window build dependencies:
 nix develop --command cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE play
 ```
 
-Enter/Space or a left-click reveals or advances dialogue. Arrows and Enter choose
+Enter or a left-click reveals or advances dialogue. Arrows and Enter choose
 menu items. Right-click or Escape opens the game menu. **F2** opens settings.
-Settings include text speed, master volume, BGM, voice, effects, and fullscreen.
+Settings include text speed, auto delay, master volume, BGM, voice, effects,
+and fullscreen.
 The runtime stores these preferences in the per-game `settings.json` file.
 **Ctrl** activates skip while held. **S** toggles continuous skip.
 Skip stops at choices, explicit non-text confirmations, and Load requests.
-A left-click stops skip. During the OP, Escape, Ctrl, Enter, Space, or a
+**A** toggles automatic dialogue advance. It waits for text reveal and voice
+playback, then applies the configured delay. A left-click stops skip or auto.
+**Space** hides the message window. Space, Enter, Escape, or a click restores it.
+**Page Up** or the mouse wheel upwards opens text history for this session.
+The history contains completed dialogue pages. Left/Right selects a page.
+Up/Down scrolls a long page. Escape or right-click closes the history.
+The mouse wheel downwards reveals or advances dialogue during normal play.
+During the OP, Escape, Ctrl, Enter, Space, or a
 left-click skips the movie. The script then continues to the title menu.
 Audio playback is included in every build. `play` enables audio automatically.
 
@@ -105,8 +113,10 @@ cargo run --release -- --project-dir /path/to/game play --load-uuc /path/to/Vmre
 
 The loader reads original files without changing them.
 It supports v19 dialogue checkpoints with an empty native call stack.
-It reconstructs the scene through script execution and restores native integer
-and Boolean variables. Audio and animation clocks restart at that dialogue page.
+It reconstructs the scene through script execution. It restores native integer
+and Boolean variables, plus scalar variant values: integers, real numbers,
+strings and null. Object-valued variants come from replay in their reference
+context. Audio and animation clocks restart at that dialogue page.
 For a branched route, repeat `--choice ID` for each selection after New Game.
 The loader checks the game version, instruction identity, and dialogue text.
 Unsupported checkpoints report an error. Global `gdb`/`sedb` progress is not imported.
@@ -579,13 +589,14 @@ deforming the static portrait or changing its live placement/lip-sync settings.
 Script helper functions can initialize local parameter slots not supplied by
 the caller; assignment does not first read an uninitialized destination.
 Region blits now crop/scale between differently sized surfaces and preserve
-pixels outside the destination region. Mosaic, inversion and the right curtain
-use integer pixel operators recovered from the retail DLL. The curtain retains
-its preceding rendered frame and sample through internal snapshot restoration.
+pixels outside the destination region. Mosaic, inversion, the right curtain,
+and four-direction `CFadeCarten` with its retail 128-pixel feather use integer
+pixel operators recovered from the retail DLL. Curtains retain their preceding
+rendered frame and sample through internal snapshot restoration.
 StretchAnti and time-based OverStretchAnti interpolate the original source and
 destination rectangles in Q13, with bilinear sampling and native opacity
 endpoints. OverStretch can accumulate against the live destination. Native
-antialiasing details, frame-count-based stretch, rotation, other curtains, raster
+antialiasing details, frame-count-based stretch, rotation, custom curtain widths, raster
 and shock effects remain approximate. Their envelope layouts share one decoder
 table, with prefix/tail and truncation regressions. Mode 0 retains its serialized
 coordinates. Mode 0x11 uses source extents for default destination extents.

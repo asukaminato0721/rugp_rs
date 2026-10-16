@@ -56,6 +56,32 @@ impl Game {
     pub fn dialogue_waits_for_input(&self) -> bool {
         self.dialogue.as_ref().is_some_and(|d| d.stream.waiting())
     }
+    /// Displayed parts only. Message control codes and unrevealed text stay
+    /// inside the dialogue stream.
+    pub fn dialogue_page(&self) -> Option<&[crate::dialogue::TextPart]> {
+        self.dialogue.as_ref().map(|d| d.stream.page.as_slice())
+    }
+    pub fn dialogue_voice_playing(&self) -> bool {
+        self.dialogue
+            .as_ref()
+            .and_then(|d| d.voice.as_ref())
+            .and_then(|voice| voice.offset)
+            .is_some_and(|source| !self.audio_state.source_tickets(source).is_empty())
+    }
+    /// Compose the scene with its message windows hidden. This changes no
+    /// script visibility flags, textures, clocks or pending input.
+    pub fn dialogue_background(&self) -> Result<Option<Framebuffer>> {
+        if self.dialogue.is_none() {
+            return Ok(None);
+        }
+        let mut scene = self.objects.clone();
+        for id in self.message_windows.keys() {
+            if let Some(object) = scene.get_mut(id) {
+                object.visible = false;
+            }
+        }
+        Self::render_objects(&scene, self.size()).map(Some)
+    }
     pub fn set_text_speed(&mut self, speed_ms: u32) -> Result<()> {
         ensure!(speed_ms <= 3000, "invalid message output speed");
         self.ensure_text_font()?;
@@ -529,6 +555,17 @@ mod tests {
         );
         assert_eq!(game.step(10000)?, RunState::Waiting);
         assert!(game.dialogue_waits_for_input());
+        let pixels = game.frame().to_vec();
+        let cursor = game.vm.cursor().cloned();
+        let page = game.dialogue_page().unwrap().to_vec();
+        let background = game
+            .dialogue_background()?
+            .context("hidden dialogue frame")?;
+        assert_ne!(background.rgba, pixels);
+        assert_eq!(game.frame(), pixels);
+        assert_eq!(game.vm.cursor(), cursor.as_ref());
+        assert_eq!(game.dialogue_page().unwrap(), page);
+        assert_eq!(game.dialogue_voice_playing(), has_voice);
         game.pointer_move(0, 0)?;
         game.pointer_button(true)?;
         super::ui_snapshot::test_roundtrip(&mut game)?;

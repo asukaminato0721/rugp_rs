@@ -14,14 +14,20 @@ static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 #[serde(deny_unknown_fields)]
 pub(super) struct Preferences {
     pub text_speed_ms: u32,
+    #[serde(default = "default_auto_delay")]
+    pub auto_delay_ms: u32,
     /// Master, BGM, voice, effect.
     pub levels: [u8; 4],
     pub fullscreen: bool,
+}
+fn default_auto_delay() -> u32 {
+    1500
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             text_speed_ms: 0,
+            auto_delay_ms: default_auto_delay(),
             levels: [100; 4],
             fullscreen: false,
         }
@@ -30,7 +36,9 @@ impl Default for Preferences {
 impl Preferences {
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.text_speed_ms <= 100 && self.levels.iter().all(|&v| v <= 100),
+            self.text_speed_ms <= 100
+                && (250..=10000).contains(&self.auto_delay_ms)
+                && self.levels.iter().all(|&v| v <= 100),
             "invalid settings value"
         );
         Ok(())
@@ -93,6 +101,7 @@ mod tests {
         assert_eq!(Preferences::load(Some(&directory))?, Preferences::default());
         let settings = Preferences {
             text_speed_ms: 35,
+            auto_delay_ms: 2000,
             levels: [80, 25, 100, 45],
             fullscreen: true,
         };
@@ -103,6 +112,11 @@ mod tests {
         assert!(invalid.save(Some(&directory)).is_err());
         assert_eq!(Preferences::load(Some(&directory))?, settings);
         let path = directory.join("settings.json");
+        fs::write(
+            &path,
+            br#"{"text_speed_ms":25,"levels":[100,100,100,100],"fullscreen":false}"#,
+        )?;
+        assert_eq!(Preferences::load(Some(&directory))?.auto_delay_ms, 1500);
         fs::write(
             &path,
             br#"{"text_speed_ms":101,"levels":[100,100,100,100],"fullscreen":false}"#,

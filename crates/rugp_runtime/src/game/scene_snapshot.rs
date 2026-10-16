@@ -409,6 +409,9 @@ impl SceneSnapshot {
                 "invalid scene snapshot transition clock"
             );
             if let Some(spatial) = &transition.spatial {
+                if let spatial_fade::Operator::Curtain { direction } = spatial.operator {
+                    ensure!(direction <= 3, "invalid curtain direction");
+                }
                 if let spatial_fade::Operator::Stretch {
                     parameters, source, ..
                 } = spatial.operator

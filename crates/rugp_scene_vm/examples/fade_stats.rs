@@ -20,7 +20,7 @@ fn main() -> Result<()> {
             };
             let count = counts.entry(class.name.clone()).or_default();
             *count += 1;
-            if *count > 2 && !class.name.contains("Stretch") {
+            if *count > 2 && !class.name.contains("Stretch") && class.name != "CFadeCarten" {
                 continue;
             }
             let Some(Argument::Bytes(data)) = arguments.first() else {
@@ -28,7 +28,7 @@ fn main() -> Result<()> {
             };
             let fade = Fade::from_inline(&class.name, data)?;
             println!(
-                "{}:{:#x} {} mode={:#x} rectangles={:?} alpha={:?} stretch={:?} surfaces={:?}",
+                "{}:{:#x} {} mode={:#x} rectangles={:?} alpha={:?} stretch={:?} curtain={:?} surfaces={:?}",
                 scene.object_id,
                 instruction.address,
                 class.name,
@@ -36,6 +36,7 @@ fn main() -> Result<()> {
                 fade.rectangles,
                 [0, 64, 128, 192, 256].map(|t| fade.curve.alpha(t, 256)),
                 fade.stretch,
+                fade.curtain,
                 arguments[1..]
                     .iter()
                     .map(|arg| match arg {

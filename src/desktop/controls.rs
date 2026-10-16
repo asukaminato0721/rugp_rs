@@ -6,9 +6,15 @@ pub(super) struct Controls {
     left: bool,
     right: bool,
     toggle: bool,
+    automatic: bool,
+    auto_elapsed: u32,
 }
 impl Controls {
     pub fn key(&mut self, key: KeyCode, down: bool) {
+        if down {
+            self.automatic = false;
+            self.auto_elapsed = 0;
+        }
         match key {
             KeyCode::ControlLeft => self.left = down,
             KeyCode::ControlRight => self.right = down,
@@ -22,6 +28,30 @@ impl Controls {
         self.toggle = !self.active();
         self.left = false;
         self.right = false;
+        self.automatic = false;
+        self.auto_elapsed = 0;
+    }
+    pub fn toggle_auto(&mut self) {
+        let automatic = !self.automatic;
+        self.stop();
+        self.automatic = automatic;
+    }
+    pub fn automatic(&self) -> bool {
+        self.automatic
+    }
+    /// Start the reading delay after both reveal and voice playback finish.
+    /// Each ready result permits exactly one dialogue confirmation.
+    pub fn auto_ready(&mut self, waiting: bool, voice: bool, dt: u32, delay: u32) -> bool {
+        if !self.automatic || !waiting || voice {
+            self.auto_elapsed = 0;
+            return false;
+        }
+        self.auto_elapsed = self.auto_elapsed.saturating_add(dt);
+        if self.auto_elapsed < delay {
+            return false;
+        }
+        self.auto_elapsed = 0;
+        true
     }
     pub fn stop(&mut self) {
         *self = Self::default();
@@ -65,5 +95,30 @@ mod tests {
         assert!(controls.active());
         controls.stop();
         assert!(!controls.active());
+    }
+    #[test]
+    fn auto_waits_for_reveal_and_voice_and_cancels_for_skip_or_modal_input() {
+        let mut controls = Controls::default();
+        controls.toggle_auto();
+        assert!(!controls.auto_ready(false, false, 10000, 1500));
+        assert!(!controls.auto_ready(true, true, 10000, 1500));
+        assert!(!controls.auto_ready(true, false, 1000, 1500));
+        assert!(!controls.auto_ready(true, true, 500, 1500));
+        assert!(!controls.auto_ready(true, false, 1000, 1500));
+        assert!(controls.auto_ready(true, false, 500, 1500));
+        assert!(!controls.auto_ready(true, false, 1, 1500));
+        assert!(controls.auto_ready(true, false, u32::MAX, 1500));
+        assert!(!controls.auto_ready(true, false, 1, 1500));
+        controls.toggle();
+        assert!(!controls.automatic());
+        assert!(controls.active());
+        controls.toggle_auto();
+        assert!(!controls.active());
+        assert!(controls.automatic());
+        controls.key(KeyCode::ControlLeft, true);
+        assert!(!controls.automatic());
+        controls.toggle_auto();
+        controls.stop();
+        assert!(!controls.automatic());
     }
 }

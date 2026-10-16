@@ -245,6 +245,67 @@ mod tests {
             assert_ne!(game.vm.cursor(), cursor.as_ref());
             assert!(!game.ended);
         }
+        // Change only a native variant record in a temporary UUC. This checks
+        // scalar restoration through replay, including payloads of new sizes.
+        // No original save or copied reference-cache identity is changed.
+        use rugp_assets::uuc::{
+            NativeArchive, reference_writer::ReferenceWriter, value::NativeValue,
+        };
+        let original = std::fs::read(saves.join("vmr00001.uuc"))?;
+        let saved = NativeSave::read(original.as_slice(), game.archive.address_shift)?;
+        let offset = game
+            .archive
+            .nodes
+            .iter()
+            .filter(|node| node.class.name == "CVmVarObj")
+            .filter_map(|node| node.offset)
+            .find(|offset| {
+                saved
+                    .objects
+                    .get(offset)
+                    .is_some_and(|data| data == &[2, 0, 0, 0])
+            })
+            .context("native scalar variant fixture missing")?;
+        for value in [
+            NativeValue::Integer(37),
+            NativeValue::Integer(i32::MAX),
+            NativeValue::Real(-1.5),
+            NativeValue::Text("設定"),
+            NativeValue::Object(None),
+        ] {
+            let mut archive = NativeArchive::read(original.as_slice())?;
+            let mut needle = vec![1, 2, 0];
+            needle.extend(((offset >> game.archive.address_shift) as u32).to_le_bytes());
+            needle.extend(4u32.to_le_bytes());
+            needle.extend([2, 0, 0, 0]);
+            let positions: Vec<_> = archive
+                .runtime
+                .windows(needle.len())
+                .enumerate()
+                .filter_map(|(at, data)| (data == needle).then_some(at))
+                .collect();
+            ensure!(positions.len() == 1, "native variant fixture is not unique");
+            let mut writer = ReferenceWriter::new(game.archive.address_shift)?;
+            value.write(&mut writer)?;
+            let mut body = (writer.data.len() as u32).to_le_bytes().to_vec();
+            body.extend(writer.data);
+            archive
+                .runtime
+                .splice(positions[0] + 7..positions[0] + needle.len(), body);
+            let path = directory.join("variant.uuc");
+            archive.write(File::create(&path)?)?;
+            game.import_uuc(&path, &[], &mut resources)?;
+            match (&value, &game.vm.variables[&offset]) {
+                (NativeValue::Integer(expected), Value::Integer(actual)) => {
+                    assert_eq!(expected, actual)
+                }
+                (NativeValue::Real(expected), Value::Real(actual)) => assert_eq!(expected, actual),
+                (NativeValue::Text(expected), Value::Text(actual)) => assert_eq!(expected, actual),
+                (NativeValue::Object(None), Value::Null) => {}
+                _ => bail!("native variant type did not survive import"),
+            }
+        }
+        assert_eq!(std::fs::read(saves.join("vmr00001.uuc"))?, original);
         game.import_uuc(&saves.join("vmr00001.uuc"), &[], &mut resources)?;
         assert!(game.waiting_for_dialogue());
         assert_eq!(
