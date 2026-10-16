@@ -27,7 +27,7 @@ fn ordered_clamp(value: i32, low: i32, high: i32) -> i32 {
         value
     }
 }
-pub(super) fn mul_div(value: i32, multiplier: i32, divisor: i32) -> i32 {
+pub(crate) fn mul_div(value: i32, multiplier: i32, divisor: i32) -> i32 {
     if divisor == 0 {
         return -1;
     }

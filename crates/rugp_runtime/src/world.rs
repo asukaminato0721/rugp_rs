@@ -1,6 +1,6 @@
-//! Static world image planes and native simplified-view projection.
+//! Static world image planes and native camera projection modes.
 //!
-//! Camera porting evidence (static inspection, never native execution):
+//! Camera porting evidence (native disassembly and numeric matrix probes):
 //! Vm60 1003ffc0 receives OM_SetWorldCamera; 1004009b..100400b9
 //! shift script roll/pitch/bank by four. 1003bd90 negates roll before
 //! 100683f0 builds its signed Q12 matrix. Its radians coefficient at
@@ -18,12 +18,15 @@
 //! CParseBgBox resource loading does not restore save-state camera flags;
 //! the constructor's default mode is zero. Vm60 1003c2e5 then uses an
 //! axis-aligned projection with linear roll/pitch pan, *not* 100683f0's
-//! trigonometric matrix. Full-matrix modes require separate implementation.
+//! trigonometric matrix. Exclusive modes select that Q12 rotation matrix;
+//! low mode bits select perspective or orthographic projection.
 use crate::render::Texture;
 use anyhow::{Result, ensure};
 mod bounds;
 mod camera;
 mod placement;
+mod rotation;
+pub(crate) use bounds::mul_div;
 pub use camera::CameraTween;
 
 /// Per-slot native 0x10000 flags. This suppresses a cached background plane
@@ -85,6 +88,18 @@ pub struct Camera {
     /// Script roll/pitch/bank shifted left by four, as in the native state.
     /// Simplified projection uses roll/pitch only (bank has no effect).
     pub angles_q4: [i32; 3],
+}
+impl Camera {
+    pub(crate) fn rotation(&self) -> [[i16; 3]; 3] {
+        rotation::matrix([
+            self.angles_q4[0].wrapping_neg(),
+            self.angles_q4[1],
+            self.angles_q4[2],
+        ])
+    }
+    pub(crate) fn rotate(&self, point: [i32; 3]) -> [i32; 3] {
+        rotation::apply_q12(self.rotation(), point).map(|v| (v >> 12) as i32)
+    }
 }
 impl Default for Camera {
     fn default() -> Self {
@@ -325,12 +340,52 @@ impl Plane {
     /// angles. See 1003c388..1003c410: angle*depth*8 is subtracted from the
     /// Q16 vertex before focal/depth projection, not interpreted as degrees.
     pub fn quad(&self, camera: &Camera, viewport: (i32, i32, u32, u32)) -> Result<[[f64; 3]; 4]> {
-        let position = self.relative_position(camera);
-        let depth = self.depth.wrapping_sub(position[2]);
+        self.quad_with_mode(camera, viewport, 0)
+    }
+    pub(crate) fn quad_with_mode(
+        &self,
+        camera: &Camera,
+        viewport: (i32, i32, u32, u32),
+        mode: u8,
+    ) -> Result<[[f64; 3]; 4]> {
         ensure!(
             camera.focal_length <= 32767,
             "camera focal length exceeds native signed range"
         );
+        let position = self.relative_position(camera);
+        let depth = self.depth.wrapping_sub(position[2]);
+        if mode & 0x30 != 0 {
+            let matrix = camera.rotation();
+            let translation = camera.rotate(position.map(i32::wrapping_neg));
+            let vertices = [
+                [-self.origin[0], -self.origin[1], self.depth],
+                [self.size[0] - self.origin[0], -self.origin[1], self.depth],
+                [
+                    self.size[0] - self.origin[0],
+                    self.size[1] - self.origin[1],
+                    self.depth,
+                ],
+                [-self.origin[0], self.size[1] - self.origin[1], self.depth],
+            ];
+            let center = [
+                f64::from(viewport.0) + f64::from(viewport.2) / 2.0,
+                f64::from(viewport.1) + f64::from(viewport.3) / 2.0,
+            ];
+            return Ok(vertices.map(|point| {
+                let rotated = rotation::apply_q12(matrix, point);
+                let xyz: [f64; 3] =
+                    std::array::from_fn(|i| rotated[i] as f64 / 4096.0 + f64::from(translation[i]));
+                let divisor = if mode & 6 == 2 { 720.0 } else { xyz[2] };
+                if divisor <= 0.0 {
+                    return [0.0, 0.0, xyz[2]];
+                }
+                [
+                    center[0] + xyz[0] * f64::from(camera.focal_length) / divisor,
+                    center[1] + xyz[1] * f64::from(camera.focal_length) / divisor,
+                    divisor,
+                ]
+            }));
+        }
         let center = [
             viewport.0.wrapping_add((viewport.2 / 2) as i32),
             viewport.1.wrapping_add((viewport.3 / 2) as i32),
@@ -518,6 +573,47 @@ mod tests {
         assert!(Plane::bitmap(&texture).is_err());
         texture.display_scale = f32::INFINITY;
         assert!(Plane::bitmap(&texture).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn full_camera_rotates_corners_and_selects_orthographic_depth() -> Result<()> {
+        let plane = Plane {
+            origin: [2, 1],
+            size: [4, 2],
+            depth: 1440,
+            pitch_bias: 0,
+            camera_relative: false,
+            offset: [0; 3],
+        };
+        let camera = Camera {
+            angles_q4: [0, 0, 16384], // one quarter revolution
+            ..Default::default()
+        };
+        let viewport = (0, 0, 20, 10);
+        assert_eq!(
+            plane.quad_with_mode(&camera, viewport, 21)?,
+            [
+                [10.5, 4.0, 1440.0],
+                [10.5, 6.0, 1440.0],
+                [9.5, 6.0, 1440.0],
+                [9.5, 4.0, 1440.0],
+            ]
+        );
+        assert_eq!(
+            plane.quad_with_mode(&camera, viewport, 19)?,
+            [
+                [11.0, 3.0, 720.0],
+                [11.0, 7.0, 720.0],
+                [9.0, 7.0, 720.0],
+                [9.0, 3.0, 720.0],
+            ]
+        );
+        // The default view ignores bank; changing mode must change geometry.
+        assert_ne!(
+            plane.quad(&camera, viewport)?,
+            plane.quad_with_mode(&camera, viewport, 21)?
+        );
         Ok(())
     }
 

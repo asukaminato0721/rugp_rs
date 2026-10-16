@@ -489,8 +489,12 @@ The software compositor now also has a perspective-correct quadrilateral path:
 reciprocal-depth texture interpolation, pixel-center sampling, object-viewport
 clipping, either winding, and shared-edge alpha coverage are tested against
 independent ray/plane intersections. World rendering uses this compositor;
-an axis-aligned fast path preserves the same fractional-edge sampling. Full
-matrix camera modes are not yet connected. A retail regression compares every
+an axis-aligned fast path preserves the same fractional-edge sampling.
+`OM_SetExclusiveCamera` now selects the native Q12 camera rotation and
+perspective/orthographic background projection. Queued overrides select the
+next world image's projection. Camera-only transitions retain that projection;
+the next image without an override restores the default. Independent-camera
+references and near-plane clipping remain incomplete. A retail regression compares every
 pixel against an independent inverse mapping, verifies opposite camera pans,
 and checks that mode 0 is instantaneous even with a 400ms duration field.
 Desktop presentation and automatic exit have also been exercised under Xvfb.
@@ -578,9 +582,11 @@ The chapter regression now reaches actual character dialogue at scene 483,
 PC `0xea4`, instead of asserting an expected unsupported-operation error.
 `OM_QueueFace2Data` retains the face parts, `OM_SetLayerData2D` retains layer
 vectors, and character `OM_HumanIn` composites the real body/face textures.
-Portraits currently use approximate depth/horizontal placement, static eyes
-and mouth, and instant replacement; native sprite geometry, layer-vector
-deformation and animated lips/blinks remain incomplete. Message windows render
+Portrait placement now uses the owning world's camera, native CRmt logical
+dimensions/scale, CRimp Q16 anchor and player height. It no longer derives the
+portrait size from mipmap dimensions or window height. Captured ParseScreen
+images use the same parent camera. Eyes and mouth remain static; layer-vector
+deformation, rotated character planes and animated lips/blinks remain incomplete. Message windows render
 above portraits regardless of serialized object-address ordering.
 `OM_SetCharMouthAnimeSetting` retains lip-sync settings separately from the
 character's placement/style, without starting mouth animation or replaying voice.
@@ -593,7 +599,7 @@ pixels outside the destination region. Mosaic, inversion, the right curtain,
 and four-direction `CFadeCarten` with its retail 128-pixel feather use integer
 pixel operators recovered from the retail DLL. Curtains retain their preceding
 rendered frame and sample through internal snapshot restoration.
-StretchAnti and time-based OverStretchAnti interpolate the original source and
+Stretch, StretchAnti and time-based OverStretchAnti interpolate the original source and
 destination rectangles in Q13, with bilinear sampling and native opacity
 endpoints. OverStretch can accumulate against the live destination. Native
 antialiasing details, frame-count-based stretch, rotation, custom curtain widths, raster
@@ -940,8 +946,7 @@ replacement. Native layer-activation messages are not yet implemented.
 All 321 directly referenced backgrounds' legacy planes were also re-decoded.
 Non-default extension color/range/properties currently leave the basic image
 projection unchanged; they no longer reject otherwise valid background images.
-General legacy canvas composition, sprite interleaving and full-matrix modes
-remain unsupported.
+General legacy canvas composition and sprite interleaving remain unsupported.
 For X11 isolation, unset
 `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; winit otherwise prefers an inherited
 Wayland session.

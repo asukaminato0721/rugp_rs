@@ -10,13 +10,43 @@
 use super::*;
 use crate::world::CameraTween;
 
+pub(super) fn validate_world_projection(mode: u8) -> Result<()> {
+    ensure!(
+        [0, 2, 3, 17, 19, 21, 25, 27, 29].contains(&mode),
+        "unsupported world projection mode {mode}"
+    );
+    Ok(())
+}
+
 impl ObjectState {
+    pub(super) fn begin_world_projection(&mut self) {
+        // Vm60 10042442 switches only in states 2/3, armed by HumanIn.
+        // State 0 preserves the current mode across camera-only transitions.
+        // State 1 discards an override that had no following world image.
+        if self.world_projection_refresh {
+            self.world_projection = self
+                .pending_world_projection
+                .unwrap_or(self.default_world_projection);
+        }
+        self.pending_world_projection = None;
+        self.world_projection_refresh = false;
+    }
     pub(super) fn camera_target(&self) -> Result<Camera> {
         self.pending_camera
             .as_ref()
             .map_or(Ok(self.camera), |t| self.prepare_camera(t.target()))
     }
     pub(super) fn prepare_camera(&self, mut camera: Camera) -> Result<Camera> {
+        // Vm60 10040525: exclusive bit 0 preserves all requested angles.
+        let mode = if self.world_projection_refresh {
+            self.pending_world_projection
+                .unwrap_or(self.default_world_projection)
+        } else {
+            self.world_projection
+        };
+        if mode & 1 != 0 {
+            return Ok(camera);
+        }
         for image in self.layers.values().filter_map(|layer| match layer {
             Layer::World(image) => Some(image),
             Layer::Screen(_) => None,
@@ -34,6 +64,30 @@ impl ObjectState {
     }
 }
 impl Game {
+    pub(super) fn set_world_projection(
+        &mut self,
+        id: u64,
+        fields: &BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let mode = number(fields, "排他指定", 0)?;
+        ensure!(mode & !0x100ff == 0, "invalid world projection mode");
+        let projection = mode as u8;
+        validate_world_projection(projection)?;
+        ensure!(
+            matches!(fields.get("独立カメラ"), None | Some(Value::Null)),
+            "independent world camera is not implemented"
+        );
+        let object = self.objects.entry(id).or_default();
+        if mode & 0x10000 != 0 {
+            object.pending_world_projection = Some(projection);
+            object.world_projection_refresh = false;
+        } else {
+            object.world_projection = projection;
+            object.default_world_projection = projection;
+        }
+        Ok(())
+    }
+
     /// Independent cameras used by omitted weather effects retain their named
     /// scalar settings. They are not the background's live ParseScreen camera.
     pub(super) fn set_effect_camera_member(
@@ -163,5 +217,33 @@ impl Game {
         object.pending_camera = pending;
         object.properties.extend(fields);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_override_survives_camera_transitions_until_next_world_image() {
+        let mut object = ObjectState {
+            world_projection: 17,
+            default_world_projection: 17,
+            pending_world_projection: Some(21),
+            world_projection_refresh: true,
+            ..Default::default()
+        };
+        let previous_scene = object.clone();
+        object.begin_world_projection();
+        assert_eq!(object.world_projection, 21);
+        assert_eq!(previous_scene.world_projection, 17);
+        assert_eq!(object.pending_world_projection, None);
+        object.begin_world_projection();
+        assert_eq!(object.world_projection, 21);
+        // A new image without an override restores the default mode.
+        object.world_projection_refresh = true;
+        object.begin_world_projection();
+        assert_eq!(object.world_projection, 17);
+        assert_eq!(object.default_world_projection, 17);
     }
 }

@@ -89,6 +89,11 @@ pub struct ObjectState {
     /// Native first slot's cached projected center (+56), updated on render.
     camera_center_y: Cell<i16>,
     pub world_layers: crate::world::WorldLayerFlags,
+    world_projection: u8,
+    default_world_projection: u8,
+    world_projection_refresh: bool,
+    pending_world_projection: Option<u8>,
+    player_height: i32,
     pub opacity: u8,
     parent: Option<u64>,
     pending_draw_ratio: Option<rugp_assets::mime::MimeCurve>,
@@ -113,6 +118,11 @@ impl Default for ObjectState {
             postures: Vec::new(),
             camera_center_y: Cell::new(0),
             world_layers: crate::world::WorldLayerFlags::default(),
+            world_projection: 0,
+            default_world_projection: 0,
+            world_projection_refresh: false,
+            pending_world_projection: None,
+            player_height: 1550,
             opacity: 255,
             parent: None,
             pending_draw_ratio: None,
@@ -146,7 +156,9 @@ impl ObjectState {
                 self.cache_world_center(image)?;
                 for plane in image.planes.iter().filter(|p| p.draw_flags & 2 == 0) {
                     plane.texture.validate()?;
-                    plane.plane.quad(&self.camera, self.rect)?;
+                    plane
+                        .plane
+                        .quad_with_mode(&self.camera, self.rect, self.world_projection)?;
                 }
             } else if let Layer::Screen(texture) = layer {
                 texture.validate()?;
@@ -155,6 +167,9 @@ impl ObjectState {
         self.character.validate_texture()
     }
     fn render(&self, frame: &mut Framebuffer) -> Result<()> {
+        self.render_in_world(frame, None)
+    }
+    fn render_in_world(&self, frame: &mut Framebuffer, parent: Option<&ObjectState>) -> Result<()> {
         if let Some(backdrop) = self.backdrop {
             backdrop.paint(frame, self.rect);
         }
@@ -168,7 +183,11 @@ impl ObjectState {
                         }
                         frame.blit_projective(
                             &layer.texture,
-                            layer.plane.quad(&self.camera, self.rect)?,
+                            layer.plane.quad_with_mode(
+                                &self.camera,
+                                self.rect,
+                                self.world_projection,
+                            )?,
                             self.rect,
                             self.opacity,
                         )?;
@@ -177,8 +196,22 @@ impl ObjectState {
                 Layer::Screen(texture) => frame.blit(texture, self.rect, self.opacity)?,
             }
         }
-        self.character
-            .render(frame, self.rect, self.opacity, &self.camera)?;
+        let world = parent.unwrap_or(self);
+        if world.visible {
+            let opacity = if parent.is_some() {
+                (u16::from(self.opacity) * u16::from(world.opacity) / 255) as u8
+            } else {
+                self.opacity
+            };
+            self.character.render(
+                frame,
+                world.rect,
+                opacity,
+                &world.camera,
+                world.world_projection,
+                world.player_height,
+            )?;
+        }
         Ok(())
     }
 }
@@ -428,7 +461,7 @@ impl Game {
                     .filter(|o| o.visible && o.backdrop.is_some()),
             )
         {
-            object.render(&mut frame)?;
+            object.render_in_world(&mut frame, object.parent.and_then(|id| objects.get(&id)))?;
         }
         Ok(frame)
     }
@@ -738,12 +771,14 @@ impl Game {
             "OM_BodyScroll" | "OM_BoxScroll" => {
                 scroll::apply(self.objects.entry(id).or_default(), &message.class, fields)?;
             }
-            "OM_SetWorldPlayerHeight"
-            | "OM_SetBBInfoForQueue"
+            "OM_SetWorldPlayerHeight" => {
+                self.objects.entry(id).or_default().player_height = number(&fields, "高さ", 1550)?;
+            }
+            "OM_SetExclusiveCamera" => self.set_world_projection(id, &fields)?,
+            "OM_SetBBInfoForQueue"
             | "OM_SetDataCPostureMoment"
             | "OM_SetRmtInfoScaling"
             | "OM_SetShading"
-            | "OM_SetExclusiveCamera"
             | "OM_SetWorldSXY"
             | "OM_StoreFrameImage"
             | "OM_SetMsgTextLayout"
@@ -917,6 +952,9 @@ impl Game {
                 self.buffers.remove(&id);
                 let object = self.objects.entry(id).or_default();
                 object.menu = None;
+                // Vm60 1003f3a3: only a new world image arms the camera
+                // override/default switch for the following ParseScreen.
+                object.world_projection_refresh = true;
                 let prefix = format!("native.layer.{style}.");
                 object
                     .properties
@@ -947,6 +985,9 @@ impl Game {
                     number(&fields, "方式ID", 0)? == 0,
                     "transition effect is not implemented yet"
                 );
+                for object in self.objects.values_mut() {
+                    object.begin_world_projection();
+                }
                 let duration = number(&fields, "総処理時間基", 0)?.max(0) as u32;
                 if self.start_parse_transition(duration)? {
                     return Ok(());

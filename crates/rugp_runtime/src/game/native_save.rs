@@ -221,6 +221,18 @@ mod tests {
             let original = std::fs::read(saves.join(name))?;
             game.import_uuc(&saves.join(name), &[], &mut resources)?;
             assert_eq!(std::fs::read(saves.join(name))?, original);
+            if name == "vmr00001.uuc" {
+                let actor = &game.objects[&357909];
+                let geometry = actor
+                    .character
+                    .geometry
+                    .context("sprite geometry missing")?;
+                assert_eq!(actor.character.position, [80, 0, 4280]);
+                assert_eq!(geometry.size, [899, 1956]);
+                assert_eq!(geometry.anchor_q16, [26394404, 118929091]);
+                assert_eq!(actor.parent, Some(212259));
+                assert_eq!(game.objects[&212259].world_projection, 21);
+            }
             assert!(game.waiting_for_dialogue());
             assert_eq!(
                 game.vm.cursor().map(|c| (c.scene, c.address)),

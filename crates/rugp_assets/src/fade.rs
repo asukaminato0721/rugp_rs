@@ -174,7 +174,10 @@ impl Fade {
             "unordered fade curve"
         );
         let parameters = r.position;
-        let stretch = if matches!(class, "CFadeStretchAnti" | "CFadeOverStretchAnti") {
+        let stretch = if matches!(
+            class,
+            "CFadeStretch" | "CFadeStretchAnti" | "CFadeOverStretchAnti"
+        ) {
             let mut destination_end = [0; 4];
             let mut source_end = [0; 4];
             for value in destination_end.iter_mut().chain(&mut source_end) {

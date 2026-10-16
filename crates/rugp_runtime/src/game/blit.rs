@@ -154,7 +154,7 @@ impl Game {
                 && object.has_character_image()
             {
                 if self.rasterize_scene {
-                    object.render(&mut frame)?;
+                    object.render_in_world(&mut frame, Some(source))?;
                 } else {
                     object.validate_projection()?;
                 }

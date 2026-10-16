@@ -2,16 +2,36 @@
 //! generic object properties: subsequent packets reuse many of the same names.
 use super::*;
 
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SpriteGeometry {
+    pub(super) size: [i32; 2],
+    pub(super) anchor_q16: [i32; 2],
+}
+
 #[derive(Clone, Default)]
 pub(super) struct CharacterState {
     pub(super) face: BTreeMap<String, Value>,
     pub(super) layers: BTreeMap<i32, [f32; 2]>,
     pub(super) texture: Option<Arc<Texture>>,
+    pub(super) geometry: Option<SpriteGeometry>,
     pub(super) position: [i32; 3],
     pub(super) style: i32,
 }
+impl SpriteGeometry {
+    pub(super) fn validate(&self) -> Result<()> {
+        ensure!(
+            self.size.iter().all(|v| (0..=32767).contains(v)),
+            "invalid sprite dimensions"
+        );
+        Ok(())
+    }
+}
 impl CharacterState {
     pub(super) fn validate_texture(&self) -> Result<()> {
+        if let Some(geometry) = self.geometry {
+            geometry.validate()?;
+        }
         self.texture.as_deref().map_or(Ok(()), Texture::validate)
     }
     pub(super) fn has_image(&self) -> bool {
@@ -23,36 +43,80 @@ impl CharacterState {
         viewport: (i32, i32, u32, u32),
         opacity: u8,
         motion: &Camera,
+        projection: u8,
+        player_height: i32,
     ) -> Result<()> {
         let Some(texture) = &self.texture else {
             return Ok(());
         };
-        // Readable static standing portraits until native world-sprite
-        // projection is ported. Preserve relative horizontal/depth placement.
-        let position =
-            std::array::from_fn::<_, 3, _>(|i| self.position[i].saturating_add(motion.position[i]));
-        let depth = if position[2] > 0 { position[2] } else { 1120 } as f64;
-        let height = (f64::from(viewport.3) * 1120.0 / depth * f64::from(motion.focal_length)
-            / 720.0)
-            .clamp(1.0, 16384.0);
-        let width = height * f64::from(texture.width) / f64::from(texture.height);
-        let x = f64::from(viewport.0)
-            + f64::from(viewport.2) * 0.5
-            + f64::from(position[0]) * 720.0 / depth
-            - width * 0.5;
-        let y = f64::from(viewport.1) + f64::from(viewport.3) - height
-            + f64::from(position[1]) * 720.0 / depth;
-        frame.blit(
+        // Vm60 10035d70: sprite coordinates are relative to the owning
+        // world camera. The native player eye height is 1550 world units.
+        let geometry = self.geometry.unwrap_or(SpriteGeometry {
+            size: [texture.width as i32, texture.height as i32],
+            anchor_q16: [
+                (texture.width as i32 / 2) << 16,
+                (texture.height as i32) << 16,
+            ],
+        });
+        let mut depth = self.position[2].wrapping_sub(motion.position[2]);
+        if depth < 1 {
+            return Ok(());
+        }
+        let mut relative = [
+            self.position[0].wrapping_sub(motion.position[0]),
+            self.position[1]
+                .wrapping_sub(motion.position[1])
+                .wrapping_add(player_height),
+        ];
+        let full_view = projection & 0x30 != 0;
+        if full_view {
+            let rotated = motion.rotate([relative[0], relative[1], depth]);
+            relative = [rotated[0], rotated[1]];
+            depth = rotated[2];
+            if depth < 1 {
+                return Ok(());
+            }
+        }
+        let mut edges = [[0.0; 2]; 2];
+        for axis in 0..2 {
+            let origin = relative[axis]
+                .wrapping_shl(13)
+                .wrapping_sub(geometry.anchor_q16[axis] >> 3)
+                .wrapping_sub(if full_view {
+                    0
+                } else {
+                    motion.angles_q4[axis].wrapping_mul(depth)
+                });
+            let center = if axis == 0 {
+                viewport.0.wrapping_add(viewport.2 as i32 / 2)
+            } else {
+                viewport.1.wrapping_add(viewport.3 as i32 / 2)
+            };
+            for (end, edge) in edges.iter_mut().enumerate() {
+                let q13 = origin.wrapping_add((end as i32 * geometry.size[axis]).wrapping_shl(13));
+                edge[axis] = f64::from(crate::world::mul_div(
+                    q13,
+                    i32::from(motion.focal_length),
+                    depth,
+                )) / 8192.0
+                    + f64::from(center);
+            }
+        }
+        let [left, top] = edges[0];
+        let [right, bottom] = edges[1];
+        frame.blit_projective(
             texture,
-            (
-                x.round() as i32,
-                y.round() as i32,
-                width.round().max(1.0) as u32,
-                height.round() as u32,
-            ),
+            [
+                [left, top, f64::from(depth)],
+                [right, top, f64::from(depth)],
+                [right, bottom, f64::from(depth)],
+                [left, bottom, f64::from(depth)],
+            ],
+            viewport,
             opacity,
         )
     }
+
     pub(super) fn remove(&mut self, style: i32) {
         if style == 0 || style == self.style {
             self.texture = None;
@@ -60,24 +124,75 @@ impl CharacterState {
     }
 }
 impl Game {
+    fn character_geometry(
+        &self,
+        reference: &ObjectRef,
+        texture: &Texture,
+    ) -> Result<SpriteGeometry> {
+        if !reference.class.as_ref().is_some_and(|c| c.name == "CRmt") {
+            return Ok(SpriteGeometry {
+                size: [texture.width as i32, texture.height as i32],
+                anchor_q16: [
+                    (texture.width as i32 / 2) << 16,
+                    (texture.height as i32) << 16,
+                ],
+            });
+        }
+        let sprite = rugp_assets::crmt::Crmt::parse(
+            &self.archive.read_at(
+                reference.offset.context("sprite extent missing")?,
+                reference.size.context("sprite size missing")? as usize,
+            )?,
+            self.archive.address_shift,
+        )?;
+        let mut anchor = [
+            i32::from(sprite.width) << 15,
+            i32::from(sprite.height) << 16,
+        ];
+        if let (Some(offset), Some(size)) =
+            (sprite.image_properties.offset, sprite.image_properties.size)
+            && let Some(point) = rugp_assets::image_properties::anchor(
+                &self.archive.read_at(offset, size as usize)?,
+                [sprite.base_offset.0, sprite.base_offset.1],
+            )?
+        {
+            anchor = point;
+        }
+        let scale = |value| crate::world::mul_div(value, sprite.scale as i32, 65536);
+        Ok(SpriteGeometry {
+            size: [
+                scale(i32::from(sprite.width)),
+                scale(i32::from(sprite.height)),
+            ],
+            anchor_q16: anchor.map(scale),
+        })
+    }
     fn character_texture(
         &mut self,
         body: &ObjectRef,
         overlays: &[ObjectRef],
-    ) -> Result<Arc<Texture>> {
-        let body = self.images.load(body)?;
+    ) -> Result<(Arc<Texture>, SpriteGeometry)> {
+        let geometry;
+        let body = {
+            let texture = self.images.load(body)?;
+            geometry = self.character_geometry(body, &texture)?;
+            texture
+        };
         let mut canvas = Framebuffer::transparent(body.width, body.height)?;
         canvas.blit(&body, (0, 0, body.width, body.height), 255)?;
         for reference in overlays.iter().filter(|r| r.class.is_some()) {
             let part = self.images.load(reference)?;
             canvas.blit(&part, (0, 0, body.width, body.height), 255)?;
         }
-        Ok(Arc::new(Texture {
-            width: canvas.width,
-            height: canvas.height,
-            display_scale: 1.0,
-            rgba: canvas.rgba,
-        }))
+        Ok((
+            Arc::new(Texture {
+                width: canvas.width,
+                height: canvas.height,
+                display_scale: body.display_scale,
+                rgba: canvas.rgba,
+            }),
+            geometry,
+        ))
     }
     pub(super) fn set_character_core(
         &mut self,
@@ -140,12 +255,14 @@ impl Game {
         }
         // Static expression fallback: all supplied transparent face canvases.
         // Native core pose/deformation and eye/mouth animation remain deferred.
-        let texture = self.character_texture(body, &core.references[body_index + 1..])?;
+        let (texture, geometry) =
+            self.character_texture(body, &core.references[body_index + 1..])?;
         self.buffers.remove(&id);
         let object = self.objects.entry(id).or_default();
         object.layers.clear();
         object.menu = None;
         object.character.texture = Some(texture);
+        object.character.geometry = Some(geometry);
         object.character.face.clear();
         object.clear_character_sources();
         object
@@ -194,7 +311,7 @@ impl Game {
         if let Some(Value::Reference(expression)) = fields.get("表情画像") {
             overlays.push(expression.clone());
         }
-        let texture = self.character_texture(body, &overlays)?;
+        let (texture, geometry) = self.character_texture(body, &overlays)?;
         let object = self.objects.entry(id).or_default();
         object.layers.clear();
         object.menu = None;
@@ -217,6 +334,7 @@ impl Game {
         self.buffers.remove(&id);
         let character = &mut object.character;
         character.texture = Some(texture);
+        character.geometry = Some(geometry);
         character.position = position;
         character.style = style;
         Ok(())
@@ -317,9 +435,10 @@ mod tests {
             .references[2]
             .clone();
         let body = game.images.load(&body_ref)?;
-        game.frame = Framebuffer::new(16, 16)?;
+
+        game.frame = Framebuffer::new(1024, 600)?;
         let object = game.objects.entry(id).or_default();
-        object.rect = (0, 0, 16, 16);
+        object.rect = (0, 0, 1024, 600);
         object.character.position = [1, 0, 1120];
         object.properties.insert(
             "native.character.body".into(),
@@ -476,6 +595,19 @@ mod tests {
         };
         portrait.character.texture = Some(texture);
         portrait.character.style = 512;
+        portrait.character.geometry = Some(SpriteGeometry {
+            size: [8, 16],
+            anchor_q16: [4 << 16, 16 << 16],
+        });
+        portrait.character.position = [0, -1542, 720];
+        portrait.parent = Some(3);
+        // Child-local cameras and viewports must not affect world sprites.
+        portrait.camera.position = [1000, 1000, 1000];
+        portrait.rect = (100, 100, 2, 2);
+        let world = ObjectState {
+            rect: (0, 0, 16, 16),
+            ..ObjectState::default()
+        };
         let ui = ObjectState {
             rect: (0, 12, 16, 4),
             backdrop: Some(crate::message_window::Backdrop {
@@ -485,20 +617,21 @@ mod tests {
             }),
             ..ObjectState::default()
         };
-        let mut objects = BTreeMap::from([(1, ui), (2, portrait)]);
+        let mut objects = BTreeMap::from([(1, ui), (2, portrait), (3, world)]);
         let frame = Game::render_objects(&objects, (16, 16))?;
         assert_eq!(&frame.rgba[(8 * 16 + 8) * 4..][..4], &[255, 0, 0, 255]);
         assert_eq!(&frame.rgba[(14 * 16 + 8) * 4..][..4], &[0, 0, 255, 255]);
-        objects.get_mut(&2).unwrap().camera.position[0] = 4;
+        objects.get_mut(&3).unwrap().camera.position[0] = 4;
         let moved = Game::render_objects(&objects, (16, 16))?;
-        assert_eq!(&moved.rgba[(8 * 16 + 4) * 4..][..4], &[0, 0, 0, 255]);
-        objects.get_mut(&2).unwrap().camera = Camera::default();
+        assert_eq!(&moved.rgba[(8 * 16 + 4) * 4..][..4], &[255, 0, 0, 255]);
+        assert_eq!(&moved.rgba[(8 * 16 + 9) * 4..][..4], &[0, 0, 0, 255]);
+        objects.get_mut(&3).unwrap().camera = Camera::default();
         let character = &mut objects.get_mut(&2).unwrap().character;
-        character.position[2] = 2240;
+        character.position[2] = 1440;
         character.remove(1);
         assert!(character.texture.is_some());
         let frame = Game::render_objects(&objects, (16, 16))?;
-        assert_eq!(&frame.rgba[(4 * 16 + 8) * 4..][..4], &[0, 0, 0, 255]);
+        assert_eq!(&frame.rgba[(3 * 16 + 8) * 4..][..4], &[0, 0, 0, 255]);
         objects.get_mut(&2).unwrap().character.remove(512);
         assert!(objects[&2].character.texture.is_none());
         Ok(())

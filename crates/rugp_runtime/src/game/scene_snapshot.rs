@@ -47,6 +47,16 @@ struct SavedObject {
     postures: Vec<SavedPosture>,
     camera_center_y: i16,
     world_layers: WorldLayerFlags,
+    #[serde(default)]
+    world_projection: u8,
+    #[serde(default)]
+    default_world_projection: u8,
+    #[serde(default)]
+    world_projection_refresh: bool,
+    #[serde(default)]
+    pending_world_projection: Option<u8>,
+    #[serde(default = "default_player_height")]
+    player_height: i32,
     opacity: u8,
     parent: Option<u64>,
     pending_draw_ratio: Option<MimeCurve>,
@@ -63,6 +73,10 @@ enum SavedLayer {
         boundary: Plane,
     },
 }
+fn default_player_height() -> i32 {
+    1550
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedPlane {
@@ -73,6 +87,8 @@ struct SavedPlane {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedCharacter {
+    #[serde(default)]
+    geometry: Option<character::SpriteGeometry>,
     face: Properties,
     layers: Vec<(i32, [f32; 2])>,
     texture: Option<u32>,
@@ -362,6 +378,11 @@ fn capture_objects(
                     postures,
                     camera_center_y: o.camera_center_y.get(),
                     world_layers: o.world_layers,
+                    world_projection: o.world_projection,
+                    default_world_projection: o.default_world_projection,
+                    world_projection_refresh: o.world_projection_refresh,
+                    pending_world_projection: o.pending_world_projection,
+                    player_height: o.player_height,
                     opacity: o.opacity,
                     parent: o.parent,
                     pending_draw_ratio: o.pending_draw_ratio.clone(),
@@ -369,6 +390,7 @@ fn capture_objects(
                     backdrop: o.backdrop,
                     layers,
                     character: SavedCharacter {
+                        geometry: o.character.geometry,
                         face: capture_properties(&o.character.face, references)?,
                         layers: o.character.layers.iter().map(|(id, v)| (*id, *v)).collect(),
                         texture: o
@@ -581,6 +603,11 @@ fn validate_objects(objects: &[(u64, SavedObject)], budget: &mut Budget) -> Resu
             "scene snapshot viewport exceeds native range"
         );
         o.world_layers.validate_snapshot()?;
+        camera::validate_world_projection(o.world_projection)?;
+        camera::validate_world_projection(o.default_world_projection)?;
+        if let Some(mode) = o.pending_world_projection {
+            camera::validate_world_projection(mode)?;
+        }
         if let Some(camera) = o.pending_camera {
             camera.validate_snapshot()?;
         }
@@ -620,6 +647,9 @@ fn validate_objects(objects: &[(u64, SavedObject)], budget: &mut Budget) -> Resu
                 character_layers.insert(index) && vector.iter().all(|v| v.is_finite()),
                 "invalid scene snapshot character layer"
             );
+        }
+        if let Some(geometry) = o.character.geometry {
+            geometry.validate()?;
         }
         if o.character.texture.is_some() {
             budget.texture()?;
@@ -741,6 +771,11 @@ fn restore_objects(
                 postures,
                 camera_center_y: Cell::new(o.camera_center_y),
                 world_layers: o.world_layers,
+                world_projection: o.world_projection,
+                default_world_projection: o.default_world_projection,
+                world_projection_refresh: o.world_projection_refresh,
+                pending_world_projection: o.pending_world_projection,
+                player_height: o.player_height,
                 opacity: o.opacity,
                 parent: o.parent,
                 pending_draw_ratio: o.pending_draw_ratio.clone(),
@@ -748,6 +783,7 @@ fn restore_objects(
                 backdrop: o.backdrop,
                 layers,
                 character: character::CharacterState {
+                    geometry: o.character.geometry,
                     face: restore_properties(&o.character.face, references)?,
                     layers: o.character.layers.iter().copied().collect(),
                     texture: o.character.texture.map(|id| textures.get(id)).transpose()?,
@@ -890,6 +926,10 @@ mod tests {
             }),
         );
         object.character.texture = Some(Arc::clone(&texture));
+        object.character.geometry = Some(character::SpriteGeometry {
+            size: [900, 1956],
+            anchor_q16: [26394404, 118929091],
+        });
         object.character.position = [3, -2, 1120];
         object.character.style = 7;
         object.character.layers.insert(4, [0.5, 1.5]);
@@ -906,6 +946,11 @@ mod tests {
             ("null".into(), Value::Null),
         ]);
         object.camera_center_y.set(-123);
+        object.world_projection = 21;
+        object.default_world_projection = 17;
+        object.world_projection_refresh = true;
+        object.pending_world_projection = Some(19);
+        object.player_height = 1600;
         let original = BTreeMap::from([(1, object)]);
         let saved = capture_objects(&original, &mut references, &mut textures)?;
         validate_objects(&saved, &mut Budget::default())?;
@@ -914,9 +959,20 @@ mod tests {
         let object = &restored[&1];
         assert!(!object.enabled && object.input && object.sprite && !object.auto_update);
         assert_eq!(object.camera_center_y.get(), -123);
+        assert_eq!(object.world_projection, 21);
+        assert_eq!(object.default_world_projection, 17);
+        assert!(object.world_projection_refresh);
+        assert_eq!(object.pending_world_projection, Some(19));
+        assert_eq!(object.player_height, 1600);
         assert_eq!(object.parent, Some(999));
         assert_eq!(object.menu, Some(77));
         assert_eq!(object.opacity, 192);
+        let geometry = object
+            .character
+            .geometry
+            .context("sprite geometry missing")?;
+        assert_eq!(geometry.size, [900, 1956]);
+        assert_eq!(geometry.anchor_q16, [26394404, 118929091]);
         assert_eq!(object.camera_start, original[&1].camera_start);
         assert_eq!(object.pending_camera, original[&1].pending_camera);
         assert!(!object.world_layers.draws_in_sprite_pass(3));
