@@ -19,7 +19,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the work-in-progress desktop runtime; unsupported operations stop with an error.
+    /// Run the native desktop game host using original retail assets.
     #[cfg(all(
         feature = "desktop",
         any(target_os = "linux", target_os = "windows", target_os = "macos")

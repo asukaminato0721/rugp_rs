@@ -1,20 +1,24 @@
 # rugp_rs
 
-Native Rust reimplementation of rUGP, targeting the 2008 **君が望む永遠
-～Latest Edition～** disc. This is an active port: archive and scene decoding
-work, along with Cr6Ti/CRip007/CRip008, CRmt mipmaps, CBg2d image planes,
-and OOR/Vorbis audio decoding. The real startup, title, dialogue, story choices,
-standing portraits and ending credits run in Rust. The default first-choice
-route has returned from new game to the original title with full scene
-rasterization: 24,960 text confirmations, 74 sampled script scenes and 50 selections.
-Two additional choice plans have completed headless host-logic runs. This
-does not prove every branch or pixel equivalence to the original. Presentation uses a
-software framebuffer. Playability takes priority over exact effect fidelity:
-static portrait projection and some transitions intentionally approximate rUGP.
-The full port is **not complete**: all-route verification, complete premium-menu
-coverage, original-save imports, 3D rendering and some effects/UI remain incomplete.
-An optional Kira audio-device adapter
-handles ordinary sample playback; specialized sound operations remain incomplete.
+Native Rust game port of rUGP, targeting the 2008 **君が望む永遠
+～Latest Edition～** disc. It runs the original archives and scripts directly:
+startup/title, dialogue and choices, backgrounds/portraits, voice/BGM/effects,
+movies, credits, portable saves and the original Premium menus.
+
+All three original True End story routes have returned from new game to the
+original title. Scenes 241 and 249 have continuous scene-pixel-rendered runs;
+scene 246 has a resource/clock/text-active host-logic run. Four earned
+first-chapter alternate routes, all three earned Premium extra stories and all
+33 usable replay selectors also have complete host-logic playback/return checks.
+These are specific verified paths, not exhaustive choice-combination coverage.
+Detailed scopes and reproducible probes are below.
+
+Playability takes priority over exact presentation. The software renderer uses
+static portrait/planar-model approximations and simplified weather, transitions
+and text styling instead of complete native 3D/GDI behavior. Rust-port save slots
+do not import Windows UUC saves or profiles. This is a game-specific playable
+port, not a pixel-exact or general-purpose rUGP replacement; unsupported formats
+or operation variants outside the covered flows still report explicit errors.
 
 The workspace follows `../siglus_rs`'s separation between asset formats,
 scene VM, and application/platform hosts:
@@ -38,7 +42,22 @@ No Windows executable or DLL is loaded or executed. The schema reader reads
 PE data, imports/exports, and constant table initialization instructions from
 the game's `UnivUI.dll`, `rvmm.dll`, and `Vm60.dll`. It does not emulate the CPU.
 
-## Commands
+## Play
+
+Keep the original game files available and install a Japanese outline font
+(the tested fallback is Noto Sans CJK JP). No game assets or fonts are bundled.
+The pinned Nix shell supplies the Linux audio/window build dependencies:
+
+```sh
+nix develop --command cargo run --release --features audio -- --project-dir /run/media/w/KIMINOZO_LE play
+```
+
+Enter/Space or a left-click reveals/advances dialogue; arrows and Enter choose
+menu items. **F5** opens Save, **F9** opens Load, and Escape cancels the slot
+chooser. The ten Rust-port slots are separate from original Windows UUC saves.
+For a build without device audio, omit `--features audio` and pass `--mute` to `play`.
+
+## Inspection and diagnostics
 
 ```sh
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE inspect
@@ -65,8 +84,8 @@ extraction refuses to overwrite an existing output. Objects are addressed by
 their project-tree ID. Disassembly emits JSON with exact stream offsets,
 in-memory command offsets, operation flags, and references.
 Use `--no-default-features` for the CLI without desktop/window dependencies.
-`play` is a development runner, not a completed game launcher; unsupported
-operations stop at their exact scene/address. `--mute` explicitly disables
+`play` executes the Rust game host; unsupported operations report their exact
+scene/address. `--mute` explicitly disables
 audio playback; PCM export/decoding works independently.
 
 Dialogue uses an installed Japanese outline font, preferring the face specified
@@ -139,14 +158,31 @@ tick 35,195: 23,034 dialogue confirmations, 52 selections, 1,076 non-text
 confirmations, 8,634 sounds and 70 sampled script scenes.
 The fresh third-entry plan returned at tick 37,878: 25,493 dialogue confirmations,
 53 selections, 1,148 non-text confirmations, 9,372 sounds and 74 sampled scenes.
-These are three choice strategies, not proof of all three True End story routes.
+Those ordinal-only plans are three choice strategies, not themselves proof of
+all three True End story routes. Separate ending-directed checks now establish
+the following complete new-game/title-return paths:
+
+| True End scene | Dialogue confirmations | Selections | Return tick | Scene rasterization |
+| --- | ---: | ---: | ---: | --- |
+| 241 | 23,375 | 51 | 35,366 | Continuous pixels |
+| 246 | 22,883 | 47 | 35,216 | Host logic only |
+| 249 | 23,034 | 52 | 35,195 | Continuous pixels |
+
+The 241 pixel run uses default entries with four directed overrides:
+`415:61248:1`, `422:38168:1`, `418:17096:2`, `418:54204:1`, and
+`--expect-scene=241`. It completed 1,085 non-text confirmations and 8,948 sounds
+across 63 sampled scenes. Every supplied directed cursor was actually reached.
+The 249 pixel run chooses the first title entry and second entries for subsequent
+menus, with `--expect-scene=249`; its counters match the headless run above,
+including 1,076 non-text confirmations, 8,634 sounds and 70 sampled scenes.
+Both use `--stop-on-title-return` without `--no-scene-raster`.
 A separate cursor-directed full new-game run now reaches True End scene 246
 and returns to the original title: tick 35,216, 22,883 dialogue confirmations,
 47 selections, 1,089 non-text confirmations, 8,589 sounds and 70 sampled scenes.
 It uses default entries except `--choice-at=422:38168:1`, with
 `--no-scene-raster --stop-on-title-return --expect-scene=246`; no ending or
-plot flags are assigned by the probe. Other True End full-route/render checks
-remain in progress.
+plot flags are assigned by the probe. Its host-logic scope is intentionally
+distinguished from continuous scene-pixel verification.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
