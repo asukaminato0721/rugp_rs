@@ -17,6 +17,7 @@ pub struct Glyph {
 
 pub struct TextFont {
     font: FontArc,
+    index: u32,
     scale: PxScale,
     pub source: String,
     pub size: u16,
@@ -34,6 +35,7 @@ impl TextFont {
         let scale = PxScale::from(f32::from(size));
         Ok(Self {
             font,
+            index,
             scale,
             source,
             size,
@@ -96,6 +98,10 @@ impl TextFont {
         }
         bail!("no Japanese outline font found; provide --font with a Japanese TTF/OTF/TTC file")
     }
+    /// The outline file bytes and face index, for hosts with their own text stack.
+    pub fn face(&self) -> (&[u8], u32) {
+        (self.font.font_data(), self.index)
+    }
     pub fn supports(&self, ch: char) -> bool {
         self.font.glyph_id(ch).0 != 0
     }
@@ -104,6 +110,7 @@ impl TextFont {
         ensure!((4..=128).contains(&size), "invalid font pixel size");
         Ok(Self {
             font: self.font.clone(),
+            index: self.index,
             scale: PxScale::from(f32::from(size)),
             source: self.source.clone(),
             size,

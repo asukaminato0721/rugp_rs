@@ -29,11 +29,12 @@ png = "0.18"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:winit", "dep:softbuffer"]
+desktop = ["dep:winit", "dep:softbuffer", "dep:egui"]
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
-winit = { version = "0.30", optional = true }
+winit = { version = "=0.31.0-beta.3", optional = true }
 softbuffer = { version = "0.4", optional = true }
+egui = { version = "0.37", optional = true, default-features = false, features = ["default_fonts"] }
 
 [profile.release]
 strip = true

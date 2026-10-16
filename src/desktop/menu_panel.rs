@@ -1,8 +1,5 @@
-//! Settings and right-click menu. Every pointer action needs a paired release.
-use super::{
-    preferences::Preferences,
-    save_panel::{rect, text},
-};
+//! Right-click menu. Settings live in the popup config window. Every pointer action needs a paired release.
+use super::save_panel::{rect, text};
 use anyhow::Result;
 use rugp_runtime::{font::TextFont, render::Framebuffer};
 use winit::keyboard::KeyCode;
@@ -10,7 +7,6 @@ use winit::keyboard::KeyCode;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
     Context,
-    Settings,
     Quit,
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -25,33 +21,27 @@ pub(super) enum Action {
     Skip,
     QuitPrompt,
     Quit,
-    Change(Preferences),
 }
 pub(super) struct MenuPanel {
     pub page: Page,
     selected: usize,
     pressed: Option<usize>,
-    pub settings: Preferences,
-    pub notice: String,
 }
 impl MenuPanel {
-    pub fn new(page: Page, settings: Preferences) -> Self {
+    pub fn new(page: Page) -> Self {
         Self {
             page,
             selected: 0,
             pressed: None,
-            settings,
-            notice: String::new(),
         }
     }
     fn count(&self) -> usize {
         match self.page {
             Page::Context => 8,
-            Page::Settings => 9,
             Page::Quit => 2,
         }
     }
-    fn activate(&mut self, direction: i32) -> Action {
+    fn activate(&self) -> Action {
         match self.page {
             Page::Context => [
                 Action::Resume,
@@ -73,29 +63,6 @@ impl MenuPanel {
                     Action::Quit
                 }
             }
-            Page::Settings => {
-                match self.selected {
-                    0 => {
-                        self.settings.text_speed_ms =
-                            (self.settings.text_speed_ms as i32 + direction * 5).clamp(0, 100)
-                                as u32
-                    }
-                    1 => {
-                        self.settings.auto_delay_ms = (self.settings.auto_delay_ms as i32
-                            + direction * 250)
-                            .clamp(250, 10000)
-                            as u32;
-                    }
-                    2..=5 => {
-                        let level = &mut self.settings.levels[self.selected - 2];
-                        *level = (i32::from(*level) + direction * 5).clamp(0, 100) as u8;
-                    }
-                    6 => self.settings.fullscreen = !self.settings.fullscreen,
-                    7 => self.settings = Preferences::default(),
-                    _ => return Action::Resume,
-                }
-                Action::Change(self.settings.clone())
-            }
         }
     }
     pub fn key(&mut self, key: KeyCode) -> Action {
@@ -104,10 +71,7 @@ impl MenuPanel {
             KeyCode::Escape | KeyCode::F2 => return Action::Resume,
             KeyCode::ArrowUp => self.selected = (self.selected + self.count() - 1) % self.count(),
             KeyCode::ArrowDown | KeyCode::Tab => self.selected = (self.selected + 1) % self.count(),
-            KeyCode::ArrowLeft if self.page == Page::Settings => return self.activate(-1),
-            KeyCode::ArrowRight | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
-                return self.activate(1);
-            }
+            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => return self.activate(),
             _ => {}
         }
         Action::None
@@ -135,7 +99,7 @@ impl MenuPanel {
             return Action::None;
         }
         self.selected = row.unwrap();
-        self.activate(if x < 512 { -1 } else { 1 })
+        self.activate()
     }
     pub fn cancel_press(&mut self) {
         self.pressed = None;
@@ -156,7 +120,6 @@ impl MenuPanel {
         rect(&mut frame, (210, 48, 814, 550), [18, 26, 38, 255]);
         let title = match self.page {
             Page::Context => "メニュー",
-            Page::Settings => "設定",
             Page::Quit => "ゲームを終了しますか？",
         };
         text(&mut frame, font, 240, 70, title)?;
@@ -174,24 +137,6 @@ impl MenuPanel {
             .map(String::from)
             .into(),
             Page::Quit => ["ゲームに戻る", "終了する"].map(String::from).into(),
-            Page::Settings => vec![
-                format!("文字の表示間隔     < {} ms >", self.settings.text_speed_ms),
-                format!("自動送りの待ち時間 < {} ms >", self.settings.auto_delay_ms),
-                format!("全体音量           < {} % >", self.settings.levels[0]),
-                format!("BGM 音量           < {} % >", self.settings.levels[1]),
-                format!("音声音量           < {} % >", self.settings.levels[2]),
-                format!("効果音音量         < {} % >", self.settings.levels[3]),
-                format!(
-                    "フルスクリーン     < {} >",
-                    if self.settings.fullscreen {
-                        "ON"
-                    } else {
-                        "OFF"
-                    }
-                ),
-                "初期設定に戻す".into(),
-                "ゲームに戻る".into(),
-            ],
         };
         for (row, label) in labels.iter().enumerate() {
             let y = 110 + row as i32 * 40;
@@ -206,13 +151,12 @@ impl MenuPanel {
             );
             text(&mut frame, font, 258, y + 7, label)?;
         }
-        text(&mut frame, font, 240, 484, &self.notice)?;
         text(
             &mut frame,
             font,
             240,
             518,
-            "↑↓: 選択   ←→: 変更   Esc / 右クリック: 戻る",
+            "↑↓: 選択   Enter: 決定   Esc / 右クリック: 戻る",
         )?;
         Ok(frame)
     }
@@ -222,7 +166,7 @@ mod tests {
     use super::*;
     #[test]
     fn context_menu_dispatches_each_action_and_quit_needs_confirmation() {
-        let mut panel = MenuPanel::new(Page::Context, Preferences::default());
+        let mut panel = MenuPanel::new(Page::Context);
         for expected in [
             Action::Resume,
             Action::HideText,
@@ -236,41 +180,22 @@ mod tests {
             assert_eq!(panel.key(KeyCode::Enter), expected);
             panel.key(KeyCode::ArrowDown);
         }
-        let mut quit = MenuPanel::new(Page::Quit, Preferences::default());
+        let mut quit = MenuPanel::new(Page::Quit);
         assert_eq!(quit.key(KeyCode::Enter), Action::Resume);
         quit.key(KeyCode::ArrowDown);
         assert_eq!(quit.key(KeyCode::Enter), Action::Quit);
-        let mut settings = MenuPanel::new(Page::Settings, Preferences::default());
-        settings.button(600, 120, true);
-        settings.button(100, 120, false);
-        assert_eq!(settings.button(600, 120, false), Action::None);
-        settings.button(600, 120, true);
-        settings.cancel_press();
-        assert_eq!(settings.button(600, 120, false), Action::None);
     }
     #[test]
-    fn settings_are_bounded_and_unpaired_or_dragged_releases_do_not_activate() {
-        let mut panel = MenuPanel::new(Page::Settings, Preferences::default());
+    fn unpaired_cancelled_or_dragged_releases_do_not_activate() {
+        let mut panel = MenuPanel::new(Page::Context);
         assert_eq!(panel.button(600, 120, false), Action::None);
         panel.button(600, 120, true);
         assert_eq!(panel.button(600, 165, false), Action::None);
-        assert_eq!(panel.settings.text_speed_ms, 0);
-        panel.key(KeyCode::ArrowRight);
-        assert_eq!(panel.settings.text_speed_ms, 5);
-        for _ in 0..100 {
-            panel.key(KeyCode::ArrowRight);
-        }
-        assert_eq!(panel.settings.text_speed_ms, 100);
-        for _ in 0..100 {
-            panel.key(KeyCode::ArrowLeft);
-        }
-        assert_eq!(panel.settings.text_speed_ms, 0);
-        panel.key(KeyCode::ArrowDown);
-        panel.key(KeyCode::ArrowDown);
-        panel.key(KeyCode::ArrowRight);
-        assert_eq!(panel.settings.levels[0], 100);
-        panel.key(KeyCode::ArrowLeft);
-        assert_eq!(panel.settings.levels[0], 95);
+        panel.button(600, 120, true);
+        panel.cancel_press();
+        assert_eq!(panel.button(600, 120, false), Action::None);
+        panel.button(600, 120, true);
+        assert_eq!(panel.button(600, 120, false), Action::Resume);
         assert_eq!(panel.key(KeyCode::Escape), Action::Resume);
     }
 }

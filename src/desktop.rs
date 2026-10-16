@@ -11,16 +11,20 @@ use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, run_on_demand::EventLoopExtRunOnDemand},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowId},
+    monitor::Fullscreen,
+    window::{Window, WindowAttributes, WindowId},
 };
+mod config_window;
 mod controls;
+mod egui_raster;
 mod history;
 mod menu_panel;
 mod native_store;
 mod preferences;
 mod save_panel;
+use config_window::{Action as ConfigAction, ConfigWindow};
 use menu_panel::{Action as MenuAction, MenuPanel, Page};
 use preferences::Preferences;
 use save_panel::{Action as PanelAction, Mode as PanelMode, Panel};
@@ -32,7 +36,7 @@ pub fn run(
     save_dir: Option<std::path::PathBuf>,
     choices: Vec<u32>,
 ) -> Result<()> {
-    let event_loop = EventLoop::new().context("create desktop event loop")?;
+    let mut event_loop = EventLoop::new().context("create desktop event loop")?;
     let preferences = Preferences::load(game.user_data_dir())?;
     let native_saves = native_store::NativeStore::detect(&game, save_dir, choices)?;
     eprintln!("Original saves: {}", native_saves.directory.display());
@@ -40,7 +44,7 @@ pub fn run(
     app.apply_preferences(preferences)?;
     app.panel_audio = initial_audio;
     event_loop
-        .run_app(&mut app)
+        .run_app_on_demand(&mut app)
         .context("run desktop event loop")?;
     if let Some(error) = app.error {
         bail!(error);
@@ -49,8 +53,8 @@ pub fn run(
 }
 struct App {
     game: Game,
-    window: Option<Arc<Window>>,
-    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    window: Option<Arc<dyn Window>>,
+    surface: Option<softbuffer::Surface<Arc<dyn Window>, Arc<dyn Window>>>,
     last: Instant,
     elapsed: u32,
     tick_remainder: Duration,
@@ -65,6 +69,9 @@ struct App {
     slot: usize,
     native_saves: native_store::NativeStore,
     menu: Option<MenuPanel>,
+    config: Option<ConfigWindow>,
+    /// Creating a window needs the event loop, so opening is deferred to `about_to_wait`.
+    config_requested: bool,
     preferences: Preferences,
     controls: controls::Controls,
     right_pressed: bool,
@@ -98,6 +105,8 @@ impl App {
             slot: 0,
             native_saves,
             menu: None,
+            config: None,
+            config_requested: false,
             preferences: Preferences::default(),
             controls: controls::Controls::default(),
             right_pressed: false,
@@ -112,7 +121,7 @@ impl App {
         let Some(window) = self.window.as_ref() else {
             return (-1, -1);
         };
-        let size = window.inner_size();
+        let size = window.surface_size();
         let (gw, gh) = self.game.size();
         Viewport::fit(size.width, size.height, gw, gh)
             .and_then(|v| v.point(x, y))
@@ -145,7 +154,14 @@ impl App {
         Ok(())
     }
     fn modal_open(&self) -> bool {
-        self.panel.is_some() || self.menu.is_some() || self.text_hidden || self.history.opened
+        self.panel.is_some()
+            || self.menu.is_some()
+            || self.config_open()
+            || self.text_hidden
+            || self.history.opened
+    }
+    fn config_open(&self) -> bool {
+        self.config.is_some() || self.config_requested
     }
     fn remember_dialogue(&mut self) {
         if self.game.dialogue_waits_for_input()
@@ -157,6 +173,7 @@ impl App {
     fn open_history(&mut self) -> Result<()> {
         self.remember_dialogue();
         self.pause_game()?;
+        self.close_config();
         self.panel = None;
         self.menu = None;
         self.text_hidden = false;
@@ -168,6 +185,7 @@ impl App {
             return self.close_panel();
         };
         self.pause_game()?;
+        self.close_config();
         self.panel = None;
         self.menu = None;
         self.history.close();
@@ -178,17 +196,29 @@ impl App {
     fn apply_preferences(&mut self, preferences: Preferences) -> Result<()> {
         self.game.set_text_speed(preferences.text_speed_ms)?;
         if let Some(audio) = &mut self.audio {
-            audio.set_output_levels(preferences.levels)?;
+            audio.set_output_levels(preferences.output_levels())?;
         }
         if let Some(window) = &self.window {
             window.set_fullscreen(
                 preferences
                     .fullscreen
-                    .then(|| winit::window::Fullscreen::Borderless(window.current_monitor())),
+                    .then(|| Fullscreen::Borderless(window.current_monitor())),
             );
+            // Only an explicit size choice overrides a window the user resized.
+            if !preferences.fullscreen
+                && (self.preferences.fullscreen
+                    || self.preferences.window_scale != preferences.window_scale)
+            {
+                let _ = window.request_surface_size(self.window_size(&preferences).into());
+            }
         }
         self.preferences = preferences;
         Ok(())
+    }
+    fn window_size(&self, preferences: &Preferences) -> PhysicalSize<u32> {
+        let (width, height) = self.game.size();
+        let scale = u32::from(preferences.window_scale);
+        PhysicalSize::new(width * scale / 100, height * scale / 100)
     }
     fn pause_game(&mut self) -> Result<()> {
         self.controls.stop();
@@ -219,8 +249,57 @@ impl App {
         self.panel = None;
         self.text_hidden = false;
         self.history.close();
-        self.menu = Some(MenuPanel::new(page, self.preferences.clone()));
+        self.close_config();
+        self.menu = Some(MenuPanel::new(page));
         self.refresh_panel()
+    }
+    fn open_config(&mut self) -> Result<()> {
+        self.pause_game()?;
+        self.panel = None;
+        self.menu = None;
+        self.text_hidden = false;
+        self.history.close();
+        self.panel_frame = None;
+        match &self.config {
+            Some(config) => config.focus(),
+            None => self.config_requested = true,
+        }
+        Ok(())
+    }
+    fn create_config(&mut self, event_loop: &dyn ActiveEventLoop) -> Result<()> {
+        let font = self.panel_font.as_ref().context("settings font missing")?;
+        self.config = Some(ConfigWindow::open(
+            event_loop,
+            self.preferences.clone(),
+            font.face(),
+        )?);
+        Ok(())
+    }
+    /// Closing without OK or 適用 discards staged edits, like キャンセル.
+    fn close_config(&mut self) {
+        self.config_requested = false;
+        self.config = None;
+    }
+    fn config_action(&mut self, action: ConfigAction) -> Result<()> {
+        if let Some(settings) = action.apply {
+            let saved = settings.save(self.game.user_data_dir());
+            if let Err(error) = &saved {
+                eprintln!("Settings: {error:#}");
+            }
+            if let Some(config) = &mut self.config {
+                config.set_notice(
+                    saved
+                        .err()
+                        .map(|error| format!("設定を保存できません: {error}"))
+                        .unwrap_or_default(),
+                );
+            }
+            self.apply_preferences(settings)?;
+        }
+        if action.close {
+            self.close_panel()?;
+        }
+        Ok(())
     }
     fn right_button(&mut self, down: bool) -> Result<()> {
         if down {
@@ -245,7 +324,7 @@ impl App {
                 Ok(())
             }
             MenuAction::Load => self.open_panel(PanelMode::Load),
-            MenuAction::Settings => self.open_menu(Page::Settings),
+            MenuAction::Settings => self.open_config(),
             MenuAction::QuitPrompt => self.open_menu(Page::Quit),
             MenuAction::Quit => {
                 self.exit_requested = true;
@@ -256,15 +335,6 @@ impl App {
                 self.controls.toggle();
                 Ok(())
             }
-            MenuAction::Change(preferences) => {
-                if let Err(error) = preferences.save(self.game.user_data_dir()) {
-                    self.menu.as_mut().unwrap().notice = format!("設定を保存できません: {error}");
-                } else {
-                    self.menu.as_mut().unwrap().notice.clear();
-                }
-                self.apply_preferences(preferences)?;
-                self.refresh_panel()
-            }
         }
     }
     fn open_panel(&mut self, mode: PanelMode) -> Result<()> {
@@ -273,6 +343,7 @@ impl App {
         }
         let occupied = self.native_saves.slots()?;
         self.pause_game()?;
+        self.close_config();
         self.menu = None;
         self.text_hidden = false;
         self.history.close();
@@ -289,7 +360,7 @@ impl App {
                 self.audio
                     .as_mut()
                     .unwrap()
-                    .set_output_levels(self.preferences.levels)?;
+                    .set_output_levels(self.preferences.output_levels())?;
             }
             if let Some(ticket) = self.audio.as_mut().unwrap().resume(&playback)? {
                 self.audio_tickets.insert(playback.ticket, ticket);
@@ -297,6 +368,7 @@ impl App {
                 self.game.finish_audio_ticket(playback.ticket);
             }
         }
+        self.close_config();
         self.panel = None;
         self.menu = None;
         self.text_hidden = false;
@@ -386,7 +458,7 @@ impl App {
                 self.audio
                     .as_mut()
                     .unwrap()
-                    .set_output_levels(self.preferences.levels)?;
+                    .set_output_levels(self.preferences.output_levels())?;
             }
             let runtime_ticket = request.ticket;
             if let Some(ticket) = self.audio.as_mut().unwrap().request(request)? {
@@ -402,7 +474,7 @@ impl App {
         let Some(window) = &self.window else {
             return Ok(());
         };
-        let size = window.inner_size();
+        let size = window.surface_size();
         let (Some(sw), Some(sh)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
         else {
             return Ok(());
@@ -461,17 +533,16 @@ impl App {
 }
 
 impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
         let result = (|| -> Result<()> {
-            let (width, height) = self.game.size();
-            let window = Arc::new(
+            let window: Arc<dyn Window> = Arc::from(
                 event_loop.create_window(
-                    Window::default_attributes()
+                    WindowAttributes::default()
                         .with_title(self.game.title())
-                        .with_inner_size(PhysicalSize::new(width, height)),
+                        .with_surface_size(self.window_size(&self.preferences)),
                 )?,
             );
             let context = softbuffer::Context::new(Arc::clone(&window))
@@ -492,17 +563,30 @@ impl ApplicationHandler for App {
             event_loop.exit();
         }
     }
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(config) = &mut self.config
+            && config.id() == id
+        {
+            let action = if event == WindowEvent::RedrawRequested {
+                config.redraw()
+            } else {
+                Ok(config.event(&event))
+            };
+            if let Err(error) = action.and_then(|action| self.config_action(action)) {
+                self.fail(error);
+            }
+            return;
+        }
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::CursorMoved { position, .. } if self.error.is_none() => {
+            WindowEvent::PointerMoved { position, .. } if self.error.is_none() => {
                 self.cursor = Some((position.x, position.y));
                 if let Some(menu) = &mut self.menu {
                     let (width, height) = self.game.size();
-                    let size = self.window.as_ref().unwrap().inner_size();
+                    let size = self.window.as_ref().unwrap().surface_size();
                     let (x, y) = Viewport::fit(size.width, size.height, width, height)
                         .and_then(|v| v.point(position.x, position.y))
                         .unwrap_or((-1, -1));
@@ -516,7 +600,7 @@ impl ApplicationHandler for App {
                     self.fail(error);
                 }
             }
-            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false)
+            WindowEvent::PointerLeft { .. } | WindowEvent::Focused(false)
                 if self.error.is_none() =>
             {
                 self.cursor = None;
@@ -539,11 +623,10 @@ impl ApplicationHandler for App {
                     self.fail(error);
                 }
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } if self.error.is_none() => {
+            WindowEvent::PointerButton { state, button, .. }
+                if self.error.is_none()
+                    && button.clone().mouse_button() == Some(MouseButton::Left) =>
+            {
                 let result = if self.text_hidden {
                     if state == ElementState::Released {
                         self.close_panel()
@@ -573,6 +656,11 @@ impl ApplicationHandler for App {
                             .unwrap()
                             .button(x, y, state == ElementState::Pressed);
                     self.menu_action(action)
+                } else if self.config_open() {
+                    if let Some(config) = &self.config {
+                        config.focus();
+                    }
+                    Ok(())
                 } else if self.controls.active() || self.controls.automatic() {
                     self.controls.stop();
                     Ok(())
@@ -583,11 +671,10 @@ impl ApplicationHandler for App {
                     self.fail(error);
                 }
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Right,
-                ..
-            } if self.error.is_none() => {
+            WindowEvent::PointerButton { state, button, .. }
+                if self.error.is_none()
+                    && button.clone().mouse_button() == Some(MouseButton::Right) =>
+            {
                 if let Err(error) = self.right_button(state == ElementState::Pressed) {
                     self.fail(error);
                 }
@@ -596,6 +683,7 @@ impl ApplicationHandler for App {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(y),
                     MouseScrollDelta::PixelDelta(position) => position.y,
+                    _ => 0.0,
                 };
                 let result = if self.history.opened && amount != 0.0 {
                     self.history.move_entry(if amount > 0.0 { -1 } else { 1 });
@@ -634,12 +722,14 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F5) => self.open_panel(PanelMode::Save),
                     PhysicalKey::Code(KeyCode::F9) => self.open_panel(PanelMode::Load),
                     PhysicalKey::Code(KeyCode::F2) => {
-                        if self.menu.as_ref().is_some_and(|m| m.page == Page::Settings) {
+                        if self.config_open() {
                             self.close_panel()
                         } else {
-                            self.open_menu(Page::Settings)
+                            self.open_config()
                         }
                     }
+                    PhysicalKey::Code(KeyCode::Escape) if self.config_open() => self.close_panel(),
+                    _ if self.config_open() => Ok(()),
                     PhysicalKey::Code(
                         KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape,
                     ) if self.text_hidden => self.close_panel(),
@@ -777,7 +867,7 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                 }
             }
-            WindowEvent::Resized(_) => {
+            WindowEvent::SurfaceResized(_) => {
                 if self.error.is_none()
                     && !self.modal_open()
                     && let Some((x, y)) = self.cursor
@@ -792,7 +882,19 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if std::mem::take(&mut self.config_requested)
+            && self.error.is_none()
+            && let Err(error) = self.create_config(event_loop)
+        {
+            eprintln!("Settings window: {error:#}");
+            if let Err(error) = self.close_panel() {
+                self.fail(error);
+            }
+        }
+        if let Some(config) = &self.config {
+            config.wake(Instant::now());
+        }
         let deadline = self.last + Duration::from_millis(16);
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         if Instant::now() >= deadline
@@ -839,16 +941,15 @@ mod tests {
         }
         let action = app.menu.as_mut().unwrap().key(KeyCode::Enter);
         app.menu_action(action)?;
-        assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Settings));
-        let action = app.menu.as_mut().unwrap().key(KeyCode::ArrowRight);
-        app.menu_action(action)?;
-        assert_eq!(app.preferences.text_speed_ms, 5);
-        assert_eq!(
-            Preferences::load(app.game.user_data_dir())?,
-            app.preferences
-        );
-        // A setting made before the first dialogue also remains a valid UI state.
+        // Settings open as a separate window once the event loop is idle.
+        assert!(app.menu.is_none() && app.config_requested && app.modal_open());
+        assert!(!app.controls.active());
+        app.close_panel()?;
+        assert!(!app.config_requested && !app.modal_open());
+        // A settings round trip before the first dialogue remains a valid UI state.
         app.game.snapshot_ui(&mut Default::default())?;
+        app.right_button(true)?;
+        app.right_button(false)?;
         if let Some(path) = std::env::var_os("RUGP_TEST_MENU_PNG") {
             let frame = app.panel_frame.as_ref().context("menu frame missing")?;
             let mut encoder =

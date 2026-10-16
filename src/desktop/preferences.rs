@@ -18,18 +18,34 @@ pub(super) struct Preferences {
     pub auto_delay_ms: u32,
     /// Master, BGM, voice, effect.
     pub levels: [u8; 4],
+    /// BGM, voice and effect switches; muting keeps the chosen level.
+    #[serde(default = "default_channels")]
+    pub channels: [bool; 3],
     pub fullscreen: bool,
+    /// Windowed size in percent, as the retail 画面サイズ menu (50–250, steps of 25).
+    #[serde(default = "default_window_scale")]
+    pub window_scale: u16,
 }
 fn default_auto_delay() -> u32 {
     1500
+}
+fn default_channels() -> [bool; 3] {
+    [true; 3]
+}
+fn default_window_scale() -> u16 {
+    100
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             text_speed_ms: 0,
             auto_delay_ms: default_auto_delay(),
-            levels: [100; 4],
+            // Setup.ini nCsmIni_CSoundManEx_n{Bgm,Voice,Effect}Vol of 4096:
+            // 2868 (70 %), 4096 and 2048 (50 %).
+            levels: [100, 70, 100, 50],
+            channels: default_channels(),
             fullscreen: false,
+            window_scale: default_window_scale(),
         }
     }
 }
@@ -38,10 +54,22 @@ impl Preferences {
         ensure!(
             self.text_speed_ms <= 100
                 && (250..=10000).contains(&self.auto_delay_ms)
-                && self.levels.iter().all(|&v| v <= 100),
+                && self.levels.iter().all(|&v| v <= 100)
+                && (50..=250).contains(&self.window_scale)
+                && self.window_scale.is_multiple_of(25),
             "invalid settings value"
         );
         Ok(())
+    }
+    /// Mixer levels after the per-channel switches.
+    pub fn output_levels(&self) -> [u8; 4] {
+        let mut levels = self.levels;
+        for (level, &enabled) in levels[1..].iter_mut().zip(&self.channels) {
+            if !enabled {
+                *level = 0;
+            }
+        }
+        levels
     }
     pub fn load(directory: Option<&Path>) -> Result<Self> {
         let Some(directory) = directory else {
@@ -103,12 +131,18 @@ mod tests {
             text_speed_ms: 35,
             auto_delay_ms: 2000,
             levels: [80, 25, 100, 45],
+            channels: [false, true, true],
             fullscreen: true,
+            window_scale: 150,
         };
+        assert_eq!(settings.output_levels(), [80, 0, 100, 45]);
         settings.save(Some(&directory))?;
         assert_eq!(Preferences::load(Some(&directory))?, settings);
         let mut invalid = settings.clone();
         invalid.levels[1] = 101;
+        assert!(invalid.save(Some(&directory)).is_err());
+        invalid = settings.clone();
+        invalid.window_scale = 110;
         assert!(invalid.save(Some(&directory)).is_err());
         assert_eq!(Preferences::load(Some(&directory))?, settings);
         let path = directory.join("settings.json");
@@ -116,7 +150,9 @@ mod tests {
             &path,
             br#"{"text_speed_ms":25,"levels":[100,100,100,100],"fullscreen":false}"#,
         )?;
-        assert_eq!(Preferences::load(Some(&directory))?.auto_delay_ms, 1500);
+        let older = Preferences::load(Some(&directory))?;
+        assert_eq!(older.auto_delay_ms, 1500);
+        assert_eq!((older.channels, older.window_scale), ([true; 3], 100));
         fs::write(
             &path,
             br#"{"text_speed_ms":101,"levels":[100,100,100,100],"fullscreen":false}"#,
