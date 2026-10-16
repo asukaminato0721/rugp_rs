@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            binary: rugp_rs
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: rugp_rs.exe
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: rugp_rs
+          - os: macos-15
+            target: aarch64-apple-darwin
+            binary: rugp_rs
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      BINARY: ${{ matrix.binary }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev libwayland-dev \
+            libxkbcommon-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add "$TARGET"
+
+      - name: Test
+        run: cargo test --locked --workspace --features audio --target "$TARGET"
+
+      - name: Build
+        run: cargo build --locked --release --features audio --bin rugp_rs --target "$TARGET"
+
+      - name: Smoke test
+        run: |
+          "target/$TARGET/release/$BINARY" --version
+          "target/$TARGET/release/$BINARY" play --help
+
+      - name: Package Linux and macOS
+        if: runner.os != 'Windows'
+        run: |
+          package="rugp_rs-$TARGET"
+          mkdir -p "dist/$package"
+          cp "target/$TARGET/release/$BINARY" README.md THIRD_PARTY.md "dist/$package/"
+          tar -czf "dist/$package.tar.gz" -C dist "$package"
+          rm -r "dist/$package"
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = "rugp_rs-$env:TARGET"
+          New-Item -ItemType Directory -Path "dist/$package" -Force | Out-Null
+          Copy-Item "target/$env:TARGET/release/$env:BINARY", README.md, THIRD_PARTY.md "dist/$package/"
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+          Remove-Item "dist/$package" -Recurse
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: rugp_rs-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish release
+    if: >-
+      github.ref == 'refs/heads/master' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: rugp_rs-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz *.zip > SHA256SUMS
+
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          if gh api "repos/$GH_REPO/git/ref/tags/rolling" > /dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/rolling" \
+              -f sha="$COMMIT_SHA" -F force=true --silent
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f ref=refs/tags/rolling -f sha="$COMMIT_SHA" --silent
+          fi
+
+          notes="$RUNNER_TEMP/rolling-notes.md"
+          printf 'Automatic build of master at [%s](%s/%s/commit/%s).\n\nIncludes Linux x64, Windows x64, macOS Intel and Apple Silicon packages with desktop and audio support.\n' \
+            "$COMMIT_SHA" "$SERVER_URL" "$GH_REPO" "$COMMIT_SHA" > "$notes"
+
+          if gh release view rolling > /dev/null 2>&1; then
+            gh release upload rolling dist/* --clobber
+            gh release edit rolling --title 'Rolling release' --notes-file "$notes" \
+              --prerelease --latest=false
+          else
+            gh release create rolling dist/* --verify-tag --title 'Rolling release' \
+              --notes-file "$notes" --prerelease --latest=false
+          fi
+
+      - name: Publish versioned release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            flags=()
+            if [[ "$TAG" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$TAG" dist/* --verify-tag --generate-notes \
+              --title "$TAG" "${flags[@]}"
+          fi

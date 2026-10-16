@@ -42,6 +42,31 @@ No Windows executable or DLL is loaded or executed. The schema reader reads
 PE data, imports/exports, and constant table initialization instructions from
 the game's `UnivUI.dll`, `rvmm.dll`, and `Vm60.dll`. It does not emulate the CPU.
 
+## Prebuilt releases
+
+The [rolling release](https://github.com/asukaminato0721/rugp_rs/releases/tag/rolling)
+provides Linux x86_64 (`.tar.gz`), Windows x86_64 (`.zip`),
+and macOS Intel / Apple Silicon (`.tar.gz`) packages. Each includes the
+`rugp_rs` executable, this README and third-party attribution; desktop and
+device audio support are enabled. Linux packages are built on Ubuntu 22.04
+and require glibc 2.35 or newer plus ALSA and X11/Wayland runtime libraries.
+Original game files and a Japanese outline font must be supplied separately.
+Extract the matching package and run:
+
+```sh
+./rugp_rs --project-dir /path/to/game play
+# Windows (PowerShell):
+.\rugp_rs.exe --project-dir C:\path\to\game play
+```
+
+Every push to `master` automatically tests, builds and packages all four
+targets, then updates the `rolling` prerelease with the archives and
+`SHA256SUMS`. The `rolling` tag moves to the built commit and the release notes
+link to that commit. A manual Release workflow run on `master` also updates
+the rolling release; manual runs on other refs only upload workflow artifacts.
+Pushing a version tag such as `v0.1.0` publishes a separate versioned release.
+Version tags containing a hyphen (such as `v0.1.0-rc.1`) create prereleases.
+
 ## Play
 
 Keep the original game files available and install a Japanese outline font
