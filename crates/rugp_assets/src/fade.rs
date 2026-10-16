@@ -169,8 +169,16 @@ impl Fade {
             } else {
                 (0, [8192; 2])
             };
-            Some(Stretch { destination_end, source_end, options, frames, opacity })
-        } else { None };
+            Some(Stretch {
+                destination_end,
+                source_end,
+                options,
+                frames,
+                opacity,
+            })
+        } else {
+            None
+        };
         r.position = parameters;
         let color = match class {
             "CFadeMergeBlack" | "CFadeXsMergeBlack" => Some([0, 0, 0]),

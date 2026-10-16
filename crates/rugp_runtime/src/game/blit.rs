@@ -281,17 +281,12 @@ impl Game {
         let [Argument::Bytes(data), source, background, destination] = arguments.as_slice() else {
             bail!("invalid fade reference fields");
         };
-        let mut fade = Fade::from_inline(&class.name, data)?;
+        let fade = Fade::from_inline(&class.name, data)?;
         ensure!(
             matches!(fade.mode, 0 | 0x11),
             "unsupported fade region mode {:#x}",
             fade.mode
         );
-        if fade.mode == 0 {
-            // Default surface bounds. Specialized stretch records also retain
-            // initial strip geometry, which is not their final image crop.
-            fade.rectangles = [[0; 4]; 3];
-        }
         // The auxiliary word is nonzero in ordinary retail copies too. It
         // does not replace the separately decoded blocking/time parameters.
         let _control = self.vm.evaluate(control)?.integer()?;
@@ -363,14 +358,37 @@ impl Game {
         } else {
             self.surface(&background)?
         };
-        let source = place_region(&source, fade.rectangles[0], &previous, fade.rectangles[2])?;
+        let mut spatial = super::spatial_fade::SpatialFade::from_fade(
+            &class.name,
+            &fade,
+            (source.width, source.height),
+        );
+        if let Some(super::spatial_fade::SpatialFade {
+            operator: super::spatial_fade::Operator::Stretch { history, .. },
+            ..
+        }) = &mut spatial
+        {
+            *history = background_reference.offset == destination.offset;
+        }
+        let source = if spatial
+            .as_ref()
+            .is_some_and(|s| matches!(s.operator, super::spatial_fade::Operator::Stretch { .. }))
+        {
+            Texture {
+                width: source.width,
+                height: source.height,
+                display_scale: source.display_scale,
+                rgba: source.rgba.clone(),
+            }
+        } else {
+            place_region(&source, fade.rectangles[0], &previous, fade.rectangles[1])?
+        };
         let background = place_region(
             &background,
-            fade.rectangles[1],
-            &previous,
             fade.rectangles[2],
+            &previous,
+            fade.rectangles[1],
         )?;
-        let spatial = super::spatial_fade::SpatialFade::from_class(&class.name, fade.rectangles[2]);
         if duration > 0
             && spatial.is_none()
             && destination.offset != Some(self.primary_buffer)
@@ -421,19 +439,19 @@ impl Game {
                 })
                 .collect();
             if let Some(mut spatial) = spatial {
-                rgba.copy_from_slice(&background.rgba);
-                spatial.render(
+                rgba = background.rgba.clone();
+                spatial.render_q13(
                     &mut rgba,
                     &source.rgba,
-                    (source.width, source.height),
-                    alpha as u16,
+                    (previous.width, previous.height),
+                    fade.curve.value(0, 0),
                 );
             }
             self.write_surface(
                 &destination,
                 Texture {
-                    width: source.width,
-                    height: source.height,
+                    width: previous.width,
+                    height: previous.height,
                     display_scale: 1.0,
                     rgba,
                 },

@@ -453,11 +453,16 @@ impl Game {
                     if !spatial.keeps_previous_frame() {
                         self.frame.rgba.copy_from_slice(&transition.from);
                     }
-                    spatial.render(
+                    spatial.render_q13(
                         &mut self.frame.rgba,
                         &transition.to,
                         (self.frame.width, self.frame.height),
-                        (a * 256 / d) as u16,
+                        transition
+                            .curve
+                            .as_ref()
+                            .map_or((a * 8192 / d) as u16, |curve| {
+                                curve.value(transition.elapsed, transition.duration)
+                            }),
                     );
                 } else {
                     for (out, (from, to)) in self
@@ -1178,6 +1183,7 @@ impl Game {
         self.advance_async_images(dt_ms)?;
         self.advance_parse_transition(dt_ms)?;
         self.advance_postures(dt_ms)?;
+        self.finish_parse_transition();
         if let Some(t) = &mut self.transition {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
         }

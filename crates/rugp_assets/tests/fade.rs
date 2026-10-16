@@ -81,3 +81,25 @@ fn specialized_effects_retain_common_regions_and_clock_with_bounded_envelopes() 
     }
     Ok(())
 }
+
+#[test]
+fn over_stretch_preserves_signed_geometry_and_q13_envelopes() -> Result<()> {
+    let mut data = body(false);
+    for value in [0i16, 0, 800, 600, -400, 0, 0, 300] {
+        data.extend(value.to_le_bytes());
+    }
+    data.push(1);
+    for value in [22i16, 32, 2048, 0] {
+        data.extend(value.to_le_bytes());
+    }
+    let fade = Fade::from_inline("CFadeOverStretchAnti", &data)?;
+    let stretch = fade.stretch.unwrap();
+    assert_eq!(stretch.destination_end, [0, 0, 800, 600]);
+    assert_eq!(stretch.source_end, [-400, 0, 0, 300]);
+    assert_eq!(stretch.opacity, [32, 2048]);
+    assert_eq!(stretch.frames, 22);
+    // This curve has a fractional Q8 opacity at x=65. Geometry must keep it.
+    assert_eq!(fade.curve.value(65, 256), 4117);
+    assert_eq!(fade.curve.alpha(65, 256), 128);
+    Ok(())
+}

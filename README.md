@@ -579,11 +579,16 @@ deforming the static portrait or changing its live placement/lip-sync settings.
 Script helper functions can initialize local parameter slots not supplied by
 the caller; assignment does not first read an uninitialized destination.
 Region blits now crop/scale between differently sized surfaces and preserve
-pixels outside the destination region. Known specialized CFade#12 classes
-(rotation, stretch, mosaic, raster and shock effects) currently use their common
-transition curve/wait without native displacement/deformation. Their envelope
-layouts share one decoder table, with prefix/tail and truncation regressions.
-Default-bound mode 0 is supported as well as explicit-region mode 0x11.
+pixels outside the destination region. Mosaic, inversion and the right curtain
+use integer pixel operators recovered from the retail DLL. The curtain retains
+its preceding rendered frame and sample through internal snapshot restoration.
+StretchAnti and time-based OverStretchAnti interpolate the original source and
+destination rectangles in Q13, with bilinear sampling and native opacity
+endpoints. OverStretch can accumulate against the live destination. Native
+antialiasing details, frame-count-based stretch, rotation, other curtains, raster
+and shock effects remain approximate. Their envelope layouts share one decoder
+table, with prefix/tail and truncation regressions. Mode 0 retains its serialized
+coordinates. Mode 0x11 uses source extents for default destination extents.
 All eight retail even-nibble text/callback families (`0x0` through `0xE`)
 share the portable layout while retaining their explicit text control-code
 waits. Odd-nibble families remain rejected. Normal-render and raster-suppressed real-host autoplay

@@ -1,5 +1,5 @@
-//! Read-only Windows UUC v19 checkpoints. Runtime objects retain their native
-//! payloads. This reader does not treat a thumbnail as a playable checkpoint.
+//! Windows UUC v19 containers and checkpoint reading. Runtime objects retain
+//! their native payloads. Container encoding does not export live game state.
 use crate::{binary::Reader, object::ObjectReader};
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -9,6 +9,8 @@ use std::{
 
 const KEY: u32 = 0x0732ce9a;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+
+pub mod reference_writer;
 
 /// The two native encrypted streams. Object payloads share one MFC reference
 /// cache inside `runtime`; their order must remain stable when rewriting them.
@@ -361,9 +363,19 @@ mod tests {
         for name in ["vmr00001.uuc", "vmr00002.uuc"] {
             let original = std::fs::read(root.join(name))?;
             let archive = NativeArchive::read(original.as_slice())?;
+            let mut references = ObjectReader::new(&archive.runtime);
+            references.input.skip(17)?;
+            references.pad(1)?;
+            let reference = references.reference_without_count(0)?;
+            let mut writer = reference_writer::ReferenceWriter::new(0)?;
+            writer.reference(&reference)?;
+            assert_eq!(writer.data, archive.runtime[17..references.input.position]);
             let mut rewritten = Vec::new();
             archive.write(&mut rewritten)?;
-            assert!(rewritten == original, "native UUC encoding differs for {name}");
+            assert!(
+                rewritten == original,
+                "native UUC encoding differs for {name}"
+            );
             let before = NativeSave::read(original.as_slice(), 0)?;
             let after = NativeSave::read(rewritten.as_slice(), 0)?;
             assert_eq!(after.objects, before.objects);

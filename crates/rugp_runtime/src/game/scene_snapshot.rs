@@ -204,7 +204,13 @@ impl Game {
                         self.frame.height,
                         &transition.from,
                     )?,
-                    to: textures.rgba_frame(self.frame.width, self.frame.height, &transition.to)?,
+                    to: {
+                        let (width, height) = transition
+                            .spatial
+                            .as_ref()
+                            .map_or(self.size(), |s| s.source_size(self.size()));
+                        textures.rgba_frame(width, height, &transition.to)?
+                    },
                     elapsed: transition.elapsed,
                     duration: transition.duration,
                     curve: transition.curve.clone(),
@@ -403,6 +409,31 @@ impl SceneSnapshot {
                 "invalid scene snapshot transition clock"
             );
             if let Some(spatial) = &transition.spatial {
+                if let spatial_fade::Operator::Stretch {
+                    parameters, source, ..
+                } = spatial.operator
+                {
+                    ensure!(
+                        spatial.source_size.0 > 0
+                            && spatial.source_size.1 > 0
+                            && spatial.source_size.0 <= 65535
+                            && spatial.source_size.1 <= 65535,
+                        "invalid stretch source size"
+                    );
+                    ensure!(
+                        source[2..]
+                            .iter()
+                            .chain(&parameters.source_end[2..])
+                            .chain(&parameters.destination_end[2..])
+                            .all(|n| *n >= 0),
+                        "negative stretch extent"
+                    );
+                    ensure!(
+                        parameters.frames <= 0
+                            && parameters.opacity.iter().all(|n| (0..=8192).contains(n)),
+                        "invalid stretch clock or opacity"
+                    );
+                }
                 ensure!(
                     spatial.previous_alpha.is_none_or(|alpha| alpha <= 256),
                     "invalid spatial fade alpha"
@@ -480,7 +511,10 @@ impl SceneSnapshot {
                 let to = textures.get(t.to)?;
                 ensure!(
                     (from.width, from.height) == game.size()
-                        && (to.width, to.height) == game.size(),
+                        && (to.width, to.height)
+                            == t.spatial
+                                .as_ref()
+                                .map_or(game.size(), |s| s.source_size(game.size())),
                     "scene snapshot transition surface size differs"
                 );
                 Ok(Transition {
@@ -1300,6 +1334,32 @@ mod tests {
         assert_eq!(game.step(1)?, RunState::Ended);
         assert!(game.transition.is_none());
         assert!(game.frame() == [0, 0, 255, 255].repeat(16));
+        // Curtain output depends on the preceding rendered sample, so both
+        // its operator clock and the current frame must survive restoration.
+        game.ended = false;
+        game.vm = pending_host()?;
+        game.parse_wait = false;
+        game.transition = Some(Transition {
+            from: red.rgba.clone(),
+            to: [0, 0, 255, 255].repeat(16),
+            elapsed: 128,
+            duration: 256,
+            curve: Some(serde_json::from_str("[[0,0],[256,8192]]")?),
+            spatial: spatial_fade::SpatialFade::from_class("CFadeRSideCarten", [0; 4]),
+        });
+        game.update_frame();
+        let mut expected = game.frame.rgba.clone();
+        let mut operator = game.transition.as_ref().unwrap().spatial.unwrap();
+        operator.render_q13(
+            &mut expected,
+            &game.transition.as_ref().unwrap().to,
+            (4, 4),
+            160 * 32,
+        );
+        rewind_scene(&mut game)?;
+        game.transition.as_mut().unwrap().elapsed = 160;
+        game.update_frame();
+        assert_eq!(game.frame(), expected);
         Ok(())
     }
     #[test]

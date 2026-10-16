@@ -133,6 +133,7 @@ impl Game {
         });
         self.transition = None;
         self.advance_parse_transition(0)?;
+        self.finish_parse_transition();
         Ok(true)
     }
     pub(super) fn advance_parse_transition(&mut self, dt_ms: u32) -> Result<()> {
@@ -168,10 +169,17 @@ impl Game {
                 object.camera_center_y.set(snapshot.camera_center_y.get());
             }
         }
-        let finished = parse.elapsed == parse.duration;
         self.frame = next;
+        Ok(())
+    }
+
+    pub(super) fn finish_parse_transition(&mut self) {
+        let Some(parse) = &self.parse_transition else {
+            return;
+        };
         // Native 10047170 releases synchronized curve state, not opacity.
-        if finished {
+        // Retain the captured scene until the final media tick renders it.
+        if parse.elapsed == parse.duration {
             for id in parse.scene.keys() {
                 if let Some(object) = self.objects.get_mut(id) {
                     object.pending_draw_ratio = None;
@@ -181,7 +189,6 @@ impl Game {
             }
             self.parse_transition = None;
         }
-        Ok(())
     }
 }
 

@@ -1,4 +1,5 @@
 //! Pixel operators decoded from the retail rvmm.dll.
+use rugp_assets::fade::{Fade, Stretch};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -6,6 +7,11 @@ pub(super) enum Operator {
     Mosaic,
     Invert,
     RightCurtain,
+    Stretch {
+        parameters: Stretch,
+        source: [i16; 4],
+        history: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -14,6 +20,7 @@ pub(super) struct SpatialFade {
     pub operator: Operator,
     pub rectangle: [i16; 4],
     pub previous_alpha: Option<u16>,
+    pub source_size: (u32, u32),
 }
 
 impl SpatialFade {
@@ -28,14 +35,79 @@ impl SpatialFade {
             operator,
             rectangle,
             previous_alpha: None,
+            source_size: (0, 0),
         })
     }
 
-    pub fn keeps_previous_frame(&self) -> bool {
-        matches!(self.operator, Operator::RightCurtain) && self.previous_alpha.is_some()
+    pub fn from_fade(class: &str, fade: &Fade, source_size: (u32, u32)) -> Option<Self> {
+        let mut effect = if let Some(parameters) = fade.stretch.filter(|p| p.frames <= 0) {
+            let mut rectangle = fade.rectangles[1];
+            let mut parameters = parameters;
+            if fade.mode & 1 != 0 {
+                for (i, value) in rectangle.iter_mut().enumerate().skip(2) {
+                    if *value == 0 {
+                        *value = fade.rectangles[0][i];
+                    }
+                    if parameters.destination_end[i] == 0 {
+                        parameters.destination_end[i] = fade.rectangles[0][i];
+                    }
+                }
+            }
+            Self {
+                operator: Operator::Stretch {
+                    parameters,
+                    source: fade.rectangles[0],
+                    history: false,
+                },
+                rectangle,
+                previous_alpha: None,
+                source_size,
+            }
+        } else {
+            Self::from_class(class, fade.rectangles[1])?
+        };
+        effect.source_size = source_size;
+        Some(effect)
     }
 
+    pub fn source_size(&self, fallback: (u32, u32)) -> (u32, u32) {
+        if matches!(self.operator, Operator::Stretch { .. }) {
+            self.source_size
+        } else {
+            fallback
+        }
+    }
+
+    pub fn keeps_previous_frame(&self) -> bool {
+        matches!(
+            self.operator,
+            Operator::RightCurtain | Operator::Stretch { history: true, .. }
+        ) && self.previous_alpha.is_some()
+    }
+
+    #[cfg(test)]
     pub fn render(&mut self, output: &mut [u8], source: &[u8], size: (u32, u32), alpha: u16) {
+        self.render_q13(output, source, size, alpha * 32);
+    }
+
+    pub fn render_q13(
+        &mut self,
+        output: &mut [u8],
+        source: &[u8],
+        size: (u32, u32),
+        progress: u16,
+    ) {
+        if let Operator::Stretch {
+            parameters,
+            source: start,
+            ..
+        } = self.operator
+        {
+            self.render_stretch(output, source, size, start, parameters, progress);
+            self.previous_alpha = Some(progress >> 5);
+            return;
+        }
+        let alpha = progress >> 5;
         let [x, y, w, h] = self.rectangle.map(i64::from);
         let width = i64::from(size.0);
         let height = i64::from(size.1);
@@ -51,6 +123,7 @@ impl SpatialFade {
             for column in x.max(0)..(x + w).min(width) {
                 let target = ((row * width + column) * 4) as usize;
                 match self.operator {
+                    Operator::Stretch { .. } => unreachable!(),
                     Operator::Mosaic => {
                         // rvmm 1003b700 samples the upper-left pixel of each
                         // block. The grid starts at the effect rectangle.
@@ -61,8 +134,9 @@ impl SpatialFade {
                         }
                         let sample = ((sy * width + sx) * 4) as usize;
                         for channel in 0..3 {
-                            output[target + channel] =
-                                (u32::from(source[sample + channel]) * u32::from(alpha) >> 8) as u8;
+                            output[target + channel] = ((u32::from(source[sample + channel])
+                                * u32::from(alpha))
+                                >> 8) as u8;
                         }
                     }
                     Operator::Invert => {
@@ -95,11 +169,117 @@ impl SpatialFade {
             }
         }
     }
+
+    fn render_stretch(
+        &self,
+        output: &mut [u8],
+        source: &[u8],
+        size: (u32, u32),
+        start: [i16; 4],
+        parameters: Stretch,
+        progress: u16,
+    ) {
+        let p = i64::from(progress);
+        // rvmm 1001ff10 interpolates in Q13. A zero source end extent
+        // preserves the initial extent. Destination zero remains zero.
+        let src: [i64; 4] = std::array::from_fn(|i| {
+            let end = if i >= 2 && parameters.source_end[i] == 0 {
+                start[i]
+            } else {
+                parameters.source_end[i]
+            };
+            i64::from(start[i]) * (8192 - p) + i64::from(end) * p
+        });
+        let dst: [i64; 4] = std::array::from_fn(|i| {
+            i64::from(self.rectangle[i]) * (8192 - p) + i64::from(parameters.destination_end[i]) * p
+        });
+        if src[2] <= 0 || src[3] <= 0 || dst[2] <= 0 || dst[3] <= 0 {
+            return;
+        }
+        let opacity = ((i64::from(parameters.opacity[0]) * 8192
+            + p * (i64::from(parameters.opacity[1]) - i64::from(parameters.opacity[0]))
+            + 4096)
+            >> 13)
+            .clamp(0, 8192);
+        let (sw, sh) = self.source_size;
+        for y in (dst[1] >> 13).max(0)..((dst[1] + dst[3]) >> 13).min(i64::from(size.1)) {
+            let sy = src[1] + ((y * 8192 - dst[1]) * src[3]) / dst[3];
+            if sy < 0 || sy >= i64::from(sh) * 8192 {
+                continue;
+            }
+            for x in (dst[0] >> 13).max(0)..((dst[0] + dst[2]) >> 13).min(i64::from(size.0)) {
+                let sx = src[0] + ((x * 8192 - dst[0]) * src[2]) / dst[2];
+                if sx < 0 || sx >= i64::from(sw) * 8192 {
+                    continue;
+                }
+                let ix = (sx >> 13) as u32;
+                let iy = (sy >> 13) as u32;
+                let fx = sx & 8191;
+                let fy = sy & 8191;
+                let out = ((y as u32 * size.0 + x as u32) * 4) as usize;
+                for channel in 0..3 {
+                    let sample =
+                        |x: u32, y: u32| i64::from(source[((y * sw + x) * 4) as usize + channel]);
+                    let x1 = (ix + 1).min(sw - 1);
+                    let y1 = (iy + 1).min(sh - 1);
+                    let top = sample(ix, iy) * (8192 - fx) + sample(x1, iy) * fx;
+                    let bottom = sample(ix, y1) * (8192 - fx) + sample(x1, y1) * fx;
+                    let pixel = (top * (8192 - fy) + bottom * fy) >> 26;
+                    output[out + channel] = ((pixel * opacity
+                        + i64::from(output[out + channel]) * (8192 - opacity))
+                        >> 13) as u8;
+                }
+                output[out + 3] = 255;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stretch_uses_source_geometry_q13_opacity_and_native_zero_extent() {
+        let parameters = Stretch {
+            destination_end: [0, 0, 4, 1],
+            source_end: [2, 0, 0, 0],
+            options: 1,
+            frames: 0,
+            opacity: [4096, 4096],
+        };
+        let mut effect = SpatialFade {
+            operator: Operator::Stretch {
+                parameters,
+                source: [0, 0, 2, 1],
+                history: true,
+            },
+            rectangle: [0, 0, 4, 1],
+            previous_alpha: None,
+            source_size: (4, 1),
+        };
+        let source = [0, 40, 80, 120]
+            .into_iter()
+            .flat_map(|v| [v, v, v, 255])
+            .collect::<Vec<_>>();
+        let mut output = vec![0; 16];
+        effect.render_q13(&mut output, &source, (4, 1), 4096);
+        assert_eq!(
+            output.chunks(4).map(|p| p[0]).collect::<Vec<_>>(),
+            [20, 30, 40, 50]
+        );
+        assert!(effect.keeps_previous_frame());
+        // Serialize the moving operator and retain the rendered history.
+        let mut restored: SpatialFade =
+            serde_json::from_slice(&serde_json::to_vec(&effect).unwrap()).unwrap();
+        let mut resumed = output.clone();
+        effect.render_q13(&mut output, &source, (4, 1), 8192);
+        restored.render_q13(&mut resumed, &source, (4, 1), 8192);
+        assert_eq!(resumed, output);
+        assert_eq!(
+            output.chunks(4).map(|p| p[0]).collect::<Vec<_>>(),
+            [50, 65, 80, 85]
+        );
+    }
 
     #[test]
     fn mosaic_uses_native_grid_brightness_and_crop() {

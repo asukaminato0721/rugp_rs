@@ -414,8 +414,15 @@ pub(super) mod tests {
         game.advance_parse_transition(100)?;
         game.advance_postures(100)?;
         assert_eq!(&game.frame()[..4], &[128, 0, 0, 255]);
+        // The completion tick must still render the captured red image.
+        game.advance_parse_transition(200)?;
+        game.advance_postures(200)?;
+        game.finish_parse_transition();
+        assert!(game.parse_transition.is_none());
+        assert_eq!(&game.frame()[..4], &[255, 0, 0, 255]);
+        assert_eq!(game.objects[&212259].camera.position, [4, 0, 0]);
         game.present_scene()?;
-        assert_eq!(&game.frame()[..4], &[0, 128, 0, 255]);
+        assert_eq!(&game.frame()[..4], &[0, 255, 0, 255]);
         Ok(())
     }
     #[test]
