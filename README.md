@@ -254,6 +254,15 @@ runs it back to the original title: scenes 202, 264 and 349 completed 4,828,
 2,828 and 2,546 dialogue confirmations, respectively. These are host-logic
 runs with resources and clocks active, not pixel-rendered route verification.
 
+The post-clear New Game chooser also has a separate first-chapter alternate
+mode, distinct from those three Premium extras. Four opt-in
+`retail_earned_first_chapter_if_` probes are being run for the original terminal
+prefixes 213/229/304/369. Each first earns permission via unchanged ending tail
+249, selects the actual New Game/alternate-mode entries, and then plays the
+whole first-chapter prefix from SC483 through its original ending/credits to
+the title. They never assign plot, counter or unlock flags. Merely adding these
+fixtures does not prove that their long playback has passed.
+
 The Rust-port progress database uses versioned, stable stored-resource keys,
 not Windows' private reference-stream text encoding. Bindings come from the
 original selector instructions. Successful host image use (including cache hits)

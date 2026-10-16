@@ -1,4 +1,5 @@
-//! Isolated real ending coverage, not a claim that a story route has completed.
+//! Original ending tails, earned extras and alternate first-chapter playthroughs.
+//! Isolated prerequisite tails do not establish their earlier story prefixes.
 use super::test_support::{choose_image, wait_selection};
 use super::*;
 
@@ -35,6 +36,21 @@ fn retail_three_earned_extra_routes_play_original_scripts_and_return() -> Result
     }
     Ok(())
 }
+
+macro_rules! earned_first_chapter {
+    ($name:ident, $prefix:literal) => {
+        #[test]
+        #[ignore = "set RUGP_TEST_GAME; long earned first-chapter alternate-route playback"]
+        fn $name() -> Result<()> {
+            check_ending_followup(249, 0, false, false, Some($prefix))
+        }
+    };
+}
+
+earned_first_chapter!(retail_earned_first_chapter_if_213_returns_to_title, 213);
+earned_first_chapter!(retail_earned_first_chapter_if_229_returns_to_title, 229);
+earned_first_chapter!(retail_earned_first_chapter_if_304_returns_to_title, 304);
+earned_first_chapter!(retail_earned_first_chapter_if_369_returns_to_title, 369);
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
@@ -75,6 +91,16 @@ fn check_ending_with_extra(
     variant: i32,
     rasterize: bool,
     play_extra: bool,
+) -> Result<()> {
+    check_ending_followup(scene, variant, rasterize, play_extra, None)
+}
+
+fn check_ending_followup(
+    scene: usize,
+    variant: i32,
+    rasterize: bool,
+    play_extra: bool,
+    first_chapter: Option<usize>,
 ) -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
     let mut game = Game::open(root.as_ref())?;
@@ -221,11 +247,144 @@ fn check_ending_with_extra(
                     "first-chapter completion unlocked second-chapter premium"
                 );
             }
+            if let Some(prefix) = first_chapter {
+                return check_earned_first_chapter(
+                    &mut game,
+                    &mut audio,
+                    title.as_ref().context("original title cursor")?,
+                    prefix,
+                );
+            }
             return Ok(());
         }
     }
     bail!(
         "ending probe exceeded tick budget at {:?}",
+        game.vm.cursor()
+    )
+}
+
+fn check_earned_first_chapter(
+    game: &mut Game,
+    audio: &mut Option<crate::audio::AudioResources>,
+    title: &rugp_scene_vm::vm::Cursor,
+    prefix: usize,
+) -> Result<()> {
+    use std::collections::BTreeSet;
+    // The preceding original True End tail earns chapter-clear permission.
+    // Enter through New Game and its actual four-item post-clear chooser.
+    // The native third option sets alternate mode 246878; the test never does.
+    choose_image(game, 1)?;
+    wait_selection(game, audio)?;
+    ensure!(
+        game.vm
+            .cursor()
+            .is_some_and(|pc| pc.scene == 252 && pc.address == 4204),
+        "earned new-game chapter chooser missing"
+    );
+    let target = game
+        .selection_text_target()
+        .context("chapter chooser is not text")?;
+    ensure!(
+        game.text_menus[&target].entries.len() == 4,
+        "earned chapter chooser does not expose alternate mode plus cancel"
+    );
+    for _ in 0..3 {
+        game.navigate_selection(1)?;
+    }
+    game.activate_selection()?;
+    let mut pages = 0;
+    let mut confirmations = 0;
+    let mut choices = 0;
+    let mut scenes = BTreeSet::new();
+    let mut saw_credits = false;
+    for tick in 0..20000 {
+        if let Some(pc) = game.vm.cursor() {
+            scenes.insert(pc.scene);
+            if pc.scene == 238
+                && game
+                    .staffroll
+                    .as_ref()
+                    .is_some_and(|(_, roll)| !roll.finished())
+            {
+                saw_credits = true;
+            }
+        }
+        if game.waiting_for_selection() {
+            if game.vm.cursor() == Some(title) {
+                ensure!(
+                    pages > 0 && scenes.contains(&prefix),
+                    "alternate route prefix {prefix} was not played"
+                );
+                ensure!(
+                    saw_credits
+                        && scenes.contains(&238)
+                        && game
+                            .staffroll
+                            .as_ref()
+                            .is_some_and(|(_, roll)| roll.finished())
+                        && !game.staffroll_wait
+                        && game.image_wait.is_none(),
+                    "alternate first-chapter ending/credits did not finish"
+                );
+                eprintln!(
+                    "earned first-chapter {prefix} returned: tick={tick}, pages={pages}, choices={choices}, confirmations={confirmations}, scenes={}",
+                    scenes.len()
+                );
+                return Ok(());
+            }
+            ensure!(
+                game.selection_text_target().is_some(),
+                "alternate chapter reached an unexpected image menu"
+            );
+            let pc = game.vm.cursor().context("alternate choice cursor")?;
+            // Native choices select the early branch, the later school branch,
+            // or the final first-chapter branch. The two second choices for 229
+            // leave its original counter at zero; the first choices for 369
+            // let the native script increment it twice. No plot/counter writes.
+            let index = match (pc.scene, pc.address, prefix) {
+                (222, 8612, 213) => 0,
+                (222, 8612, _) => 1,
+                (487, 46324, 229 | 369) => 0,
+                (487, 46324, 304) | (469, 14348, 304) => 1,
+                (368, 63108, 229) | (375, 18028, 229) => 1,
+                _ => 0,
+            };
+            eprintln!("earned first-chapter {prefix}: choose {index} at {pc:?}");
+            for _ in 0..=index {
+                game.navigate_selection(1)?;
+            }
+            game.activate_selection()?;
+            choices += 1;
+        }
+        if game.dialogue_waits_for_input() {
+            ensure!(
+                game.vm.variables[&246878].integer()? == 1,
+                "native alternate mode was not selected"
+            );
+            game.activate_selection()?;
+            pages += 1;
+        }
+        if game.waiting_for_input() {
+            game.activate_selection()?;
+            confirmations += 1;
+        }
+        crate::audio::mute_requests(game, audio)?;
+        if tick % 1000 == 0 {
+            eprintln!(
+                "earned first-chapter {prefix}: tick={tick}, pages={pages}, pc={:?}",
+                game.vm.cursor()
+            );
+        }
+        ensure!(
+            game.step(1000).with_context(|| format!(
+                "alternate first-chapter {prefix}, tick {tick}, pages {pages}"
+            ))? != RunState::Ended,
+            "alternate first-chapter exited instead of returning to title"
+        );
+    }
+    bail!(
+        "alternate first-chapter {prefix} budget exceeded at {:?}",
         game.vm.cursor()
     )
 }
