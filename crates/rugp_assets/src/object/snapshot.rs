@@ -44,6 +44,8 @@ struct SavedInline {
     bitmap: Option<SavedBitmap>,
     posture: Option<Box<PostureFields>>,
     motion: Option<Box<MotionCurve>>,
+    #[serde(default)]
+    character_pose: Option<[i32; 6]>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -205,6 +207,7 @@ impl ReferenceSnapshotWriter {
                     .transpose()?,
                 posture: body.posture.clone(),
                 motion: body.motion.clone(),
+                character_pose: body.character_pose.as_deref().copied(),
             };
             if previous.is_some() {
                 ensure!(
@@ -435,6 +438,7 @@ impl ReferenceSnapshot {
                         .map(|b| self.restore_bitmap(b, identities)),
                     posture: body.posture.clone(),
                     motion: body.motion.clone(),
+                    character_pose: body.character_pose.map(Box::new),
                     identity: identities[id as usize].clone(),
                 }
             }),

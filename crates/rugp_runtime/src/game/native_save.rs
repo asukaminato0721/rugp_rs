@@ -204,6 +204,134 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR"]
+    fn retail_park_character_placement() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let saves = PathBuf::from(std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?);
+        let mut game = Game::open(root.as_ref())?;
+        let mut resources = AudioResources::new(Arc::clone(&game.archive))?;
+        game.import_uuc(&saves.join("vmr00001.uuc"), &[], &mut resources)?;
+        let mut audio = None;
+        for tick in 0..1000 {
+            if game
+                .vm
+                .cursor()
+                .is_some_and(|c| c.scene == 483 && c.address == 0xf49c)
+            {
+                // Native SC483:f49c contains Mitsuki alone. The preceding
+                // background HumanOut removes Shinji before the camera changes.
+                assert!(!game.objects[&324542].character.has_image());
+                let actor = &game.objects[&357909];
+                assert!(actor.character.has_image());
+                assert_eq!(actor.character.position, [1820, -320, 2080]);
+                for name in ["ロール角量", "ピッチ角量", "バンク角量"] {
+                    assert_eq!(number(&actor.properties, name, 0)?, 0);
+                }
+                if let Some(path) = std::env::var_os("RUGP_TEST_FRAME") {
+                    let mut ppm = format!("P6\n{} {}\n255\n", game.frame.width, game.frame.height)
+                        .into_bytes();
+                    ppm.extend(
+                        game.frame()
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .flat_map(|p| p[..3].iter().copied()),
+                    );
+                    std::fs::write(path, ppm)?;
+                }
+                return Ok(());
+            }
+            if game.dialogue_waits_for_input() || game.waiting_for_input() {
+                game.activate_selection()?;
+            }
+            game.skip_video()?;
+            game.step(100)
+                .with_context(|| format!("Park tick {tick}"))?;
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+        }
+        bail!("Park scene was not reached")
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR (contains vmr00001.uuc)"]
+    fn retail_shinji_transition_uses_actor_rotation() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let saves = PathBuf::from(std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?);
+        let mut game = Game::open(root.as_ref())?;
+        let mut resources = AudioResources::new(Arc::clone(&game.archive))?;
+        game.import_uuc(&saves.join("vmr00001.uuc"), &[], &mut resources)?;
+        let mut audio = None;
+        for tick in 0..500 {
+            if game
+                .vm
+                .cursor()
+                .is_some_and(|c| c.scene == 483 && c.address == 0x9cb8)
+            {
+                let actor = &game.objects[&324542];
+                assert_eq!(actor.parent, Some(212259));
+                assert_eq!(actor.character.position, [960, -440, 600]);
+                assert_eq!(number(&actor.properties, "バンク角量", 0)?, -27);
+                // The rotated face covers this point. Ignoring the actor's
+                // bank leaves sky here, reproducing the reported screenshot.
+                let pixel = (150 * game.frame.width as usize + 550) * 4;
+                assert_eq!(&game.frame()[pixel..pixel + 4], &[234, 200, 168, 255]);
+                if let Some(path) = std::env::var_os("RUGP_TEST_FRAME") {
+                    let mut ppm = format!("P6\n{} {}\n255\n", game.frame.width, game.frame.height)
+                        .into_bytes();
+                    ppm.extend(
+                        game.frame()
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .flat_map(|p| p[..3].iter().copied()),
+                    );
+                    std::fs::write(path, ppm)?;
+                }
+                return Ok(());
+            }
+            if game.dialogue_waits_for_input() || game.waiting_for_input() {
+                game.activate_selection()?;
+            }
+            game.skip_video()?;
+            game.step(100)
+                .with_context(|| format!("Shinji tick {tick}"))?;
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+        }
+        bail!("Shinji scene was not reached")
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR (contains vmr00001.uuc)"]
+    fn retail_slot_one_continues_through_camera_transitions() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let saves = PathBuf::from(std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?);
+        let mut game = Game::open(root.as_ref())?;
+        let mut resources = AudioResources::new(Arc::clone(&game.archive))?;
+        game.import_uuc(&saves.join("vmr00001.uuc"), &[], &mut resources)?;
+        let mut audio = None;
+        // Before camera-space clipping, tick 403 fails at SC60:0xd3c while
+        // OM_BuildParseImage captures a plane crossing the camera.
+        for tick in 0..500 {
+            if game.dialogue_waits_for_input() || game.waiting_for_input() {
+                game.activate_selection()?;
+            }
+            game.skip_video()?;
+            game.step(100)
+                .with_context(|| format!("Slot 1 continuation tick {tick}"))?;
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+            ensure!(
+                !game.waiting_for_selection() && !game.ended,
+                "Slot 1 continuation stopped at tick {tick}"
+            );
+        }
+        assert_ne!(
+            game.vm.cursor().map(|c| (c.scene, c.address)),
+            Some((483, 0x6dd0))
+        );
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR (contains vmr00001.uuc and vmr00002.uuc)"]
     fn retail_uuc_load_continuation_and_failed_import_are_atomic() -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;

@@ -18,6 +18,13 @@ pub(super) struct CharacterState {
     pub(super) position: [i32; 3],
     pub(super) style: i32,
 }
+#[derive(Clone, Copy)]
+pub(super) struct CharacterView<'a> {
+    pub camera: &'a Camera,
+    pub projection: u8,
+    pub player_height: i32,
+    pub angles_q4: [i32; 3],
+}
 impl SpriteGeometry {
     pub(super) fn validate(&self) -> Result<()> {
         ensure!(
@@ -42,9 +49,7 @@ impl CharacterState {
         frame: &mut Framebuffer,
         viewport: (i32, i32, u32, u32),
         opacity: u8,
-        motion: &Camera,
-        projection: u8,
-        player_height: i32,
+        view: CharacterView<'_>,
     ) -> Result<()> {
         let Some(texture) = &self.texture else {
             return Ok(());
@@ -58,10 +63,13 @@ impl CharacterState {
                 (texture.height as i32) << 16,
             ],
         });
+        let CharacterView {
+            camera: motion,
+            projection,
+            player_height,
+            angles_q4,
+        } = view;
         let mut depth = self.position[2].wrapping_sub(motion.position[2]);
-        if depth < 1 {
-            return Ok(());
-        }
         let mut relative = [
             self.position[0].wrapping_sub(motion.position[0]),
             self.position[1]
@@ -69,13 +77,24 @@ impl CharacterState {
                 .wrapping_add(player_height),
         ];
         let full_view = projection & 0x30 != 0;
+        if angles_q4 != [0; 3] || (full_view && projection & 8 != 0) {
+            let quad = self.camera_quad(geometry, view);
+            return frame.blit_camera_plane(
+                texture,
+                quad,
+                motion.focal_length,
+                64.0,
+                viewport,
+                opacity,
+            );
+        }
         if full_view {
             let rotated = motion.rotate([relative[0], relative[1], depth]);
             relative = [rotated[0], rotated[1]];
             depth = rotated[2];
-            if depth < 1 {
-                return Ok(());
-            }
+        }
+        if depth < 1 {
+            return Ok(());
         }
         let mut edges = [[0.0; 2]; 2];
         for axis in 0..2 {
@@ -115,6 +134,47 @@ impl CharacterState {
             viewport,
             opacity,
         )
+    }
+
+    // Vm60 10035d70 rotates the center and the Q16 anchor separately.
+    // Billboard mode rotates only the center. Bit 8 also rotates the corners.
+    fn camera_quad(&self, geometry: SpriteGeometry, view: CharacterView<'_>) -> [[f64; 3]; 4] {
+        use crate::world::rotation::{apply_q12, matrix};
+        let camera = view.camera;
+        let full = view.projection & 0x30 != 0;
+        let mut center = std::array::from_fn(|i| self.position[i].wrapping_sub(camera.position[i]));
+        center[1] = center[1].wrapping_add(view.player_height);
+        if full {
+            center = camera.rotate(center);
+        } else {
+            for i in 0..2 {
+                center[i] =
+                    center[i].wrapping_sub(camera.angles_q4[i].wrapping_mul(center[2]) >> 13);
+            }
+        }
+        let mut rotation = matrix(view.angles_q4);
+        if full && view.projection & 8 != 0 {
+            let parent = camera.rotation();
+            rotation = std::array::from_fn(|i| {
+                std::array::from_fn(|j| {
+                    ((0..3)
+                        .map(|k| i32::from(parent[i][k]) * i32::from(rotation[k][j]))
+                        .sum::<i32>()
+                        >> 12) as i16
+                })
+            });
+        }
+        let anchor = apply_q12(
+            rotation,
+            [geometry.anchor_q16[0], geometry.anchor_q16[1], 0],
+        );
+        let translation: [i32; 3] =
+            std::array::from_fn(|i| center[i].wrapping_sub((anchor[i] >> 28) as i32));
+        let [w, h] = geometry.size;
+        [[0, 0, 0], [w, 0, 0], [w, h, 0], [0, h, 0]].map(|point| {
+            let rotated = apply_q12(rotation, point);
+            std::array::from_fn(|i| rotated[i] as f64 / 4096.0 + f64::from(translation[i]))
+        })
     }
 
     pub(super) fn remove(&mut self, style: i32) {
@@ -253,8 +313,11 @@ impl Game {
                 .insert("character.core".into(), Value::Reference(reference.clone()));
             return Ok(());
         }
-        // Static expression fallback: all supplied transparent face canvases.
-        // Native core pose/deformation and eye/mouth animation remain deferred.
+        let pose = core
+            .character_pose
+            .as_deref()
+            .copied()
+            .context("character core pose missing")?;
         let (texture, geometry) =
             self.character_texture(body, &core.references[body_index + 1..])?;
         self.buffers.remove(&id);
@@ -263,6 +326,15 @@ impl Game {
         object.menu = None;
         object.character.texture = Some(texture);
         object.character.geometry = Some(geometry);
+        object.character.position = [pose[0], pose[1], pose[2]];
+        for (name, angle) in ["ロール角量", "ピッチ角量", "バンク角量"]
+            .into_iter()
+            .zip(&pose[3..])
+        {
+            object
+                .properties
+                .insert(name.into(), Value::Integer(*angle));
+        }
         object.character.face.clear();
         object.clear_character_sources();
         object
@@ -275,12 +347,27 @@ impl Game {
         id: u64,
         fields: &BTreeMap<String, Value>,
     ) -> Result<()> {
-        let position = [
+        let supplied_position = [
             number(fields, "３ＤＸ", 0)?,
             number(fields, "３ＤＹ", 0)?,
             number(fields, "３ＤＺ", 0)?,
         ];
         let style = number(fields, "スタイル", 0)?;
+        // Vm60 100340b0: bits 0..2 replace axes, bits 3..5 add
+        // offsets. Unselected axes retain their current position.
+        let previous = self
+            .objects
+            .get(&id)
+            .map_or([0; 3], |o| o.character.position);
+        let position = std::array::from_fn(|axis| {
+            if style & (1 << axis) != 0 {
+                supplied_position[axis]
+            } else if style & (8 << axis) != 0 {
+                previous[axis].wrapping_add(supplied_position[axis])
+            } else {
+                previous[axis]
+            }
+        });
         if matches!(fields.get("ベース画像"), None | Some(Value::Null)) {
             ensure!(
                 matches!(fields.get("表情画像"), None | Some(Value::Null)),
@@ -291,6 +378,7 @@ impl Game {
             let object = self.objects.entry(id).or_default();
             object.character.position = position;
             object.character.style = style;
+            object.prepare_character_angles();
             object.retain_character_placement(fields);
             return Ok(());
         }
@@ -314,6 +402,7 @@ impl Game {
         let (texture, geometry) = self.character_texture(body, &overlays)?;
         let object = self.objects.entry(id).or_default();
         object.layers.clear();
+        object.prepare_character_angles();
         object.menu = None;
         object.clear_character_sources();
         object.properties.remove("character.core");
@@ -383,6 +472,15 @@ impl Game {
 }
 
 impl ObjectState {
+    fn prepare_character_angles(&mut self) {
+        // Vm60 100340b0/10038920 keeps queued angles until presentation.
+        // A helper can issue several HumanIn packets before that trigger.
+        if !self.properties.contains_key("character.angles_pending") {
+            for name in ["ロール角量", "ピッチ角量", "バンク角量"] {
+                self.properties.insert(name.into(), Value::Integer(0));
+            }
+        }
+    }
     /// Keep source identities independently of the composited texture. Native
     /// UUC records restore resources and geometry rather than RGBA screenshots.
     pub(super) fn clear_character_sources(&mut self) {
@@ -404,8 +502,113 @@ impl ObjectState {
 mod tests {
     use super::*;
     #[test]
+    fn entries_retain_queued_angles_until_presentation() -> Result<()> {
+        let mut object = ObjectState::default();
+        object
+            .properties
+            .insert("バンク角量".into(), Value::Integer(-27));
+        object
+            .properties
+            .insert("character.angles_pending".into(), Value::Integer(1));
+        object.prepare_character_angles();
+        assert_eq!(number(&object.properties, "バンク角量", 0)?, -27);
+        object.prepare_character_angles();
+        assert_eq!(number(&object.properties, "バンク角量", 0)?, -27);
+        object.properties.remove("character.angles_pending");
+        object.prepare_character_angles();
+        for name in ["ロール角量", "ピッチ角量", "バンク角量"] {
+            assert_eq!(number(&object.properties, name, -1)?, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rotated_sprite_vertices_match_original_dll() {
+        // Vm60 10035d70 outputs for the SC483:0x9cb8 actor, plus camera
+        // corner rotation and mixed actor rotations. These are numeric DLL
+        // outputs, independent of this renderer and of proprietary textures.
+        let actor = CharacterState {
+            position: [960, -440, 600],
+            ..Default::default()
+        };
+        let geometry = SpriteGeometry {
+            size: [658, 2035],
+            anchor_q16: [19077479, 120172484],
+        };
+        let camera = Camera {
+            focal_length: 1440,
+            position: [720, -400, -160],
+            angles_q4: [1808, -432, -576],
+        };
+        for (projection, angles_q4, expected) in [
+            (
+                21,
+                [0, 0, -432],
+                [
+                    [162, -270, 741],
+                    [1439, -323, 741],
+                    [1602, 3628, 741],
+                    [325, 3681, 741],
+                ],
+            ),
+            (
+                29,
+                [0; 3],
+                [
+                    [129, -256, 749],
+                    [1259, -235, 863],
+                    [1519, 3384, 798],
+                    [325, 3966, 683],
+                ],
+            ),
+            (
+                29,
+                [800, -400, 200],
+                [
+                    [205, -195, 845],
+                    [1263, -196, 908],
+                    [1567, 3536, 762],
+                    [316, 3878, 698],
+                ],
+            ),
+            (
+                0,
+                [800, -400, 200],
+                [
+                    [204, -183, 851],
+                    [1364, -194, 800],
+                    [1376, 3791, 725],
+                    [102, 3543, 775],
+                ],
+            ),
+        ] {
+            let quad = actor.camera_quad(
+                geometry,
+                CharacterView {
+                    camera: &camera,
+                    projection,
+                    player_height: 1550,
+                    angles_q4,
+                },
+            );
+            for (point, expected) in quad.into_iter().zip(expected) {
+                let projected = [
+                    512.0 + point[0] * 1440.0 / point[2],
+                    300.0 + point[1] * 1440.0 / point[2],
+                    point[2],
+                ];
+                for (actual, native) in projected.into_iter().zip(expected) {
+                    assert!(
+                        (actual - f64::from(native)).abs() < 1.0,
+                        "mode {projection}, angles {angles_q4:?}: {projected:?} != {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
     #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
-    fn retail_complete_core_composes_and_clears_without_resetting_live_placement() -> Result<()> {
+    fn retail_complete_core_composes_restores_pose_and_clears() -> Result<()> {
         let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
         let mut game = Game::open(root.as_ref())?;
         let native = NativeSchema::from_directory(root.as_ref())?;
@@ -434,6 +637,14 @@ mod tests {
             .context("inline core missing")?
             .references[2]
             .clone();
+        let pose = core
+            .inline
+            .as_ref()
+            .unwrap()
+            .character_pose
+            .as_deref()
+            .copied()
+            .context("core pose")?;
         let body = game.images.load(&body_ref)?;
 
         game.frame = Framebuffer::new(1024, 600)?;
@@ -453,7 +664,13 @@ mod tests {
         );
         assert_eq!(game.frame(), before); // application is staged until presentation
         let character = &game.objects[&id].character;
-        assert_eq!(character.position, [1, 0, 1120]);
+        assert_eq!(character.position, [pose[0], pose[1], pose[2]]);
+        for (name, expected) in ["ロール角量", "ピッチ角量", "バンク角量"]
+            .into_iter()
+            .zip(&pose[3..])
+        {
+            assert_eq!(number(&game.objects[&id].properties, name, 0)?, *expected);
+        }
         let texture = character.texture.as_ref().context("core image missing")?;
         assert_eq!((texture.width, texture.height), (body.width, body.height));
         assert_ne!(texture.rgba, body.rgba); // real transparent face parts were composited
@@ -465,6 +682,7 @@ mod tests {
             &BTreeMap::from([
                 ("ベース画像".into(), Value::Null),
                 ("３ＤＺ".into(), Value::Integer(2240)),
+                ("スタイル".into(), Value::Integer(7)),
             ]),
         )?;
         assert!(Arc::ptr_eq(
@@ -501,13 +719,25 @@ mod tests {
             game.objects[&id].properties["render.mouth.スタイル"],
             Value::Integer(1)
         ));
-        assert_eq!(game.objects[&id].character.style, 0);
+        assert_eq!(game.objects[&id].character.style, 7);
         assert_eq!(game.objects[&id].character.position, [0, 0, 2240]);
         assert!(Arc::ptr_eq(
             &image,
             game.objects[&id].character.texture.as_ref().unwrap()
         ));
         assert_eq!(game.frame(), pixels);
+        // Style selects replacement axes, relative axes and retained axes.
+        game.show_character(
+            id,
+            &BTreeMap::from([
+                ("ベース画像".into(), Value::Null),
+                ("３ＤＸ".into(), Value::Integer(40)),
+                ("３ＤＹ".into(), Value::Integer(5)),
+                ("３ＤＺ".into(), Value::Integer(999)),
+                ("スタイル".into(), Value::Integer(1 | 16)),
+            ]),
+        )?;
+        assert_eq!(game.objects[&id].character.position, [40, 5, 2240]);
         let call = |key| Message {
             class: "OM_SetRefData".into(),
             target: Value::Reference(target.clone()),
@@ -533,7 +763,7 @@ mod tests {
             &BTreeMap::from([
                 ("ベース画像".into(), Value::Reference(body_ref.clone())),
                 ("３ＤＺ".into(), Value::Integer(1120)),
-                ("スタイル".into(), Value::Integer(512)),
+                ("スタイル".into(), Value::Integer(519)),
             ]),
         )?;
         assert!(!game.objects[&id].properties.contains_key("character.core"));
@@ -556,7 +786,7 @@ mod tests {
             &BTreeMap::from([
                 ("ベース画像".into(), Value::Null),
                 ("３ＤＺ".into(), Value::Integer(2240)),
-                ("スタイル".into(), Value::Integer(512)),
+                ("スタイル".into(), Value::Integer(519)),
             ]),
         )?;
         assert!(matches!(

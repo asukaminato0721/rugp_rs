@@ -90,6 +90,9 @@ impl Game {
         Ok(())
     }
     pub(super) fn present_scene(&mut self) -> Result<()> {
+        for object in self.objects.values_mut() {
+            object.properties.remove("character.angles_pending");
+        }
         let next = self.scene_frame()?;
         if let Some(parse) = &mut self.parse_transition {
             // An explicit presentation (e.g. live dialogue) refreshes the

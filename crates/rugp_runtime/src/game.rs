@@ -181,14 +181,12 @@ impl ObjectState {
                         if layer.draw_flags & 2 != 0 {
                             continue;
                         }
-                        frame.blit_projective(
+                        layer.plane.render(
+                            frame,
                             &layer.texture,
-                            layer.plane.quad_with_mode(
-                                &self.camera,
-                                self.rect,
-                                self.world_projection,
-                            )?,
+                            &self.camera,
                             self.rect,
+                            self.world_projection,
                             self.opacity,
                         )?;
                     }
@@ -207,9 +205,16 @@ impl ObjectState {
                 frame,
                 world.rect,
                 opacity,
-                &world.camera,
-                world.world_projection,
-                world.player_height,
+                character::CharacterView {
+                    camera: &world.camera,
+                    projection: world.world_projection,
+                    player_height: world.player_height,
+                    angles_q4: [
+                        number(&self.properties, "ロール角量", 0)?.wrapping_shl(4),
+                        number(&self.properties, "ピッチ角量", 0)?.wrapping_shl(4),
+                        number(&self.properties, "バンク角量", 0)?.wrapping_shl(4),
+                    ],
+                },
             )?;
         }
         Ok(())
@@ -775,8 +780,14 @@ impl Game {
                 self.objects.entry(id).or_default().player_height = number(&fields, "高さ", 1550)?;
             }
             "OM_SetExclusiveCamera" => self.set_world_projection(id, &fields)?,
+            "OM_SetDataCPostureMoment" => {
+                let object = self.objects.entry(id).or_default();
+                object.properties.extend(fields);
+                object
+                    .properties
+                    .insert("character.angles_pending".into(), Value::Integer(1));
+            }
             "OM_SetBBInfoForQueue"
-            | "OM_SetDataCPostureMoment"
             | "OM_SetRmtInfoScaling"
             | "OM_SetShading"
             | "OM_SetWorldSXY"
@@ -853,10 +864,38 @@ impl Game {
                 self.set_camera(id, fields, false)?;
             }
             "OM_HumanOut" => {
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CParseBgBox")
+                {
+                    // Vm60 10040ba0 excludes persistent actors (entry bit
+                    // 0x1000). The background image remains in the world.
+                    for object in self
+                        .objects
+                        .values_mut()
+                        .filter(|o| o.parent == Some(id) && o.character.style & 0x1000 == 0)
+                    {
+                        object.character.remove(0);
+                        object.clear_character_sources();
+                        object.properties.remove("character.core");
+                    }
+                    return Ok(());
+                }
                 let style = number(&fields, "スタイル", 0)?;
                 let object = self.objects.entry(id).or_default();
-                let remove_character = style == 0 || style == object.character.style;
-                object.character.remove(style);
+                // CCharBox HumanOut style contains transition flags, not an
+                // image identifier. It also removes an actor entered with
+                // different position/style flags (Vm60 10034890).
+                let character_target = target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| matches!(c.name.as_str(), "CCharBox" | "CCharBox2"));
+                let remove_character =
+                    character_target || style == 0 || style == object.character.style;
+                object
+                    .character
+                    .remove(if character_target { 0 } else { style });
                 if remove_character {
                     object.clear_character_sources();
                     object.properties.remove("character.core");
@@ -986,6 +1025,7 @@ impl Game {
                     "transition effect is not implemented yet"
                 );
                 for object in self.objects.values_mut() {
+                    object.properties.remove("character.angles_pending");
                     object.begin_world_projection();
                 }
                 let duration = number(&fields, "総処理時間基", 0)?.max(0) as u32;

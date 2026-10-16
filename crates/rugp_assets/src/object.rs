@@ -52,6 +52,8 @@ pub struct InlineObject {
     pub posture: Option<Box<crate::posture::PostureFields>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motion: Option<Box<crate::motion::MotionCurve>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character_pose: Option<Box<[i32; 6]>>,
     #[serde(skip)]
     identity: InlineIdentity,
 }
@@ -127,6 +129,7 @@ impl ObjectRef {
                 bitmap: None,
                 posture: None,
                 motion: None,
+                character_pose: None,
                 identity: InlineIdentity(Arc::new(())),
             }),
         }
@@ -277,6 +280,7 @@ impl<'a> ObjectReader<'a> {
         let mut bitmap = None;
         let mut posture = None;
         let mut motion = None;
+        let mut character_pose = None;
         match (class.name.as_str(), class.schema) {
             ("CMimeFlat16LimitOne", 1) => {
                 crate::mime::MimeCurve::read_body(&mut self.input, class)?;
@@ -352,7 +356,12 @@ impl<'a> ObjectReader<'a> {
                 if version >= 6 {
                     self.input.u32()?;
                 }
-                self.input.skip(28)?;
+                let mut pose = [0; 6];
+                for value in &mut pose {
+                    *value = self.input.u32()? as i32;
+                }
+                character_pose = Some(Box::new(pose));
+                self.input.skip(4)?;
                 if version >= 2 {
                     self.input.skip(16)?;
                 }
@@ -411,6 +420,7 @@ impl<'a> ObjectReader<'a> {
             bitmap,
             posture,
             motion,
+            character_pose,
             identity: InlineIdentity(Arc::new(())),
         })
     }

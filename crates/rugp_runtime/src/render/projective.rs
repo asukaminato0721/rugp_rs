@@ -1,5 +1,5 @@
 //! Perspective-correct nearest-neighbor rasterization for world image planes.
-//! Screen-space clipping is separate from camera/near-plane clipping.
+//! Camera-space clipping precedes perspective division and rasterization.
 use super::{Framebuffer, Texture, source_over};
 use anyhow::{Result, ensure};
 
@@ -8,6 +8,40 @@ struct Vertex {
     xy: [f64; 2],
     inverse_z: f64,
     uv_over_z: [f64; 2],
+}
+
+#[derive(Clone, Copy)]
+struct ClipVertex {
+    xyz: [f64; 3],
+    uv: [f64; 2],
+}
+
+/// Clip a convex polygon against a camera-space half-space. Interpolate UVs
+/// before perspective division, so a new edge keeps the original texture map.
+fn clip_polygon(vertices: &[ClipVertex], distance: impl Fn([f64; 3]) -> f64) -> Vec<ClipVertex> {
+    let mut output = Vec::with_capacity(vertices.len() + 1);
+    let Some(mut previous) = vertices.last().copied() else {
+        return output;
+    };
+    let mut previous_distance = distance(previous.xyz);
+    for &current in vertices {
+        let current_distance = distance(current.xyz);
+        if (previous_distance < 0.0) != (current_distance < 0.0) {
+            let t = previous_distance / (previous_distance - current_distance);
+            output.push(ClipVertex {
+                xyz: std::array::from_fn(|i| {
+                    previous.xyz[i] + t * (current.xyz[i] - previous.xyz[i])
+                }),
+                uv: std::array::from_fn(|i| previous.uv[i] + t * (current.uv[i] - previous.uv[i])),
+            });
+        }
+        if current_distance >= 0.0 {
+            output.push(current);
+        }
+        previous = current;
+        previous_distance = current_distance;
+    }
+    output
 }
 
 fn texel_coordinate(uv: f64, extent: u32) -> usize {
@@ -51,6 +85,116 @@ impl Edge {
 }
 
 impl Framebuffer {
+    fn projective_bounds(&self, (x, y, w, h): (i32, i32, u32, u32)) -> [i64; 4] {
+        [
+            i64::from(x).max(0),
+            i64::from(y).max(0),
+            (i64::from(x) + i64::from(w)).min(i64::from(self.width)),
+            (i64::from(y) + i64::from(h)).min(i64::from(self.height)),
+        ]
+    }
+
+    /// Draw a camera-space rectangle, including planes crossing the camera.
+    /// Clip XYZ and UV against the near plane and viewport before division.
+    /// The viewport center is the projection origin; either winding is valid.
+    pub fn blit_camera_plane(
+        &mut self,
+        texture: &Texture,
+        quad: [[f64; 3]; 4],
+        focal_length: u16,
+        near: f64,
+        clip: (i32, i32, u32, u32),
+        opacity: u8,
+    ) -> Result<()> {
+        texture.validate()?;
+        ensure!(
+            near.is_finite()
+                && near >= 1e-9
+                && quad
+                    .iter()
+                    .flatten()
+                    .all(|v| v.is_finite() && v.abs() <= 2.0 * f64::from(i32::MAX)),
+            "invalid camera-space plane coordinates or near depth"
+        );
+        let bounds = self.projective_bounds(clip);
+        if opacity == 0
+            || bounds[0] >= bounds[2]
+            || bounds[1] >= bounds[3]
+            || quad.iter().all(|p| p[2] < near)
+        {
+            return Ok(());
+        }
+        let focal = f64::from(focal_length);
+        let center = [
+            f64::from(clip.0) + f64::from(clip.2) / 2.0,
+            f64::from(clip.1) + f64::from(clip.3) / 2.0,
+        ];
+        let project = |p: [f64; 3]| {
+            [
+                center[0] + p[0] * focal / p[2],
+                center[1] + p[1] * focal / p[2],
+                p[2],
+            ]
+        };
+        if quad.iter().all(|p| p[2] >= near) {
+            let projected = quad.map(project);
+            if projected.iter().all(|p| {
+                p[0].abs() <= f64::from(i32::MAX)
+                    && p[1].abs() <= f64::from(i32::MAX)
+                    && p[2] <= f64::from(i32::MAX)
+            }) {
+                return self.blit_projective(texture, projected, clip, opacity);
+            }
+        }
+        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let mut polygon = clip_polygon(
+            &std::array::from_fn::<_, 4, _>(|i| ClipVertex {
+                xyz: quad[i],
+                uv: uv[i],
+            }),
+            |p| p[2] - near,
+        );
+        // Interpolation can round an intersection slightly below the plane,
+        // especially when an endpoint has a much larger depth.
+        for vertex in &mut polygon {
+            vertex.xyz[2] = vertex.xyz[2].max(near);
+        }
+        // Homogeneous viewport clipping also bounds coordinates very close
+        // to the camera. Never divide a behind-camera vertex or rasterize an
+        // unbounded screen-space triangle.
+        for axis in 0..2 {
+            polygon = clip_polygon(&polygon, |p| {
+                focal * p[axis] + (center[axis] - bounds[axis] as f64) * p[2]
+            });
+            polygon = clip_polygon(&polygon, |p| {
+                (bounds[axis + 2] as f64 - center[axis]) * p[2] - focal * p[axis]
+            });
+        }
+        let vertices: Vec<_> = polygon
+            .iter()
+            .map(|p| {
+                let projected = project(p.xyz);
+                let inverse_z = 1.0 / p.xyz[2];
+                Vertex {
+                    xy: std::array::from_fn(|i| {
+                        projected[i].clamp(bounds[i] as f64, bounds[i + 2] as f64)
+                    }),
+                    inverse_z,
+                    uv_over_z: p.uv.map(|v| v * inverse_z),
+                }
+            })
+            .collect();
+        for triangle in vertices.get(1..).unwrap_or_default().windows(2) {
+            self.projective_triangle(
+                texture,
+                [vertices[0], triangle[0], triangle[1]],
+                bounds,
+                opacity,
+            );
+        }
+        Ok(())
+    }
+
     /// Draw the entire texture on a convex projected plane. Vertices are in
     /// image order (top-left, top-right, bottom-right, bottom-left), each
     /// `[screen_x, screen_y, positive_camera_depth]`. Either winding is valid.
@@ -59,7 +203,8 @@ impl Framebuffer {
     /// Samples are at pixel centers. `clip` is the object's screen viewport;
     /// it is intersected with the framebuffer before any pixel iteration.
     /// Wholly nonpositive-depth planes are culled. The caller must first clip
-    /// geometry crossing the camera's near plane.
+    /// geometry crossing the camera's near plane. Use `blit_camera_plane`
+    /// when the input geometry can cross the camera.
     /// Native world metadata/projection is intentionally not inferred here.
     pub fn blit_projective(
         &mut self,
@@ -93,13 +238,7 @@ impl Framebuffer {
             turns.iter().all(|v| *v >= 0.0) || turns.iter().all(|v| *v <= 0.0),
             "projected plane is not convex"
         );
-        let (x, y, w, h) = clip;
-        let bounds = [
-            i64::from(x).max(0),
-            i64::from(y).max(0),
-            (i64::from(x) + i64::from(w)).min(i64::from(self.width)),
-            (i64::from(y) + i64::from(h)).min(i64::from(self.height)),
-        ];
+        let bounds = self.projective_bounds(clip);
         if opacity == 0 || bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
             return Ok(());
         }
@@ -372,6 +511,137 @@ mod tests {
                 assert_eq!(&frame.rgba[at..at + 4], &expected, "pixel {x},{y}");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn camera_clipping_matches_ray_intersections_and_preserves_uv_and_alpha() -> Result<()> {
+        let texture = grid(8, 8, 128);
+        let clip = (1, 2, 12, 10);
+        for [offset, a, b] in [[1.0, 1.0, 0.0], [0.9, 1.0, 0.7], [-0.9, 1.0, 0.7]] {
+            let quad = [[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
+                .map(|[x, y]| [x, y, offset + a * x + b * y]);
+            for near in [0.25, 1.1] {
+                for reverse in [false, true] {
+                    let mut frame = Framebuffer::transparent(16, 16)?;
+                    let ordered = if reverse {
+                        [quad[0], quad[3], quad[2], quad[1]]
+                    } else {
+                        quad
+                    };
+                    frame.blit_camera_plane(&texture, ordered, 6, near, clip, 128)?;
+                    for y in 0..16 {
+                        for x in 0..16 {
+                            // Intersect the pixel's camera ray with Z=offset+aX+bY.
+                            // This oracle does not use clipped vertices or triangles.
+                            let ray_x = x as f64 + 0.5 - 7.0;
+                            let ray_y = y as f64 + 0.5 - 7.0;
+                            let denominator = 6.0 - a * ray_x - b * ray_y;
+                            let z = 6.0 * offset / denominator;
+                            let world_x = offset * ray_x / denominator;
+                            let world_y = offset * ray_y / denominator;
+                            let expected = if (1..13).contains(&x)
+                                && (2..12).contains(&y)
+                                && z.is_finite()
+                                && z >= near
+                                && (-2.0..2.0).contains(&world_x)
+                                && (-2.0..2.0).contains(&world_y)
+                            {
+                                let sx = ((world_x + 2.0) * 2.0).floor() as u8;
+                                let sy = ((world_y + 2.0) * 2.0).floor() as u8;
+                                let [sx, sy] = if reverse { [sy, sx] } else { [sx, sy] };
+                                [sx * 30, sy * 30, 47, 64]
+                            } else {
+                                [0; 4]
+                            };
+                            let at = (y * 16 + x) * 4;
+                            assert_eq!(
+                                &frame.rgba[at..at + 4],
+                                &expected,
+                                "pixel {x},{y}, plane {offset}+{a}X+{b}Y, near {near}, reversed {reverse}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn camera_clipping_bounds_extreme_projections_and_rejects_invalid_input() -> Result<()> {
+        let texture = grid(1, 1, 128);
+        let quad =
+            [[-1e9, -1e9], [1e9, -1e9], [1e9, 1e9], [-1e9, 1e9]].map(|[x, y]| [x, y, x + 1.0]);
+        let mut frame = Framebuffer::transparent(8, 8)?;
+        frame.blit_camera_plane(&texture, quad, 8, 1e-9, (0, 0, 8, 8), 128)?;
+        assert!(
+            frame
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == [0, 0, 47, 64])
+        );
+        let previous = frame.rgba.clone();
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
+            assert!(
+                frame
+                    .blit_camera_plane(&texture, quad, 8, invalid, (0, 0, 8, 8), 128)
+                    .is_err()
+            );
+        }
+        for invalid in [f64::NAN, f64::INFINITY, 1e20] {
+            let mut bad = quad;
+            bad[0][0] = invalid;
+            assert!(
+                frame
+                    .blit_camera_plane(&texture, bad, 8, 1.0, (0, 0, 8, 8), 128)
+                    .is_err()
+            );
+        }
+        assert_eq!(frame.rgba, previous);
+        Ok(())
+    }
+
+    #[test]
+    fn camera_clipping_culls_hidden_planes_and_handles_vertices_on_the_near_plane() -> Result<()> {
+        let texture = grid(2, 2, 128);
+        let mut frame = Framebuffer::transparent(8, 8)?;
+        let quad = [
+            [-4.0, -4.0, 1.0],
+            [4.0, -4.0, 1.0],
+            [4.0, 4.0, 1.0],
+            [-4.0, 4.0, 1.0],
+        ];
+        for z in [-2.0, 0.0, 0.5] {
+            frame.blit_camera_plane(
+                &texture,
+                quad.map(|[x, y, _]| [x, y, z]),
+                1,
+                1.0,
+                (0, 0, 8, 8),
+                255,
+            )?;
+            assert!(frame.rgba.iter().all(|b| *b == 0));
+        }
+        frame.blit_camera_plane(&texture, quad, 1, 1.0, (0, 0, 8, 8), 255)?;
+        let mut expected = Framebuffer::transparent(8, 8)?;
+        expected.blit(&texture, (0, 0, 8, 8), 255)?;
+        assert_eq!(frame.rgba, expected.rgba);
+
+        // Both right corners are exactly on the clipping boundary. The
+        // remaining plane projects to a line and must not paint any pixels.
+        frame.clear([10, 20, 30]);
+        let previous = frame.rgba.clone();
+        let edge = [
+            [-1.0, -1.0, -1.0],
+            [1.0, -1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [-1.0, 1.0, -1.0],
+        ];
+        frame.blit_camera_plane(&texture, edge, 1, 1.0, (0, 0, 8, 8), 255)?;
+        assert_eq!(frame.rgba, previous);
         Ok(())
     }
 

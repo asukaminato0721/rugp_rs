@@ -19,6 +19,57 @@ fn reference(name: &str, schema: u16, offset: u64, size: u32) -> ObjectRef {
 
 #[test]
 #[ignore = "set RUGP_TEST_GAME to the retail game directory"]
+fn retail_background_human_out_removes_its_actors_and_retains_background() -> Result<()> {
+    let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+    let mut game = Game::open(root.as_ref())?;
+    let texture = Arc::new(Texture {
+        width: 2,
+        height: 2,
+        display_scale: 1.0,
+        rgba: [20, 40, 60, 255].repeat(4),
+    });
+    game.objects
+        .entry(212259)
+        .or_default()
+        .layers
+        .insert(512, Layer::Screen(Arc::clone(&texture)));
+    for (id, parent) in [(900, 212259), (901, 212260), (902, 212259)] {
+        let object = game.objects.entry(id).or_default();
+        object.parent = Some(parent);
+        object.character.texture = Some(Arc::clone(&texture));
+        object
+            .properties
+            .insert("native.character.body".into(), Value::Null);
+        object
+            .properties
+            .insert("character.core".into(), Value::Null);
+    }
+    game.objects.get_mut(&902).unwrap().character.style = 0x1000;
+    let before = game.frame().to_vec();
+    game.message(Message {
+        class: "OM_HumanOut".into(),
+        target: Value::Reference(reference("CParseBgBox", 15, 212259, 118)),
+        fields: BTreeMap::from([("スタイル".into(), Value::Integer(512))]),
+    })?;
+    assert!(!game.objects[&900].character.has_image());
+    assert!(
+        !game.objects[&900]
+            .properties
+            .contains_key("native.character.body")
+    );
+    assert!(!game.objects[&900].properties.contains_key("character.core"));
+    assert!(game.objects[&901].character.has_image());
+    assert!(game.objects[&902].character.has_image());
+    assert!(matches!(
+        game.objects[&212259].layers[&512],
+        Layer::Screen(_)
+    ));
+    assert_eq!(game.frame(), before);
+    Ok(())
+}
+
+#[test]
+#[ignore = "set RUGP_TEST_GAME to the retail game directory"]
 fn retail_plain_image_xyz_placement_projects_real_pixels_without_changing_cached_geometry()
 -> Result<()> {
     let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;

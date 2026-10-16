@@ -1,6 +1,6 @@
 //! Vm60 100683f0 builds Rx(pitch) * Ry(roll) * Rz(bank) in signed Q12.
 //! Each product term truncates before addition, as in the original x87 code.
-pub(super) fn matrix(angles: [i32; 3]) -> [[i16; 3]; 3] {
+pub(crate) fn matrix(angles: [i32; 3]) -> [[i16; 3]; 3] {
     let [roll, pitch, bank] = angles.map(|a| f64::from(a) * 9.587379924285279e-05);
     let (sr, cr) = roll.sin_cos();
     let (sp, cp) = pitch.sin_cos();
@@ -20,7 +20,7 @@ pub(super) fn matrix(angles: [i32; 3]) -> [[i16; 3]; 3] {
         ],
     ]
 }
-pub(super) fn apply_q12(matrix: [[i16; 3]; 3], point: [i32; 3]) -> [i64; 3] {
+pub(crate) fn apply_q12(matrix: [[i16; 3]; 3], point: [i32; 3]) -> [i64; 3] {
     matrix.map(|row| {
         row.into_iter()
             .zip(point)

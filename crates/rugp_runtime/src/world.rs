@@ -20,12 +20,12 @@
 //! axis-aligned projection with linear roll/pitch pan, *not* 100683f0's
 //! trigonometric matrix. Exclusive modes select that Q12 rotation matrix;
 //! low mode bits select perspective or orthographic projection.
-use crate::render::Texture;
+use crate::render::{Framebuffer, Texture};
 use anyhow::{Result, ensure};
 mod bounds;
 mod camera;
 mod placement;
-mod rotation;
+pub(crate) mod rotation;
 pub(crate) use bounds::mul_div;
 pub use camera::CameraTween;
 
@@ -342,6 +342,57 @@ impl Plane {
     pub fn quad(&self, camera: &Camera, viewport: (i32, i32, u32, u32)) -> Result<[[f64; 3]; 4]> {
         self.quad_with_mode(camera, viewport, 0)
     }
+    fn camera_quad(&self, camera: &Camera) -> [[f64; 3]; 4] {
+        let matrix = camera.rotation();
+        let translation = camera.rotate(self.relative_position(camera).map(i32::wrapping_neg));
+        let vertices = [
+            [-self.origin[0], -self.origin[1], self.depth],
+            [self.size[0] - self.origin[0], -self.origin[1], self.depth],
+            [
+                self.size[0] - self.origin[0],
+                self.size[1] - self.origin[1],
+                self.depth,
+            ],
+            [-self.origin[0], self.size[1] - self.origin[1], self.depth],
+        ];
+        vertices.map(|point| {
+            let rotated = rotation::apply_q12(matrix, point);
+            std::array::from_fn(|i| rotated[i] as f64 / 4096.0 + f64::from(translation[i]))
+        })
+    }
+    pub(crate) fn render(
+        &self,
+        frame: &mut Framebuffer,
+        texture: &Texture,
+        camera: &Camera,
+        viewport: (i32, i32, u32, u32),
+        mode: u8,
+        opacity: u8,
+    ) -> Result<()> {
+        if mode & 0x30 != 0 && mode & 6 != 2 {
+            ensure!(
+                camera.focal_length <= 32767,
+                "camera focal length exceeds native signed range"
+            );
+            // Vm60 10067540 compares Q12 depth to 0x40000, then clips
+            // both geometry and texture coordinates at that depth (64).
+            frame.blit_camera_plane(
+                texture,
+                self.camera_quad(camera),
+                camera.focal_length,
+                64.0,
+                viewport,
+                opacity,
+            )
+        } else {
+            frame.blit_projective(
+                texture,
+                self.quad_with_mode(camera, viewport, mode)?,
+                viewport,
+                opacity,
+            )
+        }
+    }
     pub(crate) fn quad_with_mode(
         &self,
         camera: &Camera,
@@ -355,26 +406,11 @@ impl Plane {
         let position = self.relative_position(camera);
         let depth = self.depth.wrapping_sub(position[2]);
         if mode & 0x30 != 0 {
-            let matrix = camera.rotation();
-            let translation = camera.rotate(position.map(i32::wrapping_neg));
-            let vertices = [
-                [-self.origin[0], -self.origin[1], self.depth],
-                [self.size[0] - self.origin[0], -self.origin[1], self.depth],
-                [
-                    self.size[0] - self.origin[0],
-                    self.size[1] - self.origin[1],
-                    self.depth,
-                ],
-                [-self.origin[0], self.size[1] - self.origin[1], self.depth],
-            ];
             let center = [
                 f64::from(viewport.0) + f64::from(viewport.2) / 2.0,
                 f64::from(viewport.1) + f64::from(viewport.3) / 2.0,
             ];
-            return Ok(vertices.map(|point| {
-                let rotated = rotation::apply_q12(matrix, point);
-                let xyz: [f64; 3] =
-                    std::array::from_fn(|i| rotated[i] as f64 / 4096.0 + f64::from(translation[i]));
+            return Ok(self.camera_quad(camera).map(|xyz| {
                 let divisor = if mode & 6 == 2 { 720.0 } else { xyz[2] };
                 if divisor <= 0.0 {
                     return [0.0, 0.0, xyz[2]];
