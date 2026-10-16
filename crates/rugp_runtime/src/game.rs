@@ -34,6 +34,7 @@ pub mod scene_snapshot;
 mod scroll;
 pub mod snapshot;
 mod sound;
+mod spatial_fade;
 mod staffroll;
 #[cfg(test)]
 mod sync_tests;
@@ -187,6 +188,7 @@ struct Transition {
     elapsed: u32,
     duration: u32,
     curve: Option<FadeCurve>,
+    spatial: Option<spatial_fade::SpatialFade>,
 }
 pub struct Game {
     pub vm: Vm,
@@ -431,7 +433,7 @@ impl Game {
         Ok(frame)
     }
     fn update_frame(&mut self) {
-        if let Some(transition) = &self.transition {
+        if let Some(transition) = &mut self.transition {
             let (a, d) = transition.curve.as_ref().map_or_else(
                 || {
                     (
@@ -447,13 +449,25 @@ impl Game {
                 },
             );
             if self.rasterize_scene {
-                for (out, (from, to)) in self
-                    .frame
-                    .rgba
-                    .iter_mut()
-                    .zip(transition.from.iter().zip(&transition.to))
-                {
-                    *out = ((*from as u64 * (d - a) + *to as u64 * a + d / 2) / d) as u8;
+                if let Some(spatial) = &mut transition.spatial {
+                    if !spatial.keeps_previous_frame() {
+                        self.frame.rgba.copy_from_slice(&transition.from);
+                    }
+                    spatial.render(
+                        &mut self.frame.rgba,
+                        &transition.to,
+                        (self.frame.width, self.frame.height),
+                        (a * 256 / d) as u16,
+                    );
+                } else {
+                    for (out, (from, to)) in self
+                        .frame
+                        .rgba
+                        .iter_mut()
+                        .zip(transition.from.iter().zip(&transition.to))
+                    {
+                        *out = ((*from as u64 * (d - a) + *to as u64 * a + d / 2) / d) as u8;
+                    }
                 }
             }
             if transition.elapsed >= transition.duration {
@@ -921,6 +935,7 @@ impl Game {
                         elapsed: 0,
                         duration,
                         curve: None,
+                        spatial: None,
                     });
                 }
             }

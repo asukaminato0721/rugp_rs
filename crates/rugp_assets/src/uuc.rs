@@ -2,10 +2,88 @@
 //! payloads. This reader does not treat a thumbnail as a playable checkpoint.
 use crate::{binary::Reader, object::ObjectReader};
 use anyhow::{Context, Result, ensure};
-use std::{collections::BTreeMap, io::Read};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+};
 
 const KEY: u32 = 0x0732ce9a;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// The two native encrypted streams. Object payloads share one MFC reference
+/// cache inside `runtime`; their order must remain stable when rewriting them.
+pub struct NativeArchive {
+    pub runtime: Vec<u8>,
+    pub metadata: Vec<u8>,
+}
+
+impl NativeArchive {
+    pub fn read(input: impl Read) -> Result<Self> {
+        let mut bytes = Vec::new();
+        input.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= MAX_BYTES, "UUC file exceeds size limit");
+        let mut encrypted = Reader::new(&bytes);
+        let runtime = chunk(&mut encrypted)?;
+        let metadata_at = encrypted.position;
+        let metadata = chunk(&mut encrypted)?;
+        ensure!(encrypted.remaining() == 0, "trailing data in UUC file");
+        let mut header = Reader::new(&runtime);
+        ensure!(header.u32()? == 19, "unsupported UUC version (expected 19)");
+        ensure!(
+            header.u32()? as usize == metadata_at,
+            "invalid UUC metadata offset"
+        );
+        Ok(Self { runtime, metadata })
+    }
+
+    /// Encode the native UUC container, including its final short-block
+    /// checksums. Recompute the metadata offset after runtime records change.
+    pub fn write(&self, mut output: impl Write) -> Result<()> {
+        ensure!(self.runtime.len() >= 8, "truncated UUC runtime header");
+        ensure!(
+            self.runtime[..4] == 19u32.to_le_bytes(),
+            "unsupported UUC version (expected 19)"
+        );
+        let runtime_size = encrypted_size(self.runtime.len())?;
+        let metadata_size = encrypted_size(self.metadata.len())?;
+        ensure!(
+            runtime_size + metadata_size <= MAX_BYTES,
+            "UUC file exceeds size limit"
+        );
+        let mut runtime = self.runtime.clone();
+        runtime[4..8].copy_from_slice(&(runtime_size as u32).to_le_bytes());
+        let mut encoded = Vec::with_capacity(runtime_size + metadata_size);
+        encrypt_into(&runtime, &mut encoded);
+        encrypt_into(&self.metadata, &mut encoded);
+        output.write_all(&encoded)?;
+        Ok(())
+    }
+}
+
+fn encrypted_size(size: usize) -> Result<usize> {
+    ensure!(size <= MAX_BYTES, "UUC chunk exceeds size limit");
+    Ok(8 + size + size.div_ceil(32) * 2)
+}
+
+fn encrypt_into(bytes: &[u8], output: &mut Vec<u8>) {
+    output.extend((!(bytes.len() as u32) ^ 0xc92e568b).to_le_bytes());
+    // Native engine build 0x431 sets bit 2 in the redundant size word.
+    output.extend((((bytes.len() as u32 * 8) | 4) ^ 0xc92e568f).to_le_bytes());
+    let mut key = KEY;
+    for block in bytes.chunks(32) {
+        let checksum = block.iter().enumerate().fold(0u16, |sum, (index, &byte)| {
+            sum.wrapping_add(u16::from(byte) * (block.len() - index) as u16)
+        });
+        for &byte in block {
+            output.push(byte ^ key as u8);
+            key = !(key
+                .wrapping_mul(2)
+                .wrapping_add(0xa3b376c9)
+                .wrapping_add((key >> 15) & 1));
+        }
+        output.extend(checksum.to_le_bytes());
+    }
+}
 
 pub struct NativeSave {
     pub title: String,
@@ -47,23 +125,15 @@ fn chunk(input: &mut Reader<'_>) -> Result<Vec<u8>> {
 
 impl NativeSave {
     pub fn read(input: impl Read, shift: u32) -> Result<Self> {
-        let mut bytes = Vec::new();
-        input.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= MAX_BYTES, "UUC file exceeds size limit");
-        let mut encrypted = Reader::new(&bytes);
-        let data = chunk(&mut encrypted)?;
-        let metadata_at = encrypted.position;
-        let metadata = chunk(&mut encrypted)?;
-        ensure!(encrypted.remaining() == 0, "trailing data in UUC file");
+        let archive = NativeArchive::read(input)?;
+        let data = archive.runtime;
+        let metadata = archive.metadata;
         let mut reader = ObjectReader::new(&data);
         ensure!(
             reader.input.u32()? == 19,
             "unsupported UUC version (expected 19)"
         );
-        ensure!(
-            reader.input.u32()? as usize == metadata_at,
-            "invalid UUC metadata offset"
-        );
+        reader.input.u32()?; // NativeArchive checked the encrypted-stream offset.
         ensure!(reader.input.u8()? == 1, "unsupported UUC archive mode");
         ensure!(reader.input.u32()? == 0x431, "unsupported UUC engine build");
         ensure!(reader.input.u32()? == 20, "unsupported UUC archive flags");
@@ -208,7 +278,7 @@ mod tests {
     fn encrypt(bytes: &[u8]) -> Vec<u8> {
         let mut output = Vec::new();
         output.extend((!(bytes.len() as u32) ^ 0xc92e568b).to_le_bytes());
-        output.extend(((bytes.len() as u32 * 8) ^ 0xc92e568f).to_le_bytes());
+        output.extend((((bytes.len() as u32 * 8) | 4) ^ 0xc92e568f).to_le_bytes());
         let mut key = KEY;
         for block in bytes.chunks(32) {
             let checksum = block.iter().enumerate().fold(0u16, |sum, (i, &b)| {
@@ -246,6 +316,59 @@ mod tests {
             let mut invalid = encrypted.clone();
             invalid[4] ^= 8;
             assert!(chunk(&mut Reader::new(&invalid)).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_writer_updates_offsets_and_matches_the_native_block_encoding() -> Result<()> {
+        let (runtime, metadata) = fixture();
+        let expected = [encrypt(&runtime), encrypt(&metadata)].concat();
+        let mut archive = NativeArchive { runtime, metadata };
+        let mut output = Vec::new();
+        archive.write(&mut output)?;
+        assert_eq!(output, expected);
+        for length in [8, 31, 32, 33, 63, 64, 65, 127] {
+            archive.runtime.resize(length, 0x5a);
+            archive.runtime[4..8].fill(0);
+            let mut output = Vec::new();
+            archive.write(&mut output)?;
+            let decoded = NativeArchive::read(output.as_slice())?;
+            assert_eq!(&decoded.runtime[8..], &archive.runtime[8..]);
+            assert_eq!(decoded.metadata, archive.metadata);
+            assert_eq!(
+                u32::from_le_bytes(decoded.runtime[4..8].try_into()?) as usize,
+                encrypt(&decoded.runtime).len()
+            );
+        }
+        let mut untouched = Vec::new();
+        archive.runtime[0] = 0;
+        assert!(archive.write(&mut untouched).is_err());
+        assert!(untouched.is_empty());
+        archive.runtime[..4].copy_from_slice(&19u32.to_le_bytes());
+        archive.metadata.resize(MAX_BYTES, 0);
+        assert!(archive.write(&mut untouched).is_err());
+        assert!(untouched.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_UUC_DIR to the original Vmreg directory"]
+    fn retail_native_writer_reproduces_original_files_without_changing_them() -> Result<()> {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?,
+        );
+        for name in ["vmr00001.uuc", "vmr00002.uuc"] {
+            let original = std::fs::read(root.join(name))?;
+            let archive = NativeArchive::read(original.as_slice())?;
+            let mut rewritten = Vec::new();
+            archive.write(&mut rewritten)?;
+            assert!(rewritten == original, "native UUC encoding differs for {name}");
+            let before = NativeSave::read(original.as_slice(), 0)?;
+            let after = NativeSave::read(rewritten.as_slice(), 0)?;
+            assert_eq!(after.objects, before.objects);
+            assert_eq!(after.navigation, before.navigation);
+            assert_eq!(std::fs::read(root.join(name))?, original);
         }
         Ok(())
     }

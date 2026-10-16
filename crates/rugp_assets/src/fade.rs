@@ -68,13 +68,17 @@ impl FadeCurve {
     }
     /// Native interpolation uses a 0..256 time axis and signed 1/32 alpha units.
     pub fn alpha(&self, elapsed: u32, duration: u32) -> u16 {
+        self.value(elapsed, duration) >> 5
+    }
+    /// Preserve Q13 precision for geometry and OverStretch opacity.
+    pub fn value(&self, elapsed: u32, duration: u32) -> u16 {
         let x = if duration == 0 {
             256
         } else {
             (u64::from(elapsed.min(duration)) * 256 / u64::from(duration)) as i32
         };
         let Some(&(first_x, first_y)) = self.0.first() else {
-            return x as u16;
+            return (x * 32) as u16;
         };
         let mut y = i32::from(first_y);
         if x > i32::from(first_x) {
@@ -91,7 +95,7 @@ impl FadeCurve {
                 }
             }
         }
-        (y >> 5).clamp(0, 256) as u16
+        y.clamp(0, 8192) as u16
     }
 }
 
@@ -102,6 +106,16 @@ pub struct Fade {
     pub curve: FadeCurve,
     /// Native COLORREF (B,G,R in the high-to-low three bytes).
     pub color: Option<[u8; 3]>,
+    pub stretch: Option<Stretch>,
+}
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stretch {
+    pub destination_end: [i16; 4],
+    pub source_end: [i16; 4],
+    pub options: u8,
+    pub frames: i16,
+    pub opacity: [i16; 2],
 }
 impl Fade {
     /// `data` is the complete inline body already bounded by ObjectReader.
@@ -139,6 +153,25 @@ impl Fade {
             knots.windows(2).all(|p| p[0].0 < p[1].0),
             "unordered fade curve"
         );
+        let parameters = r.position;
+        let stretch = if matches!(class, "CFadeStretchAnti" | "CFadeOverStretchAnti") {
+            let mut destination_end = [0; 4];
+            let mut source_end = [0; 4];
+            for value in destination_end.iter_mut().chain(&mut source_end) {
+                *value = r.u16()? as i16;
+            }
+            let options = r.u8()?;
+            let (frames, opacity) = if class == "CFadeOverStretchAnti" {
+                let frames = r.u16()? as i16;
+                let opacity = [r.u16()? as i16, r.u16()? as i16];
+                r.u16()?;
+                (frames, opacity)
+            } else {
+                (0, [8192; 2])
+            };
+            Some(Stretch { destination_end, source_end, options, frames, opacity })
+        } else { None };
+        r.position = parameters;
         let color = match class {
             "CFadeMergeBlack" | "CFadeXsMergeBlack" => Some([0, 0, 0]),
             "CFadeMergeWhite" | "CFadeMergeColor" => {
@@ -154,6 +187,7 @@ impl Fade {
             rectangles,
             curve: FadeCurve(knots),
             color,
+            stretch,
         })
     }
 }

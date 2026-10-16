@@ -370,7 +370,9 @@ impl Game {
             &previous,
             fade.rectangles[2],
         )?;
+        let spatial = super::spatial_fade::SpatialFade::from_class(&class.name, fade.rectangles[2]);
         if duration > 0
+            && spatial.is_none()
             && destination.offset != Some(self.primary_buffer)
             && source.rgba == previous.rgba
             && background.rgba == previous.rgba
@@ -410,7 +412,7 @@ impl Game {
         }
         if duration == 0 {
             let alpha = u32::from(fade.curve.alpha(0, 0));
-            let rgba = source
+            let mut rgba: Vec<u8> = source
                 .rgba
                 .iter()
                 .zip(&background.rgba)
@@ -418,6 +420,15 @@ impl Game {
                     ((u32::from(*s) * alpha + u32::from(*b) * (256 - alpha) + 128) / 256) as u8
                 })
                 .collect();
+            if let Some(mut spatial) = spatial {
+                rgba.copy_from_slice(&background.rgba);
+                spatial.render(
+                    &mut rgba,
+                    &source.rgba,
+                    (source.width, source.height),
+                    alpha as u16,
+                );
+            }
             self.write_surface(
                 &destination,
                 Texture {
@@ -438,6 +449,7 @@ impl Game {
                 elapsed: 0,
                 duration,
                 curve: Some(fade.curve),
+                spatial,
             });
             self.update_frame();
             if blocking != 0 {

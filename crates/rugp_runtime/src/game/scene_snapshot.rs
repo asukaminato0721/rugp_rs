@@ -100,6 +100,7 @@ struct SavedTransition {
     elapsed: u32,
     duration: u32,
     curve: Option<FadeCurve>,
+    spatial: Option<spatial_fade::SpatialFade>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,6 +208,7 @@ impl Game {
                     elapsed: transition.elapsed,
                     duration: transition.duration,
                     curve: transition.curve.clone(),
+                    spatial: transition.spatial,
                 })
             })
             .transpose()?;
@@ -400,6 +402,16 @@ impl SceneSnapshot {
                 transition.duration > 0 && transition.elapsed <= transition.duration,
                 "invalid scene snapshot transition clock"
             );
+            if let Some(spatial) = &transition.spatial {
+                ensure!(
+                    spatial.previous_alpha.is_none_or(|alpha| alpha <= 256),
+                    "invalid spatial fade alpha"
+                );
+                ensure!(
+                    spatial.rectangle[2] >= 0 && spatial.rectangle[3] >= 0,
+                    "negative spatial fade extent"
+                );
+            }
             if let Some(curve) = &transition.curve {
                 curve.validate_snapshot()?;
             }
@@ -477,6 +489,7 @@ impl SceneSnapshot {
                     elapsed: t.elapsed,
                     duration: t.duration,
                     curve: t.curve.clone(),
+                    spatial: t.spatial,
                 })
             })
             .transpose()?;
@@ -1026,6 +1039,7 @@ mod tests {
             elapsed: 1,
             duration: 0,
             curve: None,
+            spatial: None,
         });
         assert!(bad.validate().is_err());
         let mut bad = copy(&saved);
@@ -1278,6 +1292,7 @@ mod tests {
             elapsed: 300,
             duration: 1000,
             curve: None,
+            spatial: None,
         });
         game.update_frame();
         rewind_scene(&mut game)?;
