@@ -114,6 +114,14 @@ default to the first entry. Like keyboard navigation, oversized indices wrap.
 `--stop-on-title-return` stops when a played story returns to the initial menu
 instruction, instead of automatically starting another game. This checks one
 choice path only, not all endings or all branches.
+For reproducible branch probes, repeat `--choice-at=SCENE:ADDRESS:INDEX` to
+override a particular original selection cursor (decimal values, zero-based
+enabled-entry index). `--expect-scene=ID` requires an actual sampled visit before
+successful exit. Unreached directed choices fail the probe as well; returning
+via a different ending cannot silently count as the requested route.
+`cargo run --release -p rugp_scene_vm --example route_edges -- GAME_ROOT`
+lists only static cross-scene jump and selection cursors, without dialogue.
+Its possible edges do not prove that the original branch guards are satisfiable.
 
 Three headless plans have returned to that title: default entries (24,960 text
 confirmations, 73 scenes, 50 selections) and second entries after the title

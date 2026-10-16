@@ -1,10 +1,38 @@
 //! Headless playability diagnostic: executes the real host, advances dialogue,
 //! chooses the first menu item and mutes output while retaining PCM timing.
 //! Reports counters/cursors, never retail dialogue or asset data.
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use rugp_runtime::{Game, RunState, audio::mute_requests};
 use rugp_scene_vm::vm::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+fn directed_choice(text: &str) -> Result<((usize, u32), u8)> {
+    let parts = text.split(':').collect::<Vec<_>>();
+    ensure!(parts.len() == 3, "choice-at requires SCENE:ADDRESS:INDEX");
+    Ok(((parts[0].parse()?, parts[1].parse()?), parts[2].parse()?))
+}
+
+fn check_coverage(
+    directed: &BTreeMap<(usize, u32), u8>,
+    used: &BTreeSet<(usize, u32)>,
+    expected: &BTreeSet<usize>,
+    scenes: &BTreeSet<usize>,
+) -> Result<()> {
+    ensure!(
+        directed.keys().all(|key| used.contains(key)),
+        "not all directed choice cursors were reached: {:?}",
+        directed
+            .keys()
+            .filter(|key| !used.contains(key))
+            .collect::<Vec<_>>()
+    );
+    ensure!(
+        expected.is_subset(scenes),
+        "required scenes not observed: {:?}",
+        expected.difference(scenes).collect::<Vec<_>>()
+    );
+    Ok(())
+}
 
 fn describe(value: &Value) -> String {
     match value {
@@ -38,6 +66,9 @@ fn main() -> Result<()> {
     let mut game = Game::open(root.as_ref())?;
     let mut choice_plan = Vec::new();
     let mut stop_on_title_return = false;
+    let mut directed = BTreeMap::new();
+    let mut used_directed = BTreeSet::new();
+    let mut expected = BTreeSet::new();
     for arg in std::env::args().skip(4) {
         if arg == "--no-scene-raster" {
             eprintln!(
@@ -56,6 +87,14 @@ fn main() -> Result<()> {
                 .collect::<Result<Vec<_>>>()?;
         } else if arg == "--stop-on-title-return" {
             stop_on_title_return = true;
+        } else if let Some(text) = arg.strip_prefix("--choice-at=") {
+            let (key, index) = directed_choice(text)?;
+            ensure!(
+                directed.insert(key, index).is_none(),
+                "duplicate choice-at cursor"
+            );
+        } else if let Some(text) = arg.strip_prefix("--expect-scene=") {
+            expected.insert(text.parse::<usize>()?);
         } else {
             anyhow::bail!("unknown autoplay option {arg}");
         }
@@ -87,6 +126,7 @@ fn main() -> Result<()> {
                 && entry_menu.is_some()
                 && game.vm.cursor() == entry_menu.as_ref()
             {
+                check_coverage(&directed, &used_directed, &expected, &scenes)?;
                 println!(
                     "returned-to-title tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds} confirmations={confirmations}",
                     scenes.len()
@@ -95,7 +135,17 @@ fn main() -> Result<()> {
             }
             // Plan includes the title menu (index 0 starts a new game).
             // Unspecified choices select the first enabled entry.
-            for _ in 0..=choice_plan.get(choices).copied().unwrap_or(0) {
+            let pc = game.vm.cursor().context("selection has no cursor")?;
+            let key = (pc.scene, pc.address);
+            let index = directed
+                .get(&key)
+                .copied()
+                .unwrap_or_else(|| choice_plan.get(choices).copied().unwrap_or(0));
+            if directed.contains_key(&key) {
+                used_directed.insert(key);
+            }
+            println!("choice={choices} pc={pc:?} index={index}");
+            for _ in 0..=index {
                 game.navigate_selection(1)?;
             }
             game.activate_selection()?;
@@ -119,6 +169,7 @@ fn main() -> Result<()> {
         }
         match game.step(if tick == 0 { 0 } else { dt }) {
             Ok(RunState::Ended) => {
+                check_coverage(&directed, &used_directed, &expected, &scenes)?;
                 println!(
                     "ended tick={tick} scenes={} pages={dialogue_pages} choices={choices} sounds={sounds} confirmations={confirmations}",
                     scenes.len()
@@ -165,4 +216,29 @@ fn main() -> Result<()> {
         game.vm.cursor(),
         scenes.len()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directed_choices_require_exact_bounded_cursor_and_index() -> Result<()> {
+        assert_eq!(directed_choice("290:152932:1")?, ((290, 152932), 1));
+        for invalid in ["", "290:1", "290:1:0:4", "290:-1:0", "290:1:256"] {
+            assert!(directed_choice(invalid).is_err(), "accepted {invalid:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coverage_cannot_succeed_on_another_branch() -> Result<()> {
+        let directed = BTreeMap::from([((290, 152932), 1)]);
+        let used = BTreeSet::from([(290, 152932)]);
+        let expected = BTreeSet::from([241]);
+        let scenes = BTreeSet::from([241, 290]);
+        assert!(check_coverage(&directed, &BTreeSet::new(), &expected, &scenes).is_err());
+        assert!(check_coverage(&directed, &used, &expected, &BTreeSet::from([249])).is_err());
+        check_coverage(&directed, &used, &expected, &scenes)
+    }
 }
