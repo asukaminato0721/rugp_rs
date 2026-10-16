@@ -35,8 +35,3 @@ desktop = ["dep:winit", "dep:softbuffer", "dep:egui"]
 winit = { version = "=0.31.0-beta.3", optional = true }
 softbuffer = { version = "0.4", optional = true }
 egui = { version = "0.37", optional = true, default-features = false, features = ["default_fonts"] }
-
-[profile.release]
-strip = true
-lto = "thin"
-codegen-units = 1
