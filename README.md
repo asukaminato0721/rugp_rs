@@ -218,6 +218,10 @@ VM/media clock is paused and output is suspended, then rebuilt at the same PCM
 epoch on return. Input used to close/load the chooser cannot confirm a restored
 page. Invalid/incompatible saves report a nonfatal error in the chooser and
 leave the current game intact. These are Rust-port saves, not Windows UUC files.
+The current audio-enabled release has also passed an isolated Xvfb/XTest window
+smoke check in muted mode: physical key presses enter the game, save slot 0,
+cancel Load, reopen and load slot 0, and advance dialogue afterward. The separate
+desktop integration regression covers corrupt slots and held/released input.
 
 Gallery database selectors now honor the native per-item rule: decimal-prefix
 conversion must equal exactly 1 to enable an item; other values disable it.
@@ -293,7 +297,8 @@ navigation (Enter/Space activates). Disabled selectors are excluded from input.
 Pointer mapping shares the presentation viewport, including letterboxing and
 resizing. `play --mute --fast-forward-ms 132000` executes the real startup on a
 virtual clock before opening the window, for development testing; the default
-launcher does not fast-forward. Later UI and story operations remain incomplete.
+launcher does not fast-forward. It does not synthesize confirmation input:
+startup prompts can still require Enter/Space or a click.
 
 ## Validation
 
