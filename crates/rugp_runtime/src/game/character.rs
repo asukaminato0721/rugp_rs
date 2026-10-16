@@ -94,6 +94,7 @@ impl Game {
                 let object = self.objects.entry(id).or_default();
                 object.character.remove(0);
                 object.character.face.clear();
+                object.clear_character_sources();
                 object
                     .properties
                     .insert("character.core".into(), Value::Null);
@@ -131,6 +132,7 @@ impl Game {
             let object = self.objects.entry(id).or_default();
             object.character.remove(0);
             object.character.face.clear();
+            object.clear_character_sources();
             object
                 .properties
                 .insert("character.core".into(), Value::Reference(reference.clone()));
@@ -145,6 +147,7 @@ impl Game {
         object.menu = None;
         object.character.texture = Some(texture);
         object.character.face.clear();
+        object.clear_character_sources();
         object
             .properties
             .insert("character.core".into(), Value::Reference(reference.clone()));
@@ -168,9 +171,10 @@ impl Game {
             );
             // A null image packet can reposition the current actor without
             // replacing or reviving its image (including an empty actor).
-            let character = &mut self.objects.entry(id).or_default().character;
-            character.position = position;
-            character.style = style;
+            let object = self.objects.entry(id).or_default();
+            object.character.position = position;
+            object.character.style = style;
+            object.retain_character_placement(fields);
             return Ok(());
         }
         let Some(Value::Reference(body)) = fields.get("ベース画像") else {
@@ -194,6 +198,22 @@ impl Game {
         let object = self.objects.entry(id).or_default();
         object.layers.clear();
         object.menu = None;
+        object.clear_character_sources();
+        object.properties.remove("character.core");
+        object.properties.insert(
+            "native.character.body".into(),
+            Value::Reference(body.clone()),
+        );
+        object.properties.insert(
+            "native.character.expression".into(),
+            fields.get("表情画像").cloned().unwrap_or(Value::Null),
+        );
+        for (name, value) in face {
+            object
+                .properties
+                .insert(format!("native.character.face.{name}"), value);
+        }
+        object.retain_character_placement(fields);
         self.buffers.remove(&id);
         let character = &mut object.character;
         character.texture = Some(texture);
@@ -244,6 +264,24 @@ impl Game {
     }
 }
 
+impl ObjectState {
+    /// Keep source identities independently of the composited texture. Native
+    /// UUC records restore resources and geometry rather than RGBA screenshots.
+    pub(super) fn clear_character_sources(&mut self) {
+        self.properties
+            .retain(|name, _| !name.starts_with("native.character."));
+    }
+
+    fn retain_character_placement(&mut self, fields: &BTreeMap<String, Value>) {
+        for name in ["３ＤＸ", "３ＤＹ", "３ＤＺ", "スタイル"] {
+            self.properties.insert(
+                format!("native.character.{name}"),
+                fields.get(name).cloned().unwrap_or(Value::Integer(0)),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,18 +310,28 @@ mod tests {
         let Some(Value::Reference(core)) = message.fields.get("参照") else {
             bail!("core missing")
         };
-        let body_ref = &core
+        let body_ref = core
             .inline
             .as_ref()
             .context("inline core missing")?
-            .references[2];
-        let body = game.images.load(body_ref)?;
+            .references[2]
+            .clone();
+        let body = game.images.load(&body_ref)?;
         game.frame = Framebuffer::new(16, 16)?;
         let object = game.objects.entry(id).or_default();
         object.rect = (0, 0, 16, 16);
         object.character.position = [1, 0, 1120];
+        object.properties.insert(
+            "native.character.body".into(),
+            Value::Reference(body_ref.clone()),
+        );
         let before = game.frame().to_vec();
         game.message(message)?;
+        assert!(
+            !game.objects[&id]
+                .properties
+                .contains_key("native.character.body")
+        );
         assert_eq!(game.frame(), before); // application is staged until presentation
         let character = &game.objects[&id].character;
         assert_eq!(character.position, [1, 0, 1120]);
@@ -358,6 +406,60 @@ mod tests {
         ));
         game.present_scene()?;
         assert_eq!(game.frame(), before);
+        // A normal body packet replaces the complete core. Future face
+        // packets must not change the identity of already applied parts.
+        game.queue_character_face(id, &BTreeMap::from([("口".into(), Value::Null)]))?;
+        game.show_character(
+            id,
+            &BTreeMap::from([
+                ("ベース画像".into(), Value::Reference(body_ref.clone())),
+                ("３ＤＺ".into(), Value::Integer(1120)),
+                ("スタイル".into(), Value::Integer(512)),
+            ]),
+        )?;
+        assert!(!game.objects[&id].properties.contains_key("character.core"));
+        let Some(Value::Reference(applied)) =
+            game.objects[&id].properties.get("native.character.body")
+        else {
+            bail!("applied body identity missing")
+        };
+        assert_eq!(applied.offset, body_ref.offset);
+        game.queue_character_face(
+            id,
+            &BTreeMap::from([("口".into(), Value::Reference(body_ref.clone()))]),
+        )?;
+        assert!(matches!(
+            game.objects[&id].properties["native.character.face.口"],
+            Value::Null
+        ));
+        game.show_character(
+            id,
+            &BTreeMap::from([
+                ("ベース画像".into(), Value::Null),
+                ("３ＤＺ".into(), Value::Integer(2240)),
+                ("スタイル".into(), Value::Integer(512)),
+            ]),
+        )?;
+        assert!(matches!(
+            game.objects[&id].properties["native.character.body"],
+            Value::Reference(_)
+        ));
+        assert!(matches!(
+            game.objects[&id].properties["native.character.３ＤＺ"],
+            Value::Integer(2240)
+        ));
+        game.message(Message {
+            class: "OM_HumanOut".into(),
+            target: Value::Reference(target),
+            fields: BTreeMap::from([("スタイル".into(), Value::Integer(512))]),
+        })?;
+        assert!(!game.objects[&id].character.has_image());
+        assert!(
+            !game.objects[&id]
+                .properties
+                .keys()
+                .any(|name| name.starts_with("native.character."))
+        );
         Ok(())
     }
     #[test]

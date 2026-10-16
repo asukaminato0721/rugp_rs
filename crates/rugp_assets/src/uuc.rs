@@ -10,7 +10,19 @@ use std::{
 const KEY: u32 = 0x0732ce9a;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 
+pub mod character;
+pub mod metadata;
 pub mod reference_writer;
+pub mod state;
+pub mod value;
+pub mod vm;
+pub mod writer;
+
+// Supported v3 host context, with no modal window or extra process.
+const HOST_CONTEXT: &[u8] = &[
+    1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 0, 128, 255, 255, 3, 0, 0,
+    0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0,
+];
 
 /// The two native encrypted streams. Object payloads share one MFC reference
 /// cache inside `runtime`; their order must remain stable when rewriting them.
@@ -155,13 +167,9 @@ impl NativeSave {
         reader.input.string()?; // display title
         // The supported v3 host context has no active modal or extra process.
         // Reject different contexts until their runtime state can be restored.
-        const CONTEXT: &[u8] = &[
-            1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 0, 128, 255, 255,
-            3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0,
-        ];
         let context_at = reader.input.position;
         ensure!(
-            reader.input.bytes(CONTEXT.len())? == CONTEXT,
+            reader.input.bytes(HOST_CONTEXT.len())? == HOST_CONTEXT,
             "unsupported UUC host context at {context_at:#x}"
         );
         let mut objects = BTreeMap::new();

@@ -820,13 +820,25 @@ impl Game {
             "OM_HumanOut" => {
                 let style = number(&fields, "スタイル", 0)?;
                 let object = self.objects.entry(id).or_default();
+                let remove_character = style == 0 || style == object.character.style;
                 object.character.remove(style);
+                if remove_character {
+                    object.clear_character_sources();
+                    object.properties.remove("character.core");
+                }
                 if style == 0 {
                     object.layers.clear();
+                    object
+                        .properties
+                        .retain(|name, _| !name.starts_with("native.layer."));
                     object.menu = None;
                     self.buffers.remove(&id);
                 } else {
                     object.layers.remove(&style);
+                    let prefix = format!("native.layer.{style}.");
+                    object
+                        .properties
+                        .retain(|name, _| !name.starts_with(&prefix));
                 }
             }
             "OM_HumanIn" | "OM_HumanIn2" => {
@@ -849,6 +861,9 @@ impl Game {
                     // inspecting the supplied reference. Null is valid here.
                     let object = self.objects.entry(id).or_default();
                     object.layers.clear();
+                    object
+                        .properties
+                        .retain(|name, _| !name.starts_with("native.layer."));
                     object.menu = None;
                     self.buffers.remove(&id);
                     return Ok(());
@@ -900,7 +915,17 @@ impl Game {
                     image.boundary = plane;
                 }
                 self.buffers.remove(&id);
-                self.objects.entry(id).or_default().menu = None;
+                let object = self.objects.entry(id).or_default();
+                object.menu = None;
+                let prefix = format!("native.layer.{style}.");
+                object
+                    .properties
+                    .retain(|name, _| !name.starts_with(&prefix));
+                for (name, value) in &fields {
+                    object
+                        .properties
+                        .insert(format!("{prefix}{name}"), value.clone());
+                }
                 if planar_model {
                     let properties = &mut self.objects.entry(id).or_default().properties;
                     properties.insert("render.model.source".into(), Value::Reference(source));

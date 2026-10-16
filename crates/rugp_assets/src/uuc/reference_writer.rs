@@ -4,6 +4,39 @@ use crate::object::{ClassId, ObjectRef};
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 
+/// Bind a resolved RIO resource graph to the UUC project identity. Numeric
+/// cache entries belong to their reader and cannot be copied into a save.
+/// Inline resource bodies require their own serializer and are rejected here.
+pub fn from_rio(reference: &ObjectRef) -> Result<ObjectRef> {
+    fn convert(reference: &ObjectRef, depth: usize) -> Result<ObjectRef> {
+        ensure!(depth < 128, "UUC reference exceeds recursion limit");
+        ensure!(
+            reference.inline.is_none() && reference.flags & 0x40 == 0,
+            "inline RIO resource needs a UUC serializer"
+        );
+        let mut output = reference.clone();
+        if output.class.is_none() {
+            output.cache_index = Some(match output.cache_index.unwrap_or(0) {
+                0 => 0,
+                3 => 2,
+                _ => anyhow::bail!("unbound RIO cache entry in UUC reference"),
+            });
+        } else {
+            output.cache_index = None;
+            output.flags |= 0x8108;
+            output.owner = Some(Box::new(convert(
+                output
+                    .owner
+                    .as_deref()
+                    .context("RIO reference owner missing")?,
+                depth + 1,
+            )?));
+        }
+        Ok(output)
+    }
+    convert(reference, 0)
+}
+
 pub struct ReferenceWriter {
     pub data: Vec<u8>,
     shift: u32,
@@ -23,6 +56,30 @@ impl ReferenceWriter {
             classes: BTreeMap::new(),
             objects: BTreeMap::new(),
         })
+    }
+
+    /// Write the ANSI MFC CString used by this game. Reject text that cannot
+    /// be encoded in the original code page instead of replacing characters.
+    pub fn string(&mut self, value: &str) -> Result<()> {
+        let (bytes, _, errors) = encoding_rs::SHIFT_JIS.encode(value);
+        ensure!(!errors, "UUC text cannot be encoded as Shift-JIS");
+        ensure!(
+            bytes.len() <= 16 * 1024 * 1024,
+            "UUC string exceeds size limit"
+        );
+        match bytes.len() {
+            0..=254 => self.data.push(bytes.len() as u8),
+            255..=65533 => {
+                self.data.push(255);
+                self.data.extend((bytes.len() as u16).to_le_bytes());
+            }
+            _ => {
+                self.data.extend([255, 255, 255]);
+                self.data.extend((bytes.len() as u32).to_le_bytes());
+            }
+        }
+        self.data.extend(bytes.as_ref());
+        Ok(())
     }
 
     fn reserve(&mut self) -> Result<u32> {
@@ -88,6 +145,19 @@ impl ReferenceWriter {
     ) -> Result<u32> {
         self.class(class)?;
         self.data.extend(0xc040u16.to_le_bytes());
+        let index = self.reserve()?;
+        body(self)?;
+        Ok(index)
+    }
+
+    /// Write an MFC CObject, such as CVmStackFrame. These objects have no
+    /// project-reference flags between the class tag and their state.
+    pub fn mfc_object(
+        &mut self,
+        class: &ClassId,
+        body: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<u32> {
+        self.class(class)?;
         let index = self.reserve()?;
         body(self)?;
         Ok(index)
@@ -199,6 +269,67 @@ fn identity(object: &ObjectRef, depth: usize) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::object::ObjectReader;
+
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR to the retail game and Vmreg directories"]
+    fn retail_rio_project_reference_matches_original_uuc_root() -> Result<()> {
+        let game = crate::RioArchive::open(std::path::PathBuf::from(
+            std::env::var_os("RUGP_TEST_GAME").context("game directory")?,
+        ))?;
+        let saves = std::path::PathBuf::from(
+            std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?,
+        );
+        let archive =
+            super::super::NativeArchive::read(std::fs::File::open(saves.join("vmr00001.uuc"))?)?;
+        let mut reader = ObjectReader::new(&archive.runtime);
+        reader.input.skip(17)?;
+        reader.pad(1)?;
+        let native = reader.reference_without_count(game.address_shift)?;
+        let mut source = None;
+        for reference in game
+            .project
+            .as_ref()
+            .context("project missing")?
+            .references
+            .values()
+        {
+            reference.visit(&mut |reference| {
+                if reference.offset == native.offset && reference.class == native.class {
+                    source = Some(reference.clone());
+                }
+            });
+        }
+        let converted = from_rio(&source.context("RIO root missing")?)?;
+        let mut writer = ReferenceWriter::new(game.address_shift)?;
+        writer.reference(&converted)?;
+        assert_eq!(writer.data, archive.runtime[17..reader.input.position]);
+        Ok(())
+    }
+
+    #[test]
+    fn cstrings_use_native_length_boundaries_and_reject_unencodable_text() -> Result<()> {
+        for length in [0, 1, 254, 255, 65533, 65534, 65535, 65536] {
+            let value = "x".repeat(length);
+            let mut writer = ReferenceWriter::new(0)?;
+            writer.string(&value)?;
+            let prefix = match length {
+                0..=254 => 1,
+                255..=65533 => 3,
+                _ => 7,
+            };
+            assert_eq!(writer.data.len(), length + prefix);
+            let mut reader = crate::binary::Reader::new(&writer.data);
+            assert_eq!(reader.string()?, value);
+            assert_eq!(reader.remaining(), 0);
+        }
+        let mut writer = ReferenceWriter::new(0)?;
+        writer.string("設定")?;
+        assert_eq!(writer.data, [4, 0x90, 0xdd, 0x92, 0xe8]);
+        let before = writer.data.clone();
+        assert!(writer.string("😀").is_err());
+        assert_eq!(writer.data, before);
+        Ok(())
+    }
 
     #[test]
     fn stored_references_share_class_and_object_caches_across_inline_bodies() -> Result<()> {
