@@ -794,6 +794,50 @@ mod tests {
         );
         let native = NativeSchema::from_directory(root.as_ref())?;
         let program = Arc::new(Program::load(&game.archive, &native)?);
+        let post_clear = page == 1 && matches!(selector, 9 | 10);
+        if post_clear {
+            // SC290:132772 deliberately clears the two-flag branch mask on
+            // a first playthrough. SC427 reads the real chapter-clear database
+            // into 246871. Run an original True End tail (not a full prefix)
+            // to earn that clear state, without assigning an unlock/plot flag.
+            let title = game
+                .vm
+                .cursor()
+                .cloned()
+                .context("original title missing")?;
+            let mut vm = Vm::new(Arc::clone(&program), 249)?;
+            vm.variables = std::mem::take(&mut game.vm.variables);
+            game.vm = vm;
+            game.selection = None;
+            let mut returned = false;
+            for tick in 0..2000 {
+                if game.waiting_for_selection() {
+                    ensure!(
+                        game.vm.cursor() == Some(&title),
+                        "clear ending reached an unexpected menu"
+                    );
+                    ensure!(
+                        game.staffroll
+                            .as_ref()
+                            .is_some_and(|(_, roll)| roll.finished()),
+                        "clear ending roll unfinished"
+                    );
+                    returned = true;
+                    break;
+                }
+                if game.dialogue_waits_for_input() || game.waiting_for_input() {
+                    game.activate_selection()?;
+                }
+                crate::audio::mute_requests(&mut game, &mut audio)?;
+                ensure!(
+                    game.step(1000)
+                        .with_context(|| format!("replay clear prerequisite tick {tick}"))?
+                        != RunState::Ended,
+                    "clear ending exited instead of returning to title"
+                );
+            }
+            ensure!(returned, "clear ending did not return to title");
+        }
         if !matches!(entry, 478 | 346 | 327) {
             // Later-chapter scene isolation must first run its real initializer.
             // Stored scalar defaults are not a fresh chapter: e.g. the native
@@ -833,6 +877,12 @@ mod tests {
                 ensure!(
                     game.vm.variables[&offset].integer()? == 0,
                     "native chapter initializer did not reset {offset}"
+                );
+            }
+            if post_clear {
+                ensure!(
+                    game.vm.variables[&246871].integer()? == 1,
+                    "native initializer did not read earned chapter-clear status"
                 );
             }
         }
@@ -927,6 +977,14 @@ mod tests {
                     game.vm.cursor()
                 );
                 let pc = game.vm.cursor().context("story choice cursor missing")?;
+                if post_clear && pc.scene == 290 && pc.address == 83692 {
+                    for offset in [5021085, 5021265, 246871] {
+                        ensure!(
+                            game.vm.variables[&offset].integer()? == 1,
+                            "original prerequisite flag {offset} was not earned"
+                        );
+                    }
+                }
                 let directed = directed_choices
                     .iter()
                     .find(|&&(scene, address, _)| scene == pc.scene && address == pc.address);
@@ -989,11 +1047,17 @@ mod tests {
         let title = game.vm.cursor().cloned();
         // Isolate the hub, not its title permission. No ending or replay flag
         // is fabricated; the original enabled selector sets replay mode itself.
-        let program = Arc::new(Program::load(&game.archive, &native)?);
-        let mut vm = Vm::new(program, 251)?;
-        vm.variables = std::mem::take(&mut game.vm.variables);
-        game.vm = vm;
-        game.selection = None;
+        if post_clear {
+            // This fixture actually earned title permission too. Enter via
+            // its gated selector instead of using the isolated hub below.
+            choose(&mut game, 3)?;
+        } else {
+            let program = Arc::new(Program::load(&game.archive, &native)?);
+            let mut vm = Vm::new(program, 251)?;
+            vm.variables = std::mem::take(&mut game.vm.variables);
+            game.vm = vm;
+            game.selection = None;
+        }
         wait_selection(&mut game, &mut audio)?;
         choose(&mut game, 3)?;
         wait_selection(&mut game, &mut audio)?;

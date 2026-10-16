@@ -10,12 +10,9 @@ fn main() -> Result<()> {
     let program = Program::load(&archive, &native)?;
     let mut kinds = BTreeMap::new();
     let mut fades = BTreeMap::new();
+    let mut syncs = BTreeMap::new();
     for scene in program.scenes.values() {
-        for instruction in scene
-            .instructions
-            .iter()
-            .filter(|i| i.class.name == "CVmSound")
-        {
+        for instruction in &scene.instructions {
             let n = |index: usize| {
                 if let Argument::Number(n) = instruction.arguments[index] {
                     n
@@ -23,6 +20,20 @@ fn main() -> Result<()> {
                     u32::MAX
                 }
             };
+            if instruction.class.name == "CVmSync" {
+                if let Argument::Reference(source) = &instruction.arguments[0]
+                    && let Some(class) = &source.class
+                    && ["CPmBgm", "CPmEffect", "COptimizedObs"].contains(&class.name.as_str())
+                {
+                    *syncs
+                        .entry((class.name.clone(), n(1), n(2)))
+                        .or_insert(0u32) += 1;
+                }
+                continue;
+            }
+            if instruction.class.name != "CVmSound" {
+                continue;
+            }
             *kinds.entry((n(1), n(2))).or_insert(0u32) += 1;
             if n(1) == 4 {
                 *fades.entry((n(2), [n(3), n(4), n(5)])).or_insert(0u32) += 1;
@@ -30,6 +41,10 @@ fn main() -> Result<()> {
         }
     }
     println!("kind/flags {kinds:?}");
+    println!(
+        "literal-source audio sync class/mode/time {syncs:?}; {:#x} denotes a nonliteral control",
+        u32::MAX
+    );
     println!(
         "{} transition records, {} distinct flag/parameter tuples",
         fades.values().sum::<u32>(),

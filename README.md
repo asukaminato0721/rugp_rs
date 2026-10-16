@@ -90,6 +90,10 @@ the native query branch does; SC457's `32/400` packet no longer fails or adds
 a 400ms wait. Regression checks cover inactive, active and completed PCM,
 an unread invalid time operand, and snapshot restoration of the query status
 without stopping, replaying or waiting on the sound.
+The static direct-source sync audit covers 1,876 packets: 280 effect waits
+(`16/0`), 1,592 effect queries (`32/0`), three effect queries with time words
+400/800/2200, and one BGM query (`32/0`). All use supported dispatch modes;
+this audit does not resolve dynamically supplied sources or execute every packet.
 
 The headless playability probe executes the same runtime, automatically advances
 dialogue and chooses the first menu entry. It prints only cursors/counters and
@@ -125,6 +129,9 @@ script scenes.
 The fresh second-entry host-logic plan also returned to the original title at
 tick 35,195: 23,034 dialogue confirmations, 52 selections, 1,076 non-text
 confirmations, 8,634 sounds and 70 sampled script scenes.
+The fresh third-entry plan returned at tick 37,878: 25,493 dialogue confirmations,
+53 selections, 1,148 non-text confirmations, 9,372 sounds and 74 sampled scenes.
+These are three choice strategies, not proof of all three True End story routes.
 
 Desktop `play` keeps CStdb configuration/progress databases under a per-game
 subdirectory of the user's data directory (`$XDG_DATA_HOME/rugp_rs`, or
@@ -243,18 +250,26 @@ progress into an isolated Premium hub, and selects the enabled replay normally.
 The unchanged replay script completes 378 dialogue and nine non-text
 confirmations, returns to its replay page, then navigates back to the title.
 It does not fabricate ending permission or replay flags; remaining earned
-replay entries still need individual playback coverage.
+replay entries have the independent playback coverage described below.
 The remaining 32 non-null replay selectors now have independent opt-in
 playback tests (`retail_earned_replay_p1_` and `retail_earned_replay_p2_`), named
 by original page/selector. They use actual story image use, check the original menu identity and
 enabled selector, and drive the unchanged replay back to its page and title.
-These long regressions are still being run; merely having a fixture in the
-table does not establish that its playback has passed. Original story choice
+All 33 non-null replay selectors have now passed these checks. The seven null
+selectors are deliberately unavailable, not missing replay implementations.
+Original story choice
 plans earn the appropriate branch's image. Later-chapter fixtures first run
 the original SC427 chapter initializer and confirm its first dialogue; raw
 serialized plot-variable defaults are not fresh-chapter state. One sequence also needs the native
 encounter counter: its fixture actually plays two preceding SC425 sequences,
 letting the original script increment it, rather than writing the counter.
+Page-two selectors 9 and 10 additionally require a previous second-chapter
+clear: their fixtures run the unchanged True End tail 249, then SC427 reads
+that earned database state. Actual choices in SC422/418/290 (and SC300/292 for
+selector 9) earn the required plot flags and image, without test assignments to
+those flags. These two checks also enter through the genuinely enabled title
+Premium selector. This is isolated prerequisite/ending-tail coverage, not a
+claim to have played their entire pre-clear story prefix.
 
 Literal-null `CVmSync` mode 16 now waits for an actual Enter/Space or left-click
 confirmation, indefinitely when its time word is zero (also Windows INFINITE).
