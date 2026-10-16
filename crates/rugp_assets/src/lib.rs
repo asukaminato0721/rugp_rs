@@ -25,6 +25,7 @@ mod rip_quant;
 pub mod s5i;
 pub mod script;
 pub mod sound;
+pub mod uuc;
 
 pub use archive::RioArchive;
 pub use ici::InstallManifest;

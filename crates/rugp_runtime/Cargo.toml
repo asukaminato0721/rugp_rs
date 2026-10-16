@@ -13,7 +13,4 @@ ab_glyph = "0.2.32"
 fontdb = { version = "0.24", default-features = false, features = ["std", "fs", "fontconfig"] }
 rugp_assets = { path = "../rugp_assets" }
 rugp_scene_vm = { path = "../rugp_scene_vm" }
-kira = { version = "0.9", default-features = false, features = ["cpal"], optional = true }
-
-[features]
-device-audio = ["dep:kira"]
+kira = { version = "0.9", default-features = false, features = ["cpal"] }

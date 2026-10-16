@@ -126,6 +126,16 @@ impl VideoPlayer {
     pub fn duration_ms(&self) -> u64 {
         (self.stream.frames.len() as u64 * 100_000).div_ceil(u64::from(self.rate))
     }
+    /// Complete playback at the final frame. Snapshot restoration uses the
+    /// same elapsed time and reconstructs the same delta-frame dependencies.
+    pub fn finish(&mut self) -> Result<()> {
+        if !self.finished {
+            self.decode_to(self.stream.frames.len() - 1)?;
+            self.elapsed = self.duration_ms();
+            self.finished = true;
+        }
+        Ok(())
+    }
     /// Keeps the final frame visible after completion. Catch-up starts at a
     /// preceding keyframe, but never skips a delta's dependencies.
     pub fn advance(&mut self, dt_ms: u32) -> Result<bool> {

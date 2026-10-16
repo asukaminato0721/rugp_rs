@@ -3,6 +3,23 @@ use crate::video::VideoPlayer;
 use rugp_assets::crsi::VideoSequence;
 
 impl Game {
+    /// Skip an active movie. The next tick completes its ordinary VM wait.
+    /// This does not advance timers or select a menu entry.
+    pub fn skip_video(&mut self) -> Result<bool> {
+        if self.load_requested || self.ended {
+            return Ok(false);
+        }
+        let Some((_, player)) = &mut self.video else {
+            return Ok(false);
+        };
+        if player.finished() {
+            return Ok(false);
+        }
+        player.finish()?;
+        self.frame.rgba.copy_from_slice(&player.image().rgba);
+        Ok(true)
+    }
+
     pub(super) fn play_video(
         &mut self,
         target: &ObjectRef,

@@ -18,9 +18,14 @@ use winit::{
 mod save_panel;
 use save_panel::{Action as PanelAction, Mode as PanelMode, Panel};
 
-pub fn run(game: Game, mute: bool, quit_after_ms: Option<u32>) -> Result<()> {
+pub fn run(
+    game: Game,
+    quit_after_ms: Option<u32>,
+    initial_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
+) -> Result<()> {
     let event_loop = EventLoop::new().context("create desktop event loop")?;
-    let mut app = App::new(game, mute, quit_after_ms);
+    let mut app = App::new(game, quit_after_ms);
+    app.panel_audio = initial_audio;
     event_loop
         .run_app(&mut app)
         .context("run desktop event loop")?;
@@ -36,41 +41,35 @@ struct App {
     last: Instant,
     elapsed: u32,
     error: Option<String>,
-    mute: bool,
     quit_after_ms: Option<u32>,
-    muted_audio: Option<rugp_runtime::audio::AudioResources>,
+    audio_resources: Option<rugp_runtime::audio::AudioResources>,
     cursor: Option<(f64, f64)>,
     panel: Option<Panel>,
     panel_frame: Option<rugp_runtime::render::Framebuffer>,
     panel_font: Option<rugp_runtime::font::TextFont>,
     panel_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
     slot: u8,
-    #[cfg(feature = "audio")]
     audio: Option<rugp_runtime::audio_device::DeviceAudio>,
-    #[cfg(feature = "audio")]
     audio_tickets: std::collections::BTreeMap<u64, u64>,
 }
 impl App {
-    fn new(game: Game, mute: bool, quit_after_ms: Option<u32>) -> Self {
+    fn new(game: Game, quit_after_ms: Option<u32>) -> Self {
         Self {
             game,
-            mute,
             quit_after_ms,
             window: None,
             surface: None,
             last: Instant::now(),
             elapsed: 0,
             error: None,
-            muted_audio: None,
+            audio_resources: None,
             cursor: None,
             panel: None,
             panel_frame: None,
             panel_font: None,
             panel_audio: Vec::new(),
             slot: 0,
-            #[cfg(feature = "audio")]
             audio: None,
-            #[cfg(feature = "audio")]
             audio_tickets: std::collections::BTreeMap::new(),
         }
     }
@@ -112,8 +111,8 @@ impl App {
         if self.panel.is_none() {
             self.game.pointer_move(-1, -1)?;
             self.game.pointer_button(false)?;
-            if self.muted_audio.is_none() {
-                self.muted_audio = Some(rugp_runtime::audio::AudioResources::new(Arc::clone(
+            if self.audio_resources.is_none() {
+                self.audio_resources = Some(rugp_runtime::audio::AudioResources::new(Arc::clone(
                     &self.game.archive,
                 ))?);
             }
@@ -121,8 +120,7 @@ impl App {
             // unchanged virtual epoch, regardless of time spent in this UI.
             self.panel_audio = self
                 .game
-                .rebuild_audio_output(self.muted_audio.as_mut().unwrap())?;
-            #[cfg(feature = "audio")]
+                .rebuild_audio_output(self.audio_resources.as_mut().unwrap())?;
             {
                 if let Some(audio) = &mut self.audio {
                     audio.reset();
@@ -136,10 +134,6 @@ impl App {
     fn close_panel(&mut self) -> Result<()> {
         self.game.cancel_load_request()?;
         for playback in std::mem::take(&mut self.panel_audio) {
-            if self.mute {
-                continue;
-            }
-            #[cfg(feature = "audio")]
             {
                 if self.audio.is_none() {
                     self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
@@ -151,11 +145,6 @@ impl App {
                 } else {
                     self.game.finish_audio_ticket(playback.ticket);
                 }
-            }
-            #[cfg(not(feature = "audio"))]
-            {
-                let _ = playback;
-                bail!("device audio is not enabled in this build; use --features audio, or --mute");
             }
         }
         self.panel = None;
@@ -179,7 +168,7 @@ impl App {
                 self.game
                     .load_slot(
                         slot,
-                        self.muted_audio
+                        self.audio_resources
                             .as_mut()
                             .context("slot audio resources missing")?,
                     )
@@ -214,11 +203,7 @@ impl App {
         self.close_panel()
     }
     fn sounds(&mut self) -> Result<()> {
-        if self.mute {
-            return rugp_runtime::audio::mute_requests(&mut self.game, &mut self.muted_audio);
-        }
         for request in self.game.take_sounds() {
-            #[cfg(feature = "audio")]
             {
                 if self.audio.is_none() {
                     if request.source.is_none() && [254, 255].contains(&request.kind) {
@@ -235,10 +220,6 @@ impl App {
                         ticket,
                     );
                 }
-            }
-            #[cfg(not(feature = "audio"))]
-            if request.source.is_some() {
-                bail!("device audio is not enabled in this build; use --features audio, or --mute");
             }
         }
         Ok(())
@@ -294,7 +275,6 @@ impl App {
         // A failing VM tick may already have queued playback. Do not start it
         // after dropping the output device, or reopen a device on the error UI.
         self.game.take_sounds();
-        #[cfg(feature = "audio")]
         {
             self.audio = None;
             self.audio_tickets.clear();
@@ -328,6 +308,9 @@ impl ApplicationHandler for App {
                 .map_err(|e| anyhow::anyhow!("create software surface: {e}"))?;
             self.window = Some(window);
             self.surface = Some(surface);
+            if !self.panel_audio.is_empty() {
+                self.close_panel()?;
+            }
             self.last = Instant::now();
             Ok(())
         })();
@@ -398,6 +381,9 @@ impl ApplicationHandler for App {
                         let action = self.panel.as_mut().unwrap().key(key);
                         self.panel_action(action)
                     }
+                    PhysicalKey::Code(KeyCode::Escape | KeyCode::ControlLeft | KeyCode::ControlRight) => {
+                        self.game.skip_video().map(|_| ())
+                    }
                     PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::ArrowRight | KeyCode::Tab) => {
                         self.game.navigate_selection(1)
                     }
@@ -418,7 +404,6 @@ impl ApplicationHandler for App {
                 let dt = now.duration_since(self.last).as_millis().min(100) as u32;
                 self.last = now;
                 if self.error.is_none() && self.panel.is_none() {
-                    #[cfg(feature = "audio")]
                     if let Some(audio) = &self.audio {
                         self.audio_tickets.retain(|&runtime, &mut ticket| {
                             if audio.finished(ticket) {
@@ -523,7 +508,7 @@ mod tests {
             }
         }
         anyhow::ensure!(title && game.waiting_for_dialogue(), "story not reached");
-        let mut app = App::new(game, true, None);
+        let mut app = App::new(game, None);
         let cursor = app.game.vm.cursor().cloned();
         let pixels = app.game.frame().to_vec();
         let navigation = app.game.navigation.clone();

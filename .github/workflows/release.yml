@@ -65,10 +65,10 @@ jobs:
           rustup target add "$TARGET"
 
       - name: Test
-        run: cargo test --locked --workspace --features audio --target "$TARGET"
+        run: cargo test --locked --workspace --target "$TARGET"
 
       - name: Build
-        run: cargo build --locked --release --features audio --bin rugp_rs --target "$TARGET"
+        run: cargo build --locked --release --bin rugp_rs --target "$TARGET"
 
       - name: Smoke test
         run: |

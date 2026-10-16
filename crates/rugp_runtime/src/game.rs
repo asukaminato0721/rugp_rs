@@ -23,6 +23,7 @@ mod ending_tests;
 mod gallery;
 mod input_wait;
 mod menu;
+pub mod native_save;
 mod parse_screen;
 mod posture;
 mod profile;

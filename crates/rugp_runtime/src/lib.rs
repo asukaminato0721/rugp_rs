@@ -1,6 +1,5 @@
 //! Game state and software rendering, independent of the application/window host.
 pub mod audio;
-#[cfg(feature = "device-audio")]
 pub mod audio_device;
 pub mod audio_envelope;
 pub mod audio_spatial;

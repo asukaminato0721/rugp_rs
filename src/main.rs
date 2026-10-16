@@ -26,15 +26,19 @@ enum Command {
     ))]
     Play {
         #[arg(long)]
-        mute: bool,
-        #[arg(long)]
         quit_after_ms: Option<u32>,
         /// User-owned configuration/progress root; never written into the game archive directory.
         #[arg(long)]
         user_data_dir: Option<PathBuf>,
         /// Development diagnostic: execute the real VM on a muted virtual clock before opening a window.
-        #[arg(long, requires = "mute")]
+        #[arg(long)]
         fast_forward_ms: Option<u32>,
+        /// Import a Windows v19 UUC dialogue checkpoint before opening the window.
+        #[arg(long)]
+        load_uuc: Option<PathBuf>,
+        /// Native route selector ID after New Game. Repeat for each choice.
+        #[arg(long, requires = "load_uuc")]
+        choice: Vec<u32>,
         /// Japanese outline font; no font file is distributed with this port.
         #[arg(long)]
         font: Option<PathBuf>,
@@ -47,6 +51,21 @@ enum Command {
         output: PathBuf,
         #[arg(long, default_value_t = 1000)]
         time_ms: u32,
+        #[arg(long)]
+        font: Option<PathBuf>,
+        #[arg(long, default_value_t = 0, requires = "font")]
+        font_index: u32,
+    },
+    /// Import a Windows v19 UUC dialogue checkpoint into a Rust-port slot.
+    ImportSave {
+        input: PathBuf,
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..10))]
+        slot: u8,
+        #[arg(long)]
+        user_data_dir: Option<PathBuf>,
+        /// Native route selector IDs after New Game, in execution order.
+        #[arg(long)]
+        choice: Vec<u32>,
         #[arg(long)]
         font: Option<PathBuf>,
         #[arg(long, default_value_t = 0, requires = "font")]
@@ -135,10 +154,11 @@ fn main() -> Result<()> {
             any(target_os = "linux", target_os = "windows", target_os = "macos")
         ))]
         Command::Play {
-            mute,
             quit_after_ms,
             user_data_dir,
             fast_forward_ms,
+            load_uuc,
+            choice,
             font,
             font_index,
         } => {
@@ -151,10 +171,25 @@ fn main() -> Result<()> {
             if let Some(time) = fast_forward_ms {
                 advance_muted(&mut game, time)?;
             }
+            let mut initial_audio = Vec::new();
+            if let Some(path) = load_uuc {
+                let mut resources = rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
+                initial_audio = game.import_uuc(&path, &choice, &mut resources)?;
+                eprintln!("Imported UUC at {:?}", game.vm.cursor());
+            }
             if let Some(path) = game.user_data_dir() {
                 eprintln!("User data: {}", path.display());
             }
-            desktop::run(game, mute, quit_after_ms)?;
+            desktop::run(game, quit_after_ms, initial_audio)?;
+        }
+        Command::ImportSave { input, slot, user_data_dir, choice, font, font_index } => {
+            let directory = user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
+            let mut game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
+            if let Some(path) = font { game.set_font_file(&path, font_index)?; }
+            let mut resources = rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
+            game.import_uuc(&input, &choice, &mut resources)?;
+            game.save_slot(slot)?;
+            println!("Imported {} into slot {slot} at {:?}; user data: {}", input.display(), game.vm.cursor(), game.user_data_dir().context("user data missing")?.display());
         }
         Command::Frame {
             output,

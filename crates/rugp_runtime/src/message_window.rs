@@ -59,11 +59,32 @@ pub struct MessageConfig {
     pub speed_ms: u32,
     pub backdrop: Backdrop,
 }
+impl Default for MessageConfig {
+    fn default() -> Self {
+        // Installation defaults from the Latest Edition disc. Installed game
+        // directories can omit Setup.ini after the installer applies it.
+        Self {
+            family: "ＭＳ Ｐゴシック".into(),
+            font_size: 24,
+            speed_ms: 0,
+            backdrop: Backdrop {
+                color: [32, 32, 160],
+                source: 192,
+                destination_shift: 6,
+            },
+        }
+    }
+}
 impl MessageConfig {
     pub fn load(root: &Path) -> Result<Self> {
         use std::io::Read;
-        let file = std::fs::File::open(root.join("Setup.ini"))
-            .context("open message defaults in Setup.ini")?;
+        let file = match std::fs::File::open(root.join("Setup.ini")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(error) => return Err(error).context("open message defaults in Setup.ini"),
+        };
         ensure!(file.metadata()?.len() <= 1024 * 1024, "oversized Setup.ini");
         let mut bytes = Vec::new();
         file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;

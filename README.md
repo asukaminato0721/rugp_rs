@@ -74,13 +74,13 @@ Keep the original game files available and install a Japanese outline font
 The pinned Nix shell supplies the Linux audio/window build dependencies:
 
 ```sh
-nix develop --command cargo run --release --features audio -- --project-dir /run/media/w/KIMINOZO_LE play
+nix develop --command cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE play
 ```
 
 Enter/Space or a left-click reveals/advances dialogue; arrows and Enter choose
 menu items. **F5** opens Save, **F9** opens Load, and Escape cancels the slot
 chooser. The ten Rust-port slots are separate from original Windows UUC saves.
-For a build without device audio, omit `--features audio` and pass `--mute` to `play`.
+Audio playback is included in every build. `play` enables audio automatically.
 
 ## Inspection and diagnostics
 
@@ -101,7 +101,7 @@ cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-audio --deco
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE check-video --decode
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE video-frame 0xd0ba5f 200 movie.png
 cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE frame startup.png --time-ms 1000
-cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE play --mute
+cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE play
 ```
 
 Pass a game directory or its primary `.rio` file. All inputs remain untouched;
@@ -110,8 +110,7 @@ their project-tree ID. Disassembly emits JSON with exact stream offsets,
 in-memory command offsets, operation flags, and references.
 Use `--no-default-features` for the CLI without desktop/window dependencies.
 `play` executes the Rust game host; unsupported operations report their exact
-scene/address. `--mute` explicitly disables
-audio playback; PCM export/decoding works independently.
+scene/address. PCM export and decoding also work without opening an audio device.
 
 Dialogue uses an installed Japanese outline font, preferring the face specified
 in `Setup.ini`. Use `play --font /path/to/font.ttc --font-index 0` to supply a
@@ -120,15 +119,14 @@ Fallback fonts and portable rasterization can change glyph metrics/appearance.
 Click or press Enter/Space to reveal/advance dialogue; held-key repeats do not
 advance multiple messages. Exact GDI layout and speaker styling remain incomplete.
 
-For device audio, enable `--features audio`. On Linux this needs ALSA development
-files. The pinned Nix development shell supplies the audio/window dependencies:
+On Linux, building the audio output requires ALSA development files. The pinned Nix development shell supplies the audio/window dependencies:
 
 ```sh
 nix develop
-cargo run --release --features audio -- --project-dir /run/media/w/KIMINOZO_LE play
+cargo run --release -- --project-dir /run/media/w/KIMINOZO_LE play
 ```
 
-Muted/headless runs still honor the duration of scripted waiting one-shot sounds.
+Headless runs still honor the duration of scripted waiting one-shot sounds.
 Nonblocking sound-event queries (mode `0x20`) ignore their time operand, as
 the native query branch does; SC457's `32/400` packet no longer fails or adds
 a 400ms wait. Regression checks cover inactive, active and completed PCM,
@@ -287,7 +285,7 @@ epoch on return. Input used to close/load the chooser cannot confirm a restored
 page. Invalid/incompatible saves report a nonfatal error in the chooser and
 leave the current game intact. These are Rust-port saves, not Windows UUC files.
 The current audio-enabled release has also passed an isolated Xvfb/XTest window
-smoke check in muted mode: physical key presses enter the game, save slot 0,
+smoke check with audio output: physical key presses enter the game, save slot 0,
 cancel Load, reopen and load slot 0, and advance dialogue afterward. The separate
 desktop integration regression covers corrupt slots and held/released input.
 
@@ -382,7 +380,7 @@ confirmations and reports their count separately from dialogue pages.
 The native image title menu accepts mouse hover/press/release and arrow-key
 navigation (Enter/Space activates). Disabled selectors are excluded from input.
 Pointer mapping shares the presentation viewport, including letterboxing and
-resizing. `play --mute --fast-forward-ms 132000` executes the real startup on a
+resizing. `play --fast-forward-ms 132000` executes the real startup on a
 virtual clock before opening the window, for development testing; the default
 launcher does not fast-forward. It does not synthesize confirmation input:
 startup prompts can still require Enter/Space or a click.

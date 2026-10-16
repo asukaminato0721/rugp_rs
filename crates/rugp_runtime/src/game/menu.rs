@@ -257,6 +257,14 @@ impl Game {
             }
             return Ok(());
         }
+        if self.video.as_ref().is_some_and(|(_, player)| !player.finished()) {
+            if pressed {
+                self.dialogue_pressed = self.pointer_inside;
+            } else if std::mem::take(&mut self.dialogue_pressed) && self.pointer_inside {
+                self.skip_video()?;
+            }
+            return Ok(());
+        }
         if self.input_wait.is_some() {
             if pressed {
                 self.dialogue_pressed = self.pointer_inside;
@@ -318,6 +326,9 @@ impl Game {
         Ok(())
     }
     pub fn activate_selection(&mut self) -> Result<()> {
+        if self.skip_video()? {
+            return Ok(());
+        }
         if self.input_wait.is_some() {
             return self.finish_input_wait();
         }

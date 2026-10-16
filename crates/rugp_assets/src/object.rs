@@ -213,6 +213,12 @@ impl<'a> ObjectReader<'a> {
     pub fn reference(&mut self, shift: u32) -> Result<ObjectRef> {
         self.reference_at_depth(shift, 0)
     }
+    /// Native save archives initialize their cache separately and omit the
+    /// per-stream padding count used in RIO object bodies.
+    pub fn reference_without_count(&mut self, shift: u32) -> Result<ObjectRef> {
+        self.reference_started = true;
+        self.reference_at_depth(shift, 0)
+    }
     fn reference_at_depth(&mut self, shift: u32, depth: usize) -> Result<ObjectRef> {
         ensure!(depth < 128, "object reference exceeds recursion limit");
         if !self.reference_started {

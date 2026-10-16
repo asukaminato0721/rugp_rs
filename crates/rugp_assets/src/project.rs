@@ -10,6 +10,7 @@ pub struct GameProject {
     pub registry: String,
     pub game_version: String,
     pub title: String,
+    pub scenario_version: String,
     pub copyright: String,
 }
 
@@ -53,7 +54,7 @@ impl GameProject {
         };
         let game_version = r.input.string()?;
         let title = r.input.string()?;
-        r.input.string()?;
+        let scenario_version = r.input.string()?;
         let copyright = r.input.string()?;
         r.input.u32()?;
         if metadata_version > 0 {
@@ -92,6 +93,7 @@ impl GameProject {
             registry,
             game_version,
             title,
+            scenario_version,
             copyright,
         })
     }
