@@ -30,8 +30,10 @@ use menu_panel::{Action as MenuAction, MenuPanel, Page};
 use preferences::{FontPreferences, Preferences};
 use save_panel::{Action as PanelAction, Mode as PanelMode, Panel};
 
+pub type Reopen = Box<dyn Fn() -> Result<Game>>;
 pub fn run(
     game: Game,
+    reopen: Reopen,
     quit_after_ms: Option<u32>,
     initial_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
     save_dir: Option<std::path::PathBuf>,
@@ -44,6 +46,7 @@ pub fn run(
     eprintln!("Original saves: {}", native_saves.directory.display());
     let mut app = App::new(game, quit_after_ms, native_saves);
     app.read_log = read_log;
+    app.reopen = Some(reopen);
     app.apply_preferences(preferences)?;
     app.panel_audio = initial_audio;
     event_loop
@@ -68,10 +71,16 @@ struct App {
     panel: Option<Panel>,
     panel_frame: Option<rugp_runtime::render::Framebuffer>,
     panel_font: Option<rugp_runtime::font::TextFont>,
+    /// The 9pt system menu font of the retail popup.
+    menu_font: Option<rugp_runtime::font::TextFont>,
     panel_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
     slot: usize,
     native_saves: native_store::NativeStore,
     menu: Option<MenuPanel>,
+    /// Reopens the game for ゲームの一番最初に戻る.
+    reopen: Option<Reopen>,
+    /// Alt went down with no other key since; its release opens the menu bar.
+    alt_tap: bool,
     config: Option<ConfigWindow>,
     /// Creating a window needs the event loop, so opening is deferred to `about_to_wait`.
     config_requested: bool,
@@ -110,10 +119,13 @@ impl App {
             panel: None,
             panel_frame: None,
             panel_font: None,
+            menu_font: None,
             panel_audio: Vec::new(),
             slot: 0,
             native_saves,
             menu: None,
+            reopen: None,
+            alt_tap: false,
             config: None,
             config_requested: false,
             preferences: Preferences::default(),
@@ -157,11 +169,12 @@ impl App {
                 self.game.size(),
                 self.panel_font.as_mut().context("slot UI font missing")?,
             )?);
-        } else if let Some(menu) = &self.menu {
+        } else if let Some(menu) = &mut self.menu {
             self.panel_frame = Some(menu.render(
                 self.game.frame(),
                 self.game.size(),
-                self.panel_font.as_mut().context("menu font missing")?,
+                self.menu_font.as_mut().context("menu font missing")?,
+                self.game.title(),
             )?);
         }
         Ok(())
@@ -326,6 +339,9 @@ impl App {
         if self.panel_font.is_none() {
             self.panel_font = Some(self.game.interface_font(20)?);
         }
+        if self.menu_font.is_none() {
+            self.menu_font = Some(self.panel_font.as_ref().unwrap().resized(12)?);
+        }
         if !self.modal_open() {
             self.game.pointer_move(-1, -1)?;
             self.game.pointer_button(false)?;
@@ -344,14 +360,52 @@ impl App {
         }
         Ok(())
     }
-    fn open_menu(&mut self, page: Page) -> Result<()> {
+    /// Popups open at the cursor, or at `anchor` when given.
+    fn open_menu(&mut self, page: Page, anchor: Option<(i32, i32)>) -> Result<()> {
+        let anchor = anchor.unwrap_or_else(|| {
+            let (width, height) = self.game.size();
+            match self.cursor.map(|(x, y)| self.point(x, y)) {
+                Some((x, y)) if x >= 0 && y >= 0 => (x, y),
+                _ => (width as i32 / 2, height as i32 / 2),
+            }
+        });
+        // Vm60 greys save/load/restart while the script disables saving.
+        let saving = self.game.script_save_enabled();
+        let state = menu_panel::State {
+            read_skip: self.preferences.read_skip,
+            auto: self.controls.automatic(),
+            save: saving && !self.game.waiting_for_load(),
+            load: saving,
+            restart: saving && self.reopen.is_some(),
+        };
         self.pause_game()?;
         self.panel = None;
         self.text_hidden = false;
         self.history.close();
         self.close_config();
-        self.menu = Some(MenuPanel::new(page));
+        self.menu = Some(MenuPanel::new(page, anchor, state));
         self.refresh_panel()
+    }
+    /// ゲームの一番最初に戻る: reopen the game, keeping the session's settings.
+    fn restart(&mut self) -> Result<()> {
+        let Some(reopen) = &self.reopen else {
+            return self.close_panel();
+        };
+        let game = reopen()?;
+        self.panel_audio.clear();
+        self.close_panel()?;
+        self.game = game;
+        if let Some(audio) = &mut self.audio {
+            audio.reset();
+        }
+        self.audio_tickets.clear();
+        self.audio_resources = None;
+        self.shown_page = None;
+        self.history = history::History::default();
+        self.controls.stop();
+        self.apply_preferences(self.preferences.clone())?;
+        self.last = Instant::now();
+        Ok(())
     }
     fn open_config(&mut self) -> Result<()> {
         self.pause_game()?;
@@ -414,7 +468,7 @@ impl App {
             if self.controls.reading_skip() {
                 return self.set_read_skip(false);
             }
-            return self.open_menu(Page::Context);
+            return self.open_menu(Page::Context, None);
         }
         Ok(())
     }
@@ -429,9 +483,16 @@ impl App {
                 self.controls.toggle_auto();
                 Ok(())
             }
+            MenuAction::Save => self.open_panel(PanelMode::Save),
             MenuAction::Load => self.open_panel(PanelMode::Load),
+            MenuAction::RestartPrompt => self.open_menu(Page::Restart, None),
+            MenuAction::Restart => self.restart(),
+            MenuAction::MenuBar => {
+                let anchor = self.menu.as_ref().map(MenuPanel::anchor);
+                self.open_menu(Page::MenuBar, anchor)
+            }
             MenuAction::Settings => self.open_config(),
-            MenuAction::QuitPrompt => self.open_menu(Page::Quit),
+            MenuAction::QuitPrompt => self.open_menu(Page::Quit, None),
             MenuAction::Quit => {
                 self.exit_requested = true;
                 Ok(())
@@ -623,6 +684,7 @@ impl App {
     /// Pointer left or focus moved away: drop presses and continuous input.
     fn lose_pointer(&mut self) {
         self.cursor = None;
+        self.alt_tap = false;
         self.controls.stop();
         self.right_pressed = false;
         self.history.cancel_press();
@@ -736,6 +798,9 @@ impl ApplicationHandler for App {
         }
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
+        }
+        if matches!(event, WindowEvent::PointerButton { .. }) {
+            self.alt_tap = false;
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -863,9 +928,27 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. }
                 if matches!(
                     event.physical_key,
+                    PhysicalKey::Code(KeyCode::AltLeft | KeyCode::AltRight)
+                ) =>
+            {
+                // A lone Alt tap shows the retail menu bar, here a popup at its place.
+                if event.state == ElementState::Pressed {
+                    self.alt_tap |= !event.repeat;
+                } else if std::mem::take(&mut self.alt_tap)
+                    && self.error.is_none()
+                    && !self.modal_open()
+                    && let Err(error) = self.open_menu(Page::MenuBar, Some((0, 0)))
+                {
+                    self.fail(error);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if matches!(
+                    event.physical_key,
                     PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight)
                 ) =>
             {
+                self.alt_tap = false;
                 if let PhysicalKey::Code(key) = event.physical_key {
                     let down = event.state == ElementState::Pressed
                         && !self.modal_open()
@@ -878,6 +961,7 @@ impl ApplicationHandler for App {
                     && event.state == ElementState::Pressed
                     && !event.repeat =>
             {
+                self.alt_tap = false;
                 let result = match event.physical_key {
                     PhysicalKey::Code(KeyCode::F5) => self.open_panel(PanelMode::Save),
                     PhysicalKey::Code(KeyCode::F9) => self.open_panel(PanelMode::Load),
@@ -915,7 +999,7 @@ impl ApplicationHandler for App {
                         } else if self.controls.reading_skip() {
                             self.set_read_skip(false)
                         } else {
-                            self.open_menu(Page::Context)
+                            self.open_menu(Page::Context, None)
                         }
                     }
                     PhysicalKey::Code(KeyCode::KeyS) => {
@@ -1129,10 +1213,10 @@ mod tests {
         app.right_button(false)?;
         assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Context));
         assert!(!app.controls.active());
-        for _ in 0..6 {
-            app.menu.as_mut().unwrap().key(KeyCode::ArrowDown);
-        }
-        let action = app.menu.as_mut().unwrap().key(KeyCode::Enter);
+        let action = app.menu.as_mut().unwrap().key(KeyCode::KeyM);
+        app.menu_action(action)?;
+        assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::MenuBar));
+        let action = app.menu.as_mut().unwrap().key(KeyCode::KeyC);
         app.menu_action(action)?;
         // Settings open as a separate window once the event loop is idle.
         assert!(app.menu.is_none() && app.config_requested && app.modal_open());

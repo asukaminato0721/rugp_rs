@@ -223,17 +223,33 @@ fn stretch_outgoing(next: &mut Framebuffer, old: &Framebuffer, elapsed: u32, fad
         return;
     }
     let remaining = ((1.0 - progress) * 256.0).round() as u32;
-    let (sx, sy) = ((3.1 * progress).exp(), (0.25 * progress).exp());
+    // Each retail frame smears the stretch over one 1/30 s exposure.
+    const SAMPLES: usize = 6;
+    let exposure = 33.0 / f64::from(fade_ms.max(1));
+    let scales: Vec<(f64, f64)> = (0..SAMPLES)
+        .map(|i| {
+            let t = (progress - exposure * i as f64 / SAMPLES as f64).max(0.0);
+            ((3.1 * t).exp(), (0.25 * t).exp())
+        })
+        .collect();
     let (w, h) = (next.width as usize, next.height as usize);
     let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
     for y in 0..h {
-        let v = (((y as f64 + 0.5 - cy) / sy + cy).floor() as usize).min(h - 1);
         for x in 0..w {
-            let u = (((x as f64 + 0.5 - cx) / sx + cx).floor() as usize).min(w - 1);
-            let (o, i) = ((y * w + x) * 4, (v * w + u) * 4);
-            for c in 0..3 {
-                let (from, to) = (u32::from(old.rgba[i + c]), u32::from(next.rgba[o + c]));
-                next.rgba[o + c] = ((from * remaining + to * (256 - remaining) + 128) >> 8) as u8;
+            let mut sum = [0u32; 3];
+            for &(sx, sy) in &scales {
+                let u = (((x as f64 + 0.5 - cx) / sx + cx).floor() as usize).min(w - 1);
+                let v = (((y as f64 + 0.5 - cy) / sy + cy).floor() as usize).min(h - 1);
+                let i = (v * w + u) * 4;
+                for (total, &value) in sum.iter_mut().zip(&old.rgba[i..i + 3]) {
+                    *total += u32::from(value);
+                }
+            }
+            let o = (y * w + x) * 4;
+            for (out, total) in next.rgba[o..o + 3].iter_mut().zip(sum) {
+                let from = (total + SAMPLES as u32 / 2) / SAMPLES as u32;
+                let to = u32::from(*out);
+                *out = ((from * remaining + to * (256 - remaining) + 128) >> 8) as u8;
             }
         }
     }

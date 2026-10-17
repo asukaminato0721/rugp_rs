@@ -153,10 +153,15 @@ fn main() -> Result<()> {
         } => {
             let directory =
                 user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
-            let mut game = rugp_runtime::Game::open_persistent(&args.project_dir, &directory)?;
-            if let Some(path) = font {
-                game.set_font_file(&path, font_index)?;
-            }
+            let project_dir = args.project_dir.clone();
+            let reopen = move || -> Result<rugp_runtime::Game> {
+                let mut game = rugp_runtime::Game::open_persistent(&project_dir, &directory)?;
+                if let Some(path) = &font {
+                    game.set_font_file(path, font_index)?;
+                }
+                Ok(game)
+            };
+            let mut game = reopen()?;
             if let Some(time) = fast_forward_ms {
                 advance_muted(&mut game, time)?;
             }
@@ -174,7 +179,14 @@ fn main() -> Result<()> {
             if let Some(path) = game.user_data_dir() {
                 eprintln!("User data: {}", path.display());
             }
-            desktop::run(game, quit_after_ms, initial_audio, save_dir, choice)?;
+            desktop::run(
+                game,
+                Box::new(reopen),
+                quit_after_ms,
+                initial_audio,
+                save_dir,
+                choice,
+            )?;
         }
         Command::Frame {
             output,
