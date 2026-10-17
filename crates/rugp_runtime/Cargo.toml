@@ -13,6 +13,6 @@ fontdb = { version = "0.24", default-features = false, features = ["std", "fs", 
 rugp_assets = { path = "../rugp_assets" }
 rugp_scene_vm = { path = "../rugp_scene_vm" }
 kira = { version = "0.9", default-features = false, features = ["cpal"] }
+flate2 = "1.1"
 
 [dev-dependencies]
-flate2 = "1.1"

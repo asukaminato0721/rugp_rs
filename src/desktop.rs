@@ -19,16 +19,20 @@ use winit::{
 mod config_window;
 mod controls;
 mod egui_raster;
+mod egui_window;
 mod history;
+mod menu_bar;
 mod menu_panel;
 mod native_store;
+mod paint;
 mod preferences;
 mod read_log;
-mod save_panel;
-use config_window::{Action as ConfigAction, ConfigWindow, FontChoices};
-use menu_panel::{Action as MenuAction, MenuPanel, Page};
+mod save_store;
+mod save_window;
+use config_window::{Action as ConfigAction, ConfigWindow, FontChoices, Page as ConfigPage};
+use menu_panel::{Action as MenuAction, MenuPanel, Page, Toggle};
 use preferences::{FontPreferences, Preferences};
-use save_panel::{Action as PanelAction, Mode as PanelMode, Panel};
+use save_window::{Action as BrowserAction, Browser, Mode as BrowserMode, SaveWindow};
 
 pub type Reopen = Box<dyn Fn() -> Result<Game>>;
 pub fn run(
@@ -68,15 +72,20 @@ struct App {
     quit_after_ms: Option<u32>,
     audio_resources: Option<rugp_runtime::audio::AudioResources>,
     cursor: Option<(f64, f64)>,
-    panel: Option<Panel>,
     panel_frame: Option<rugp_runtime::render::Framebuffer>,
     panel_font: Option<rugp_runtime::font::TextFont>,
     /// The 9pt system menu font of the retail popup.
     menu_font: Option<rugp_runtime::font::TextFont>,
     panel_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
-    slot: usize,
+    /// The browser's last chosen file.
+    slot: u32,
     native_saves: native_store::NativeStore,
+    saves: save_store::SaveStore,
+    browser: Option<SaveWindow>,
+    /// Creating a window needs the event loop; see `config_requested`.
+    browser_requested: Option<Browser>,
     menu: Option<MenuPanel>,
+    bar: menu_bar::MenuBar,
     /// Reopens the game for ゲームの一番最初に戻る.
     reopen: Option<Reopen>,
     /// Alt went down with no other key since; its release opens the menu bar.
@@ -84,6 +93,8 @@ struct App {
     config: Option<ConfigWindow>,
     /// Creating a window needs the event loop, so opening is deferred to `about_to_wait`.
     config_requested: bool,
+    /// The property page a 設定 menu item opens.
+    config_page: ConfigPage,
     preferences: Preferences,
     controls: controls::Controls,
     right_pressed: bool,
@@ -105,7 +116,9 @@ impl App {
         quit_after_ms: Option<u32>,
         native_saves: native_store::NativeStore,
     ) -> Self {
+        let saves = save_store::SaveStore::new(game.user_data_dir());
         Self {
+            saves,
             game,
             quit_after_ms,
             window: None,
@@ -116,18 +129,21 @@ impl App {
             error: None,
             audio_resources: None,
             cursor: None,
-            panel: None,
             panel_frame: None,
             panel_font: None,
             menu_font: None,
             panel_audio: Vec::new(),
-            slot: 0,
+            slot: 1,
             native_saves,
+            browser: None,
+            browser_requested: None,
             menu: None,
+            bar: menu_bar::MenuBar::default(),
             reopen: None,
             alt_tap: false,
             config: None,
             config_requested: false,
+            config_page: ConfigPage::Screen,
             preferences: Preferences::default(),
             controls: controls::Controls::default(),
             right_pressed: false,
@@ -142,15 +158,105 @@ impl App {
             left_fullscreen: false,
         }
     }
+    /// Game pixels plus, in a window, the menu bar above them.
+    fn canvas_size(&self) -> (u32, u32) {
+        let (width, height) = self.game.size();
+        (width, height + bar_offset(self.preferences.fullscreen))
+    }
+    fn viewport(&self) -> Option<Viewport> {
+        let size = self.window.as_ref()?.surface_size();
+        let (width, height) = self.canvas_size();
+        Viewport::fit(size.width, size.height, width, height)
+    }
+    fn canvas_point(&self, x: f64, y: f64) -> Option<(i32, i32)> {
+        self.viewport()?.point(x, y)
+    }
+    /// Logical game coordinates, or (-1, -1) outside the game.
     fn point(&self, x: f64, y: f64) -> (i32, i32) {
-        let Some(window) = self.window.as_ref() else {
-            return (-1, -1);
-        };
-        let size = window.surface_size();
-        let (gw, gh) = self.game.size();
-        Viewport::fit(size.width, size.height, gw, gh)
-            .and_then(|v| v.point(x, y))
-            .unwrap_or((-1, -1))
+        let offset = bar_offset(self.preferences.fullscreen) as i32;
+        match self.canvas_point(x, y) {
+            Some((x, y)) if y >= offset => (x, y - offset),
+            _ => (-1, -1),
+        }
+    }
+    fn bar_visible(&self) -> bool {
+        !self.preferences.fullscreen || self.bar.reveal || self.bar_open().is_some()
+    }
+    /// The menu-bar title whose dropdown is showing.
+    fn bar_open(&self) -> Option<usize> {
+        match self.menu.as_ref()?.page {
+            Page::Bar(index) => Some(index),
+            _ => None,
+        }
+    }
+    /// The bar title under a window position, when the bar is showing.
+    fn bar_hit(&self, x: f64, y: f64) -> Option<Option<usize>> {
+        let (x, y) = self.canvas_point(x, y)?;
+        (self.bar_visible() && y < menu_bar::HEIGHT).then(|| self.bar.hit(x, y))
+    }
+    fn pointer_moved(&mut self, x: f64, y: f64) -> Result<()> {
+        // Fullscreen hides the bar until the pointer touches the top edge.
+        if self.preferences.fullscreen {
+            match self.canvas_point(x, y) {
+                Some((_, y)) if y <= 1 => self.bar.reveal = true,
+                Some((_, y)) if y < menu_bar::HEIGHT => {}
+                _ => self.bar.reveal = false,
+            }
+        }
+        self.bar.hover = self.bar_hit(x, y).flatten();
+        // Win32 follows the pointer from one open dropdown to another title.
+        if let (Some(open), Some(hover)) = (self.bar_open(), self.bar.hover)
+            && open != hover
+            && hover != menu_bar::QUIT
+        {
+            return self.open_bar(hover);
+        }
+        let point = self.point(x, y);
+        if let Some(menu) = &mut self.menu {
+            menu.pointer(point.0, point.1);
+            self.refresh_panel()
+        } else if !self.modal_open() {
+            self.move_pointer(x, y)
+        } else {
+            Ok(())
+        }
+    }
+    /// A left press or release on the menu bar, if it is one.
+    fn bar_button(&mut self, pressed: bool) -> Option<Result<()>> {
+        let (x, y) = self.cursor?;
+        let hit = self.bar_hit(x, y);
+        if pressed {
+            let index = hit??;
+            self.bar.pressed = true;
+            if self.config_open() || self.browser_open() {
+                if let Some(config) = &self.config {
+                    config.focus();
+                }
+                if let Some(browser) = &self.browser {
+                    browser.focus();
+                }
+                return Some(Ok(()));
+            }
+            if let Some(menu) = &mut self.menu {
+                menu.cancel_press();
+            }
+            return Some(match index {
+                menu_bar::QUIT => Ok(()),
+                index if self.bar_open() == Some(index) => self.close_panel(),
+                index => self.open_bar(index),
+            });
+        }
+        if !std::mem::take(&mut self.bar.pressed) {
+            return None;
+        }
+        Some(
+            if hit.flatten() == Some(menu_bar::QUIT) && !self.config_open() && !self.browser_open()
+            {
+                self.open_menu(Page::Quit, None)
+            } else {
+                Ok(())
+            },
+        )
     }
     fn move_pointer(&mut self, x: f64, y: f64) -> Result<()> {
         let (x, y) = self.point(x, y);
@@ -163,12 +269,6 @@ impl App {
                 self.game.size(),
                 self.panel_font.as_mut().context("history font missing")?,
             )?);
-        } else if let Some(panel) = &self.panel {
-            self.panel_frame = Some(panel.render(
-                self.game.frame(),
-                self.game.size(),
-                self.panel_font.as_mut().context("slot UI font missing")?,
-            )?);
         } else if let Some(menu) = &mut self.menu {
             self.panel_frame = Some(menu.render(
                 self.game.frame(),
@@ -180,11 +280,14 @@ impl App {
         Ok(())
     }
     fn modal_open(&self) -> bool {
-        self.panel.is_some()
+        self.browser_open()
             || self.menu.is_some()
             || self.config_open()
             || self.text_hidden
             || self.history.opened
+    }
+    fn browser_open(&self) -> bool {
+        self.browser.is_some() || self.browser_requested.is_some()
     }
     fn config_open(&self) -> bool {
         self.config.is_some() || self.config_requested
@@ -200,7 +303,7 @@ impl App {
         self.remember_dialogue();
         self.pause_game()?;
         self.close_config();
-        self.panel = None;
+        self.close_browser();
         self.menu = None;
         self.text_hidden = false;
         self.history.open();
@@ -212,7 +315,7 @@ impl App {
         };
         self.pause_game()?;
         self.close_config();
-        self.panel = None;
+        self.close_browser();
         self.menu = None;
         self.history.close();
         self.text_hidden = true;
@@ -304,12 +407,11 @@ impl App {
         let (Some(window), Some((x, y))) = (&self.window, self.game.selection_focus_point()) else {
             return Ok(());
         };
-        let size = window.surface_size();
-        let (gw, gh) = self.game.size();
-        let Some(viewport) = Viewport::fit(size.width, size.height, gw, gh) else {
+        let Some(viewport) = self.viewport() else {
             return Ok(());
         };
-        let (wx, wy) = viewport.window_point(x, y);
+        let offset = bar_offset(self.preferences.fullscreen) as i32;
+        let (wx, wy) = viewport.window_point(x, y + offset);
         if window
             .set_cursor_position(PhysicalPosition::new(wx, wy).into())
             .is_ok()
@@ -330,8 +432,18 @@ impl App {
     }
     fn window_size(&self, preferences: &Preferences) -> PhysicalSize<u32> {
         let (width, height) = self.game.size();
+        let height = height + bar_offset(preferences.fullscreen);
         let scale = u32::from(preferences.window_scale);
         PhysicalSize::new(width * scale / 100, height * scale / 100)
+    }
+    fn ensure_menu_font(&mut self) -> Result<()> {
+        if self.panel_font.is_none() {
+            self.panel_font = Some(self.game.interface_font(20)?);
+        }
+        if self.menu_font.is_none() {
+            self.menu_font = Some(self.panel_font.as_ref().unwrap().resized(12)?);
+        }
+        Ok(())
     }
     fn pause_game(&mut self) -> Result<()> {
         self.controls.stop();
@@ -339,9 +451,7 @@ impl App {
         if self.panel_font.is_none() {
             self.panel_font = Some(self.game.interface_font(20)?);
         }
-        if self.menu_font.is_none() {
-            self.menu_font = Some(self.panel_font.as_ref().unwrap().resized(12)?);
-        }
+        self.ensure_menu_font()?;
         if !self.modal_open() {
             self.game.pointer_move(-1, -1)?;
             self.game.pointer_button(false)?;
@@ -377,9 +487,17 @@ impl App {
             save: saving && !self.game.waiting_for_load(),
             load: saving,
             restart: saving && self.reopen.is_some(),
+            fullscreen: self.preferences.fullscreen,
+            scale: self.preferences.window_scale,
+            sound: [
+                self.preferences.channels[0],
+                self.preferences.channels[2],
+                self.preferences.channels[1],
+            ],
+            mouse_follow: self.preferences.mouse_follow,
         };
         self.pause_game()?;
-        self.panel = None;
+        self.close_browser();
         self.text_hidden = false;
         self.history.close();
         self.close_config();
@@ -409,7 +527,7 @@ impl App {
     }
     fn open_config(&mut self) -> Result<()> {
         self.pause_game()?;
-        self.panel = None;
+        self.close_browser();
         self.menu = None;
         self.text_hidden = false;
         self.history.close();
@@ -428,6 +546,7 @@ impl App {
             self.preferences.clone(),
             fonts,
             font.face(),
+            self.config_page,
         )?);
         Ok(())
     }
@@ -483,16 +602,60 @@ impl App {
                 self.controls.toggle_auto();
                 Ok(())
             }
-            MenuAction::Save => self.open_panel(PanelMode::Save),
-            MenuAction::Load => self.open_panel(PanelMode::Load),
+            MenuAction::Save => self.open_browser(BrowserMode::Save),
+            MenuAction::Load => self.open_browser(BrowserMode::Load),
             MenuAction::RestartPrompt => self.open_menu(Page::Restart, None),
             MenuAction::Restart => self.restart(),
-            MenuAction::MenuBar => {
-                let anchor = self.menu.as_ref().map(MenuPanel::anchor);
-                self.open_menu(Page::MenuBar, anchor)
+            MenuAction::MenuBar => self.open_bar(0),
+            MenuAction::BarStep(step) => {
+                let count = menu_bar::TITLES.len() as isize;
+                let mut next = self.bar_open().unwrap_or(0) as isize;
+                loop {
+                    next = (next + step).rem_euclid(count);
+                    if next as usize != menu_bar::QUIT {
+                        break;
+                    }
+                }
+                self.open_bar(next as usize)
             }
-            MenuAction::Settings => self.open_config(),
-            MenuAction::QuitPrompt => self.open_menu(Page::Quit, None),
+            MenuAction::Fullscreen(fullscreen) => self.change_preferences(|p| {
+                p.fullscreen = fullscreen;
+            }),
+            MenuAction::Scale(scale) => self.change_preferences(|p| {
+                p.fullscreen = false;
+                p.window_scale = scale;
+            }),
+            MenuAction::Toggle(Toggle::ReadSkip) => {
+                self.close_panel()?;
+                self.set_read_skip(!self.preferences.read_skip)
+            }
+            MenuAction::Toggle(toggle) => self.change_preferences(|p| match toggle {
+                Toggle::Bgm => p.channels[0] ^= true,
+                Toggle::Voice => p.channels[1] ^= true,
+                Toggle::Effects => p.channels[2] ^= true,
+                Toggle::MouseFollow => p.mouse_follow ^= true,
+                Toggle::ReadSkip => {}
+            }),
+            MenuAction::Config(page) => {
+                self.config_page = page;
+                if let Some(config) = &mut self.config {
+                    config.show_page(page);
+                }
+                self.open_config()
+            }
+            MenuAction::Help(simple) => {
+                self.close_panel()?;
+                let root = self.game.archive.volumes[0]
+                    .path
+                    .parent()
+                    .context("game root missing")?;
+                let document = root.join(if simple { "Manual.txt" } else { "index.htm" });
+                if let Err(error) = open_document(&document) {
+                    eprintln!("Help: {error:#}");
+                }
+                Ok(())
+            }
+            MenuAction::About => self.open_menu(Page::About, None),
             MenuAction::Quit => {
                 self.exit_requested = true;
                 Ok(())
@@ -503,20 +666,144 @@ impl App {
             }
         }
     }
-    fn open_panel(&mut self, mode: PanelMode) -> Result<()> {
-        if self.game.waiting_for_load() && mode == PanelMode::Save {
+    fn can_save(&self) -> bool {
+        self.game.script_save_enabled() && !self.game.waiting_for_load() && !self.game.ended()
+    }
+    /// Drop a menu-bar menu under its title.
+    fn open_bar(&mut self, index: usize) -> Result<()> {
+        let top = if self.preferences.fullscreen {
+            menu_bar::HEIGHT
+        } else {
+            0
+        };
+        self.open_menu(Page::Bar(index), Some((self.bar.left(index), top)))
+    }
+    /// A menu-bar switch: persist it like a settings change.
+    fn change_preferences(&mut self, change: impl FnOnce(&mut Preferences)) -> Result<()> {
+        self.close_panel()?;
+        let mut preferences = self.preferences.clone();
+        change(&mut preferences);
+        if let Err(error) = preferences.save(self.game.user_data_dir()) {
+            eprintln!("Settings: {error:#}");
+        }
+        self.apply_preferences(preferences)
+    }
+    fn open_browser(&mut self, mode: BrowserMode) -> Result<()> {
+        if mode == BrowserMode::Save && !self.can_save() {
             return Ok(());
         }
-        let occupied = self.native_saves.slots()?;
+        if let Some(browser) = &self.browser
+            && browser.mode() == mode
+        {
+            browser.focus();
+            return Ok(());
+        }
+        let entries = self.saves.list(&self.native_saves)?;
+        self.remember_dialogue();
+        let comment = save_store::default_comment(&self.game, self.history.last_page());
         self.pause_game()?;
         self.close_config();
+        self.close_browser();
         self.menu = None;
         self.text_hidden = false;
         self.history.close();
-        let mut panel = Panel::new(mode, self.slot, occupied);
-        panel.double_click = self.preferences.system.double_click_lists;
-        self.panel = Some(panel);
-        self.refresh_panel()
+        self.panel_frame = None;
+        self.browser_requested = Some(Browser::new(
+            mode,
+            entries,
+            self.slot,
+            self.preferences.system.double_click_lists,
+            comment,
+        ));
+        Ok(())
+    }
+    fn create_browser(&mut self, event_loop: &dyn ActiveEventLoop) -> Result<()> {
+        let Some(browser) = self.browser_requested.take() else {
+            return Ok(());
+        };
+        let font = self
+            .panel_font
+            .as_ref()
+            .context("save browser font missing")?;
+        self.browser = Some(SaveWindow::open(event_loop, font.face(), browser)?);
+        Ok(())
+    }
+    fn close_browser(&mut self) {
+        self.browser = None;
+        self.browser_requested = None;
+    }
+    fn browser_action(&mut self, action: BrowserAction) -> Result<()> {
+        let result = match &action {
+            BrowserAction::None => return Ok(()),
+            BrowserAction::Close => return self.close_panel(),
+            BrowserAction::Save { slot, comment } => self.write_save(*slot, comment.clone()),
+            BrowserAction::Load { slot, kind } => self.load_save(*slot, *kind),
+            BrowserAction::Comment { slot, comment } => self.saves.set_comment(*slot, comment),
+            BrowserAction::Important { slot, important } => {
+                self.saves.set_important(*slot, *important)
+            }
+            BrowserAction::Delete(slot) => self.saves.delete(*slot),
+        };
+        if let Err(error) = result {
+            eprintln!("Save browser: {error:#}");
+            let message = match action {
+                BrowserAction::Save { .. } => {
+                    format!("セーブに失敗しました。\n{error}")
+                }
+                BrowserAction::Load { .. } => {
+                    format!("ロードに失敗しました。現在のゲームは変更されていません。\n{error}")
+                }
+                _ => format!("セーブファイルを正しく開けませんでした。\n{error}"),
+            };
+            if let Some(browser) = &mut self.browser {
+                browser.browser().show_message(message);
+            }
+            self.last = Instant::now();
+            return Ok(());
+        }
+        match action {
+            BrowserAction::Save { slot, .. } | BrowserAction::Load { slot, .. } => {
+                self.slot = slot;
+                eprintln!("File {slot}: done");
+                if matches!(action, BrowserAction::Load { .. }) {
+                    self.apply_preferences(self.preferences.clone())?;
+                    self.history.forget_cursor();
+                    self.shown_page = None;
+                }
+                self.close_panel()
+            }
+            _ => {
+                let entries = self.saves.list(&self.native_saves)?;
+                if let Some(browser) = &mut self.browser {
+                    browser.browser().set_entries(entries);
+                }
+                Ok(())
+            }
+        }
+    }
+    fn write_save(&mut self, slot: u32, comment: String) -> Result<()> {
+        anyhow::ensure!(self.can_save(), "saving is not available now");
+        let snapshot = self.game.snapshot()?;
+        let header = save_store::header(&self.game, comment);
+        self.saves.save(slot, &header, &snapshot)
+    }
+    fn load_save(&mut self, slot: u32, kind: save_store::Kind) -> Result<()> {
+        let resources = self
+            .audio_resources
+            .as_mut()
+            .context("load audio resources missing")?;
+        self.panel_audio = match kind {
+            save_store::Kind::Port => {
+                let snapshot = self.saves.load(slot)?;
+                self.game.restore_snapshot(&snapshot, resources)?
+            }
+            save_store::Kind::Original => self.game.import_uuc(
+                &self.native_saves.path(slot),
+                &self.native_saves.choices,
+                resources,
+            )?,
+        };
+        Ok(())
     }
     fn close_panel(&mut self) -> Result<()> {
         self.game.cancel_load_request()?;
@@ -528,7 +815,7 @@ impl App {
             }
         }
         self.close_config();
-        self.panel = None;
+        self.close_browser();
         self.menu = None;
         self.text_hidden = false;
         self.history.close();
@@ -539,53 +826,6 @@ impl App {
             self.move_pointer(x, y)?;
         }
         Ok(())
-    }
-    fn panel_action(&mut self, action: PanelAction) -> Result<()> {
-        if let Some(panel) = &self.panel {
-            self.slot = panel.slot;
-        }
-        let result = match action {
-            PanelAction::None => return self.refresh_panel(),
-            PanelAction::Cancel => return self.close_panel(),
-            PanelAction::Save(_) => Err(anyhow::anyhow!("native UUC writing is not implemented")),
-            PanelAction::Load(slot) => self
-                .game
-                .import_uuc(
-                    &self.native_saves.path(slot),
-                    &self.native_saves.choices,
-                    self.audio_resources
-                        .as_mut()
-                        .context("load audio resources missing")?,
-                )
-                .map(|resumes| {
-                    self.panel_audio = resumes;
-                }),
-        };
-        if let Err(error) = result {
-            eprintln!("Slot {}: {error:#}", self.slot);
-            if let Some(panel) = &mut self.panel {
-                panel.notice = if panel.mode == PanelMode::Save {
-                    "原版セーブの書き込みは未対応です。"
-                } else {
-                    "ロードできません。現在のゲームは変更されていません。詳細は端末。"
-                }
-                .into();
-            }
-            self.last = Instant::now();
-            return self.refresh_panel();
-        }
-        eprintln!(
-            "Slot {}: {}",
-            self.slot,
-            if matches!(action, PanelAction::Save(_)) {
-                "saved"
-            } else {
-                "loaded"
-            }
-        );
-        self.apply_preferences(self.preferences.clone())?;
-        self.history.forget_cursor();
-        self.close_panel()
     }
     fn sounds(&mut self) -> Result<()> {
         for request in self.game.take_sounds() {
@@ -623,7 +863,37 @@ impl App {
         }
         Ok(())
     }
+    /// The game or modal frame with the menu bar above or over it.
+    fn compose(&mut self) -> Result<Option<Vec<u8>>> {
+        if !self.bar_visible() {
+            return Ok(None);
+        }
+        self.ensure_menu_font()?;
+        let (width, _) = self.game.size();
+        let open = self.bar_open();
+        let strip = self
+            .bar
+            .render(self.menu_font.as_mut().unwrap(), width, open)?;
+        let frame = self
+            .panel_frame
+            .as_ref()
+            .map_or_else(|| self.game.frame(), |f| f.rgba.as_slice());
+        let mut canvas = Vec::with_capacity(strip.rgba.len() + frame.len());
+        if bar_offset(self.preferences.fullscreen) > 0 {
+            canvas.extend_from_slice(&strip.rgba);
+            canvas.extend_from_slice(frame);
+        } else {
+            canvas.extend_from_slice(frame);
+            canvas[..strip.rgba.len()].copy_from_slice(&strip.rgba);
+        }
+        Ok(Some(canvas))
+    }
     fn present(&mut self) -> Result<()> {
+        if self.window.is_none() {
+            return Ok(());
+        }
+        let canvas = self.compose()?;
+        let (gw, gh) = self.canvas_size();
         let Some(window) = &self.window else {
             return Ok(());
         };
@@ -643,7 +913,6 @@ impl App {
             .buffer_mut()
             .map_err(|e| anyhow::anyhow!("acquire window buffer: {e}"))?;
         output.fill(0);
-        let (gw, gh) = self.game.size();
         let viewport = Viewport::fit(size.width, size.height, gw, gh)
             .context("invalid presentation viewport")?;
         let (width, height, left, top) = (
@@ -652,10 +921,11 @@ impl App {
             viewport.left as usize,
             viewport.top as usize,
         );
-        let frame = self
-            .panel_frame
-            .as_ref()
-            .map_or_else(|| self.game.frame(), |f| f.rgba.as_slice());
+        let frame = canvas.as_deref().unwrap_or_else(|| {
+            self.panel_frame
+                .as_ref()
+                .map_or_else(|| self.game.frame(), |f| f.rgba.as_slice())
+        });
         let stride = size.width as usize;
         if self.preferences.system.bilinear && (width, height) != (gw as usize, gh as usize) {
             scale_bilinear(
@@ -685,15 +955,14 @@ impl App {
     fn lose_pointer(&mut self) {
         self.cursor = None;
         self.alt_tap = false;
+        self.bar.hover = None;
+        self.bar.pressed = false;
+        self.bar.reveal = false;
         self.controls.stop();
         self.right_pressed = false;
         self.history.cancel_press();
         if let Some(menu) = &mut self.menu {
             menu.cancel_press();
-            return;
-        }
-        if let Some(panel) = &mut self.panel {
-            panel.cancel_press();
             return;
         }
         if let Err(error) = self
@@ -721,6 +990,33 @@ impl App {
 
 /// システム: 拡大縮小系のバイリニアフィルタリング. RGBA source into the 0RGB
 /// window buffer's viewport, sampling at pixel centres in 8-bit fixed point.
+/// Rows the window's menu bar takes above the game; fullscreen overlays it.
+fn bar_offset(fullscreen: bool) -> u32 {
+    if fullscreen {
+        0
+    } else {
+        menu_bar::HEIGHT as u32
+    }
+}
+
+/// ヘルプの参照: hand a disc document to the desktop's viewer.
+fn open_document(path: &std::path::Path) -> Result<()> {
+    anyhow::ensure!(path.is_file(), "{} not found", path.display());
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    let mut child = command.arg(path).spawn().context("start document viewer")?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
 fn scale_bilinear(
     frame: &[u8],
     (gw, gh): (usize, usize),
@@ -796,6 +1092,19 @@ impl ApplicationHandler for App {
             }
             return;
         }
+        if let Some(browser) = &mut self.browser
+            && browser.id() == id
+        {
+            let action = if event == WindowEvent::RedrawRequested {
+                browser.redraw()
+            } else {
+                Ok(browser.event(&event))
+            };
+            if let Err(error) = action.and_then(|action| self.browser_action(action)) {
+                self.fail(error);
+            }
+            return;
+        }
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
@@ -806,19 +1115,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::PointerMoved { position, .. } if self.error.is_none() => {
                 self.cursor = Some((position.x, position.y));
-                if let Some(menu) = &mut self.menu {
-                    let (width, height) = self.game.size();
-                    let size = self.window.as_ref().unwrap().surface_size();
-                    let (x, y) = Viewport::fit(size.width, size.height, width, height)
-                        .and_then(|v| v.point(position.x, position.y))
-                        .unwrap_or((-1, -1));
-                    menu.pointer(x, y);
-                    if let Err(error) = self.refresh_panel() {
-                        self.fail(error);
-                    }
-                } else if !self.modal_open()
-                    && let Err(error) = self.move_pointer(position.x, position.y)
-                {
+                if let Err(error) = self.pointer_moved(position.x, position.y) {
                     self.fail(error);
                 }
             }
@@ -849,7 +1146,9 @@ impl ApplicationHandler for App {
                 if self.error.is_none()
                     && button.clone().mouse_button() == Some(MouseButton::Left) =>
             {
-                let result = if self.text_hidden {
+                let result = if let Some(result) = self.bar_button(state == ElementState::Pressed) {
+                    result
+                } else if self.text_hidden {
                     if state == ElementState::Released {
                         self.close_panel()
                     } else {
@@ -862,14 +1161,6 @@ impl ApplicationHandler for App {
                     } else {
                         self.refresh_panel()
                     }
-                } else if self.panel.is_some() {
-                    let (x, y) = self.cursor.map_or((-1, -1), |(x, y)| self.point(x, y));
-                    let action =
-                        self.panel
-                            .as_mut()
-                            .unwrap()
-                            .button(x, y, state == ElementState::Pressed);
-                    self.panel_action(action)
                 } else if self.menu.is_some() {
                     let (x, y) = self.cursor.map_or((-1, -1), |(x, y)| self.point(x, y));
                     let action =
@@ -878,9 +1169,12 @@ impl ApplicationHandler for App {
                             .unwrap()
                             .button(x, y, state == ElementState::Pressed);
                     self.menu_action(action)
-                } else if self.config_open() {
+                } else if self.config_open() || self.browser_open() {
                     if let Some(config) = &self.config {
                         config.focus();
+                    }
+                    if let Some(browser) = &self.browser {
+                        browser.focus();
                     }
                     Ok(())
                 } else if self.controls.active()
@@ -937,7 +1231,7 @@ impl ApplicationHandler for App {
                 } else if std::mem::take(&mut self.alt_tap)
                     && self.error.is_none()
                     && !self.modal_open()
-                    && let Err(error) = self.open_menu(Page::MenuBar, Some((0, 0)))
+                    && let Err(error) = self.open_bar(0)
                 {
                     self.fail(error);
                 }
@@ -963,8 +1257,8 @@ impl ApplicationHandler for App {
             {
                 self.alt_tap = false;
                 let result = match event.physical_key {
-                    PhysicalKey::Code(KeyCode::F5) => self.open_panel(PanelMode::Save),
-                    PhysicalKey::Code(KeyCode::F9) => self.open_panel(PanelMode::Load),
+                    PhysicalKey::Code(KeyCode::F5) => self.open_browser(BrowserMode::Save),
+                    PhysicalKey::Code(KeyCode::F9) => self.open_browser(BrowserMode::Load),
                     PhysicalKey::Code(KeyCode::F2) => {
                         if self.config_open() {
                             self.close_panel()
@@ -973,7 +1267,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     PhysicalKey::Code(KeyCode::Escape) if self.config_open() => self.close_panel(),
-                    _ if self.config_open() => Ok(()),
+                    _ if self.config_open() || self.browser_open() => Ok(()),
                     PhysicalKey::Code(
                         KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape,
                     ) if self.text_hidden => self.close_panel(),
@@ -988,10 +1282,6 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(key) if self.menu.is_some() => {
                         let action = self.menu.as_mut().unwrap().key(key);
                         self.menu_action(action)
-                    }
-                    PhysicalKey::Code(key) if self.panel.is_some() => {
-                        let action = self.panel.as_mut().unwrap().key(key);
-                        self.panel_action(action)
                     }
                     PhysicalKey::Code(KeyCode::Escape) => {
                         if self.game.video().is_some_and(|v| !v.finished()) {
@@ -1124,7 +1414,7 @@ impl ApplicationHandler for App {
                     }
                     if self.error.is_none()
                         && self.game.waiting_for_load()
-                        && let Err(e) = self.open_panel(PanelMode::Load)
+                        && let Err(e) = self.open_browser(BrowserMode::Load)
                     {
                         self.fail(e);
                     }
@@ -1169,8 +1459,20 @@ impl ApplicationHandler for App {
                 self.fail(error);
             }
         }
+        if self.browser_requested.is_some()
+            && self.error.is_none()
+            && let Err(error) = self.create_browser(event_loop)
+        {
+            eprintln!("Save browser: {error:#}");
+            if let Err(error) = self.close_panel() {
+                self.fail(error);
+            }
+        }
         if let Some(config) = &self.config {
             config.wake(Instant::now());
+        }
+        if let Some(browser) = &self.browser {
+            browser.wake(Instant::now());
         }
         let deadline = self.last + Duration::from_millis(16);
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
@@ -1215,9 +1517,13 @@ mod tests {
         assert!(!app.controls.active());
         let action = app.menu.as_mut().unwrap().key(KeyCode::KeyM);
         app.menu_action(action)?;
-        assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::MenuBar));
-        let action = app.menu.as_mut().unwrap().key(KeyCode::KeyC);
+        assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Bar(0)));
+        let action = app.menu.as_mut().unwrap().key(KeyCode::ArrowRight);
         app.menu_action(action)?;
+        assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Bar(1)));
+        let action = app.menu.as_mut().unwrap().key(KeyCode::KeyX);
+        app.menu_action(action)?;
+        assert_eq!(app.config_page, ConfigPage::Text);
         // Settings open as a separate window once the event loop is idle.
         assert!(app.menu.is_none() && app.config_requested && app.modal_open());
         assert!(!app.controls.active());
@@ -1228,12 +1534,13 @@ mod tests {
         app.right_button(true)?;
         app.right_button(false)?;
         if let Some(path) = std::env::var_os("RUGP_TEST_MENU_PNG") {
-            let frame = app.panel_frame.as_ref().context("menu frame missing")?;
-            let mut encoder =
-                png::Encoder::new(std::fs::File::create(path)?, frame.width, frame.height);
+            // The window's canvas: menu bar above the game and its popup.
+            let canvas = app.compose()?.context("menu bar hidden")?;
+            let (width, height) = app.canvas_size();
+            let mut encoder = png::Encoder::new(std::fs::File::create(path)?, width, height);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);
-            encoder.write_header()?.write_image_data(&frame.rgba)?;
+            encoder.write_header()?.write_image_data(&canvas)?;
         }
         app.right_button(true)?;
         app.right_button(false)?;
@@ -1248,22 +1555,68 @@ mod tests {
         assert_eq!(app.game.frame(), pixels);
         app.game.pointer_button(false)?;
         assert_eq!(app.game.vm.cursor(), cursor.as_ref());
-        app.open_panel(PanelMode::Load)?;
-        app.panel_action(PanelAction::Load(1))?;
-        assert!(app.panel.is_some());
-        assert!(!app.panel.as_ref().unwrap().notice.is_empty());
+        app.open_browser(BrowserMode::Load)?;
+        assert!(app.browser_open());
+        app.browser_action(BrowserAction::Load {
+            slot: 1,
+            kind: save_store::Kind::Original,
+        })?;
+        assert!(app.browser_open());
         assert_eq!(app.game.vm.cursor(), cursor.as_ref());
         assert_eq!(app.game.frame(), pixels);
         app.close_panel()?;
-        app.open_panel(PanelMode::Save)?;
-        app.panel_action(PanelAction::Save(2))?;
+        assert!(!app.browser_open());
+        // Reach the title selection, save it, start a game, then load it back.
+        let mut audio = None;
+        for _ in 0..4000 {
+            if app.game.waiting_for_selection() {
+                break;
+            }
+            app.game.skip_video()?;
+            app.game.step(100)?;
+            rugp_runtime::audio::mute_requests(&mut app.game, &mut audio)?;
+        }
+        assert!(app.game.waiting_for_selection());
+        let saved_at = app.game.vm.cursor().cloned();
+        let saved_frame = app.game.frame().to_vec();
+        app.open_browser(BrowserMode::Save)?;
+        app.browser_action(BrowserAction::Save {
+            slot: 2,
+            comment: "テスト".into(),
+        })?;
+        assert!(!app.browser_open());
+        let entries = app.saves.list(&app.native_saves)?;
+        let saved = entries
+            .iter()
+            .find(|e| e.slot == 2)
+            .context("save missing")?;
+        assert_eq!(
+            (saved.kind, saved.comment.as_str(), saved.broken),
+            (save_store::Kind::Port, "テスト", false)
+        );
+        assert!(entries.iter().any(|e| e.slot == 1 && e.broken));
         assert!(!saves.join("vmr00002.uuc").exists());
-        assert!(app.panel.is_some());
         assert_eq!(
             std::fs::read(saves.join("vmr00001.uuc"))?,
             b"damaged native save"
         );
-        assert_eq!(app.game.vm.cursor(), cursor.as_ref());
+        app.game.navigate_selection(1)?;
+        for _ in 0..3 {
+            app.game.activate_selection()?;
+            for _ in 0..50 {
+                app.game.step(100)?;
+                rugp_runtime::audio::mute_requests(&mut app.game, &mut audio)?;
+            }
+        }
+        assert_ne!(app.game.vm.cursor(), saved_at.as_ref());
+        app.open_browser(BrowserMode::Load)?;
+        app.browser_action(BrowserAction::Load {
+            slot: 2,
+            kind: save_store::Kind::Port,
+        })?;
+        assert!(!app.browser_open());
+        assert_eq!(app.game.vm.cursor(), saved_at.as_ref());
+        assert_eq!(app.game.frame(), saved_frame);
         drop(app);
         std::fs::remove_dir_all(directory)?;
         Ok(())

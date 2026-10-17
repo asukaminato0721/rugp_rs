@@ -1,8 +1,8 @@
 //! Right-click menu after the retail Vm60.dll CMessBox popup (1000f730): a
-//! Win32 TrackPopupMenu at the cursor, drawn in the XP flat-menu style.
-//! Confirmations are drawn as MB_YESNO message boxes. Every pointer action
-//! needs a paired release.
-use super::save_panel::rect;
+//! Win32 TrackPopupMenu at the cursor, drawn in the XP flat-menu style. The
+//! menu bar's dropdowns (rvmm.dll MENU 5000) use the same popup. Confirmations
+//! are drawn as message boxes. Every pointer action needs a paired release.
+use super::{config_window::Page as ConfigPage, paint::rect};
 use anyhow::Result;
 use rugp_runtime::{font::TextFont, render::Framebuffer};
 use winit::keyboard::KeyCode;
@@ -10,11 +10,21 @@ use winit::keyboard::KeyCode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
     Context,
-    /// メニュー(&M) shows the retail menu bar; the port has none, so its
-    /// 設定 and 終了 items open as a second popup.
-    MenuBar,
+    /// The dropdown under a menu-bar title; see [`super::menu_bar::TITLES`].
+    Bar(usize),
     Restart,
     Quit,
+    /// バージョン情報(rUGP).
+    About,
+}
+/// 設定 menu switches, applied without the property sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Toggle {
+    Bgm,
+    Effects,
+    Voice,
+    MouseFollow,
+    ReadSkip,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
@@ -28,10 +38,18 @@ pub(super) enum Action {
     Load,
     RestartPrompt,
     Restart,
+    /// メニュー(&M): drop the first menu-bar menu.
     MenuBar,
-    Settings,
-    QuitPrompt,
     Quit,
+    Fullscreen(bool),
+    Scale(u16),
+    Toggle(Toggle),
+    Config(ConfigPage),
+    /// ヘルプの参照, or the plain-text 簡易ヘルプ when true.
+    Help(bool),
+    About,
+    /// Left/Right in a dropdown moves to the neighbouring menu.
+    BarStep(isize),
 }
 /// What the popup greys out or checks when it opens.
 #[derive(Clone, Copy, Default)]
@@ -41,6 +59,11 @@ pub(super) struct State {
     pub save: bool,
     pub load: bool,
     pub restart: bool,
+    pub fullscreen: bool,
+    pub scale: u16,
+    /// BGM, 効果音, 音声.
+    pub sound: [bool; 3],
+    pub mouse_follow: bool,
 }
 struct Item {
     /// Retail caption; `&` marks the mnemonic and `\t` starts the accelerator.
@@ -127,11 +150,7 @@ impl MenuPanel {
                 None,
                 Item::new("メニュー(&M)\tAlt", Action::MenuBar, true),
             ],
-            Page::MenuBar => vec![
-                Item::new("設定(&C)...", Action::Settings, true),
-                None,
-                Item::new("終了(&X)", Action::QuitPrompt, true),
-            ],
+            Page::Bar(index) => bar_menu(index, state),
             Page::Restart => vec![
                 Item::new("はい(&Y)", Action::Restart, true),
                 Item::new("いいえ(&N)", Action::Resume, true),
@@ -140,9 +159,10 @@ impl MenuPanel {
                 Item::new("はい(&Y)", Action::Quit, true),
                 Item::new("いいえ(&N)", Action::Resume, true),
             ],
+            Page::About => vec![Item::new("OK", Action::Resume, true)],
         };
         Self {
-            selected: matches!(page, Page::Restart | Page::Quit).then_some(0),
+            selected: matches!(page, Page::Restart | Page::Quit | Page::About).then_some(0),
             page,
             entries,
             anchor,
@@ -150,11 +170,8 @@ impl MenuPanel {
             pressed: None,
         }
     }
-    pub fn anchor(&self) -> (i32, i32) {
-        self.anchor
-    }
     fn dialog(&self) -> bool {
-        matches!(self.page, Page::Restart | Page::Quit)
+        matches!(self.page, Page::Restart | Page::Quit | Page::About)
     }
     fn activate(&self, index: usize) -> Action {
         match &self.entries[index] {
@@ -181,6 +198,8 @@ impl MenuPanel {
         self.pressed = None;
         match key {
             KeyCode::Escape | KeyCode::F2 => return Action::Resume,
+            KeyCode::ArrowLeft if matches!(self.page, Page::Bar(_)) => return Action::BarStep(-1),
+            KeyCode::ArrowRight if matches!(self.page, Page::Bar(_)) => return Action::BarStep(1),
             KeyCode::ArrowUp | KeyCode::ArrowLeft => self.step(-1),
             KeyCode::ArrowDown | KeyCode::ArrowRight | KeyCode::Tab => self.step(1),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
@@ -208,7 +227,7 @@ impl MenuPanel {
             return Hit::Outside;
         }
         if self.dialog() {
-            return (0..2)
+            return (0..self.entries.len())
                 .find(|&i| {
                     let (bx, by) = self.button_origin(i);
                     (bx..bx + BUTTON.0).contains(&x) && (by..by + BUTTON.1).contains(&y)
@@ -262,7 +281,9 @@ impl MenuPanel {
     fn button_origin(&self, index: usize) -> (i32, i32) {
         let (left, _, right, bottom) = self.bounds;
         let middle = (left + right) / 2;
-        let x = if index == 0 {
+        let x = if self.entries.len() == 1 {
+            middle - BUTTON.0 / 2
+        } else if index == 0 {
             middle - BUTTON.0 - 3
         } else {
             middle + 3
@@ -379,10 +400,18 @@ impl MenuPanel {
         rect(frame, (left + 3, top + 24, right - 3, bottom - 3), FACE);
         draw(frame, font, left + 8, top + 6, caption, HIGHLIGHT_TEXT)?;
         let message = match self.page {
-            Page::Quit => "終了します。よろしいですか？",
-            _ => "ゲームの一番最初に戻ります。よろしいですか？",
+            Page::Quit => "終了します。よろしいですか？".into(),
+            Page::About => format!(
+                "relic U.G.P. System 互換ランタイム\nrugp_rs Version {}",
+                env!("CARGO_PKG_VERSION")
+            ),
+            _ => "ゲームの一番最初に戻ります。よろしいですか？".into(),
         };
-        draw(frame, font, left + 20, top + 44, message, TEXT)?;
+        let lines: Vec<_> = message.lines().collect();
+        let first = top + 54 - 9 * lines.len() as i32;
+        for (row, line) in lines.iter().enumerate() {
+            draw(frame, font, left + 20, first + 18 * row as i32, line, TEXT)?;
+        }
         for (i, entry) in self.entries.iter().enumerate() {
             let Some(item) = entry else { continue };
             let (x, y) = self.button_origin(i);
@@ -427,12 +456,123 @@ impl MenuPanel {
         Ok(())
     }
 }
+fn checked(item: Option<Item>, on: bool) -> Option<Item> {
+    item.map(|mut item| {
+        item.checked = on;
+        item
+    })
+}
+/// rvmm.dll MENU 5000. Items the port cannot offer are greyed, as the
+/// retail menu greys what an application does not support.
+fn bar_menu(index: usize, state: State) -> Vec<Option<Item>> {
+    match index {
+        0 => {
+            let mut items = vec![
+                checked(
+                    Item::new("フルスクリーン(&F)", Action::Fullscreen(true), true),
+                    state.fullscreen,
+                ),
+                Item::new(
+                    "ビデオ解像度を変えずフルスクリーン(&G)",
+                    Action::None,
+                    false,
+                ),
+                Item::new("拡張フルスクリーン（β機能）(&X)...", Action::None, false),
+                checked(
+                    Item::new("ウインドウ(&W)", Action::Fullscreen(false), true),
+                    !state.fullscreen,
+                ),
+                None,
+            ];
+            const SCALES: [&str; 9] = [
+                "50%(&1)", "75%(&2)", "100%(&3)", "125%(&4)", "150%(&5)", "175%(&6)", "200%(&7)",
+                "225%(&8)", "250%(&9)",
+            ];
+            for (i, caption) in SCALES.into_iter().enumerate() {
+                let scale = 50 + 25 * i as u16;
+                items.push(checked(
+                    Item::new(caption, Action::Scale(scale), true),
+                    !state.fullscreen && state.scale == scale,
+                ));
+            }
+            items
+        }
+        1 => vec![
+            checked(
+                Item::new("BGM(&B)", Action::Toggle(Toggle::Bgm), true),
+                state.sound[0],
+            ),
+            checked(
+                Item::new("効果音(&E)", Action::Toggle(Toggle::Effects), true),
+                state.sound[1],
+            ),
+            checked(
+                Item::new("音声(&V)", Action::Toggle(Toggle::Voice), true),
+                state.sound[2],
+            ),
+            None,
+            checked(
+                Item::new("マウス追尾(&M)", Action::Toggle(Toggle::MouseFollow), true),
+                state.mouse_follow,
+            ),
+            checked(
+                Item::new(
+                    "読んだ文章は飛ばす(&K)",
+                    Action::Toggle(Toggle::ReadSkip),
+                    true,
+                ),
+                state.read_skip,
+            ),
+            None,
+            Item::new("ウインドウ設定(&W)...", Action::None, false),
+            Item::new(
+                "テキスト設定(&X)...",
+                Action::Config(ConfigPage::Text),
+                true,
+            ),
+            Item::new(
+                "文字フォント(&F)...",
+                Action::Config(ConfigPage::Font),
+                true,
+            ),
+            Item::new(
+                "サウンド設定(&S)...",
+                Action::Config(ConfigPage::Sound),
+                true,
+            ),
+            Item::new(
+                "AGES-ACS（立体音響）設定(&A)...",
+                Action::Config(ConfigPage::Acs),
+                true,
+            ),
+            Item::new(
+                "システム設定(&Y)...",
+                Action::Config(ConfigPage::System),
+                true,
+            ),
+            None,
+            Item::new("インストール設定(&I)...", Action::None, false),
+        ],
+        _ => vec![
+            Item::new("ヘルプの参照(&H)", Action::Help(false), true),
+            Item::new("簡易ヘルプの参照(&S)", Action::Help(true), true),
+            None,
+            Item::new("バージョン情報(rUGP) (&A)...", Action::About, true),
+        ],
+    }
+}
 fn letter(key: KeyCode) -> Option<char> {
     use KeyCode::*;
     let keys = [
         KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO,
         KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
     ];
+    let digits = [
+        Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+    ];
+    if let Some(index) = digits.iter().position(|k| *k == key) {
+        return Some((b'0' + index as u8) as char);
+    }
     let index = keys.iter().position(|k| *k == key)?;
     Some((b'A' + index as u8) as char)
 }
@@ -520,9 +660,26 @@ mod tests {
         assert_eq!(panel.key(KeyCode::Enter), Action::MenuBar);
         assert_eq!(panel.key(KeyCode::KeyK), Action::Skip);
         assert_eq!(panel.key(KeyCode::KeyM), Action::MenuBar);
-        let mut bar = opened(Page::MenuBar, all);
-        assert_eq!(bar.key(KeyCode::KeyX), Action::QuitPrompt);
-        assert_eq!(bar.key(KeyCode::KeyC), Action::Settings);
+        let mut screen = opened(Page::Bar(0), State { scale: 150, ..all });
+        assert_eq!(screen.key(KeyCode::Digit5), Action::Scale(150));
+        assert_eq!(screen.key(KeyCode::KeyW), Action::Fullscreen(false));
+        assert_eq!(screen.key(KeyCode::KeyG), Action::None);
+        assert_eq!(screen.key(KeyCode::ArrowRight), Action::BarStep(1));
+        let mut settings = opened(Page::Bar(1), all);
+        assert_eq!(
+            settings.key(KeyCode::KeyK),
+            Action::Toggle(Toggle::ReadSkip)
+        );
+        assert_eq!(
+            settings.key(KeyCode::KeyF),
+            Action::Config(ConfigPage::Font)
+        );
+        assert_eq!(settings.key(KeyCode::KeyI), Action::None);
+        assert_eq!(settings.key(KeyCode::ArrowLeft), Action::BarStep(-1));
+        let mut help = opened(Page::Bar(3), all);
+        assert_eq!(help.key(KeyCode::KeyA), Action::About);
+        let mut about = MenuPanel::new(Page::About, (0, 0), all);
+        assert_eq!(about.key(KeyCode::Enter), Action::Resume);
         for page in [Page::Quit, Page::Restart] {
             let mut confirm = MenuPanel::new(page, (0, 0), all);
             assert_ne!(confirm.key(KeyCode::Enter), Action::Resume);

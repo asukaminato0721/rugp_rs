@@ -1,5 +1,5 @@
 //! Session dialogue history. This view never advances or rewinds the VM.
-use super::save_panel::{rect, text};
+use super::paint::{rect, text};
 use anyhow::Result;
 use rugp_runtime::{dialogue::TextPart, font::TextFont, render::Framebuffer};
 use std::collections::VecDeque;
@@ -82,6 +82,10 @@ impl History {
     pub fn close(&mut self) {
         self.opened = false;
         self.pressed = None;
+    }
+    /// The most recent page, for a save's default comment.
+    pub fn last_page(&self) -> Option<&str> {
+        self.pages.back().map(String::as_str)
     }
     pub fn forget_cursor(&mut self) {
         self.last = None;

@@ -63,6 +63,11 @@ impl Game {
         menu.entries.push(text.clone());
         Ok(())
     }
+    /// Captions of a pending text selection, top to bottom.
+    pub fn selection_texts(&self) -> &[String] {
+        self.selection_text_target()
+            .map_or(&[], |target| &self.text_menus[&target].entries)
+    }
     pub(super) fn selection_text_target(&self) -> Option<u64> {
         self.selection
             .as_ref()

@@ -1,6 +1,5 @@
-//! Internal checkpoint serialization for runtime regression tests only.
+//! Checkpoint serialization for port save files and runtime regression tests.
 use super::{snapshot::GameSnapshot, *};
-use crate::audio::AudioResources;
 use flate2::{Compression, bufread::GzDecoder, write::GzEncoder};
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{BufWriter, Cursor, Read, Write};
@@ -84,6 +83,7 @@ fn read_wire<T: DeserializeOwned>(input: impl Read, json_limit: u64) -> Result<T
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::AudioResources;
     #[test]
     fn checkpoint_wire_roundtrip_rejects_truncation_trailing_bytes_crc_and_expansion() -> Result<()>
     {

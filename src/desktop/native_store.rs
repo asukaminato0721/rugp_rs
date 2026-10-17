@@ -1,4 +1,4 @@
-//! Locate original Windows saves. This module never creates port save files.
+//! Locate original Windows saves. Nothing here writes to them.
 use anyhow::{Context, Result};
 use rugp_runtime::Game;
 use std::{fs, path::PathBuf};

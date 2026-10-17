@@ -17,8 +17,7 @@ mod async_image;
 mod blit;
 mod camera;
 mod character;
-#[cfg(test)]
-mod checkpoint_test_wire;
+mod checkpoint_wire;
 mod dialogue;
 mod effects;
 #[cfg(test)]
@@ -387,6 +386,10 @@ impl Game {
     /// Script permission flag; the save operation additionally checks lifecycle/waits.
     pub fn script_save_enabled(&self) -> bool {
         self.script_save_enabled
+    }
+    /// The script has finished; there is nothing left to save.
+    pub fn ended(&self) -> bool {
+        self.ended
     }
     pub fn waiting_for_load(&self) -> bool {
         self.load_requested

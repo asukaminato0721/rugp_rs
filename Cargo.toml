@@ -26,6 +26,7 @@ clap.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 png = "0.18"
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 
 [features]
 default = ["desktop"]
