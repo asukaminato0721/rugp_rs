@@ -99,8 +99,10 @@ impl Game {
         // Restore the retained page rather than leaving stale choice pixels
         // under later dialogue. A completed native selector list is consumed.
         let rect = self.objects[&target].rect;
+        let page = self.message_windows[&target].page.clone();
+        let style = self.page_style(&page, false);
         let window = &self.message_windows[&target];
-        let texture = window.compose(self.font.as_mut().unwrap(), rect.2, rect.3, &window.page)?;
+        let texture = window.compose(self.font.as_mut().unwrap(), rect.2, rect.3, &page, style)?;
         let result = self
             .selection
             .as_ref()

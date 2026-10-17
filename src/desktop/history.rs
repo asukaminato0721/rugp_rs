@@ -11,17 +11,40 @@ enum Hit {
     Next,
     Close,
 }
-#[derive(Default)]
 pub(super) struct History {
     pages: VecDeque<String>,
     bytes: usize,
+    capacity: usize,
     last: Option<((usize, u32), String)>,
     pub opened: bool,
     entry: usize,
     line: usize,
     pressed: Option<Hit>,
 }
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            pages: VecDeque::new(),
+            bytes: 0,
+            capacity: 256,
+            last: None,
+            opened: false,
+            entry: 0,
+            line: 0,
+            pressed: None,
+        }
+    }
+}
 impl History {
+    /// システム page buffer size. As the retail note says, a change clears it.
+    pub fn set_capacity(&mut self, pages: usize) {
+        if pages != self.capacity {
+            *self = Self {
+                capacity: pages,
+                ..Self::default()
+            };
+        }
+    }
     pub fn record(&mut self, cursor: (usize, u32), parts: &[TextPart]) {
         let mut body = String::new();
         for part in parts {
@@ -46,7 +69,7 @@ impl History {
         self.last = Some((cursor, body.clone()));
         self.bytes += body.len();
         self.pages.push_back(body);
-        while self.pages.len() > 256 || self.bytes > 2 * 1024 * 1024 {
+        while self.pages.len() > self.capacity || self.bytes > 8 * 1024 * 1024 {
             self.bytes -= self.pages.pop_front().unwrap().len();
         }
     }

@@ -65,6 +65,7 @@ impl Texture {
         })
     }
 }
+#[derive(Clone)]
 pub struct Framebuffer {
     pub width: u32,
     pub height: u32,
@@ -121,6 +122,18 @@ impl Framebuffer {
         Ok(())
     }
     /// Clipped straight-alpha pixel, also valid on transparent UI surfaces.
+    /// Source-over a same-sized layer onto this frame.
+    pub fn composite(&mut self, layer: &Framebuffer) {
+        for (destination, source) in self
+            .rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(layer.rgba.as_chunks::<4>().0)
+        {
+            source_over(destination, *source);
+        }
+    }
     pub fn pixel(&mut self, x: i32, y: i32, color: [u8; 4]) {
         if x >= 0 && y >= 0 && x < self.width as i32 && y < self.height as i32 {
             let at = (y as usize * self.width as usize + x as usize) * 4;

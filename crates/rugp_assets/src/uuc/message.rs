@@ -136,5 +136,4 @@ mod tests {
         assert!(writer.data.is_empty());
         Ok(())
     }
-
 }

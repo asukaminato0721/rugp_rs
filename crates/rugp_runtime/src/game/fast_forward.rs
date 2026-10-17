@@ -4,17 +4,32 @@ impl Game {
     /// Advance dialogue and timers faster. Explicit non-text confirmations,
     /// selector menus, load dialogs, and forced-clock text retain their input.
     pub fn fast_forward_step(&mut self, dt_ms: u32) -> Result<RunState> {
+        Ok(self.fast_forward_step_with(dt_ms, |_| true)?.0)
+    }
+    /// As [`Self::fast_forward_step`], offering each fully shown page's
+    /// [`Self::dialogue_page_key`] to `confirm` first. A `false` stops on
+    /// that page without consuming it; the result's flag reports the stop.
+    pub fn fast_forward_step_with(
+        &mut self,
+        dt_ms: u32,
+        mut confirm: impl FnMut(u64) -> bool,
+    ) -> Result<(RunState, bool)> {
         if self.waiting_for_selection() || self.waiting_for_load() || self.waiting_for_input() {
-            return self.step(dt_ms);
+            return Ok((self.step(dt_ms)?, false));
         }
         self.skip_video()?;
         if self.dialogue.is_some() {
-            self.advance_dialogue()?;
-            if self.dialogue_waits_for_input() {
+            if !self.dialogue_waits_for_input() {
+                self.advance_dialogue()?;
+            }
+            if let Some(key) = self.dialogue_page_key() {
+                if !confirm(key) {
+                    return Ok((RunState::Waiting, true));
+                }
                 self.advance_dialogue()?;
             }
         }
-        self.step(dt_ms.saturating_mul(8).min(800))
+        Ok((self.step(dt_ms.saturating_mul(8).min(800))?, false))
     }
 }
 

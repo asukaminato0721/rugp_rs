@@ -1,5 +1,6 @@
 //! User preferences are independent of script state and game saves.
 use anyhow::{Context, Result, ensure};
+use rugp_runtime::{audio_device::AcsSettings, font::TextStyle, message_window::TextSettings};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -25,6 +26,79 @@ pub(super) struct Preferences {
     /// Windowed size in percent, as the retail 画面サイズ menu (50–250, steps of 25).
     #[serde(default = "default_window_scale")]
     pub window_scale: u16,
+    /// フォント page; None follows Setup.ini.
+    #[serde(default)]
+    pub font: Option<FontPreferences>,
+    /// サウンド: 音声再生中にＢＧＭの音量を小さくする (bSmallBgmInPlayVoice, on).
+    #[serde(default = "enabled")]
+    pub duck_bgm: bool,
+    #[serde(default)]
+    pub acs: AcsSettings,
+    /// 設定 menu マウス追尾 (rvmm bMouseTrace, on).
+    #[serde(default = "enabled")]
+    pub mouse_follow: bool,
+    /// 設定 menu 読んだ文章は飛ばす (rvmm nSeenMsgSkip, on).
+    #[serde(default = "enabled")]
+    pub read_skip: bool,
+    #[serde(default)]
+    pub system: SystemPreferences,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FontPreferences {
+    /// None keeps the retail face.
+    pub family: Option<String>,
+    pub size: u16,
+    pub face_bold: bool,
+    pub style: TextStyle,
+}
+impl FontPreferences {
+    pub fn from_runtime(settings: &TextSettings) -> Self {
+        Self {
+            family: settings.family.clone(),
+            size: settings.size,
+            face_bold: settings.face_bold,
+            style: settings.style,
+        }
+    }
+    pub fn to_runtime(&self) -> TextSettings {
+        TextSettings {
+            family: self.family.clone(),
+            size: self.size,
+            face_bold: self.face_bold,
+            style: self.style,
+        }
+    }
+}
+
+/// History page counts for the システム page's 小..大 trackbar.
+pub(super) const HISTORY_SIZES: [u16; 5] = [64, 128, 256, 512, 1024];
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct SystemPreferences {
+    /// テキスト履歴バッファサイズ in pages.
+    pub history_pages: u16,
+    /// 拡大縮小系のバイリニアフィルタリングを行う.
+    pub bilinear: bool,
+    /// 他のプロセスがアクティブになった時、フルスクリーンを解除する.
+    pub leave_fullscreen_inactive: bool,
+    /// フルスクリーン時に、ウインドウを最前面にする.
+    pub fullscreen_topmost: bool,
+    /// セーブ／ロードなどのリスト選択実行を、ダブルクリックで実行する.
+    pub double_click_lists: bool,
+}
+impl Default for SystemPreferences {
+    fn default() -> Self {
+        Self {
+            history_pages: 256,
+            bilinear: true,
+            leave_fullscreen_inactive: false,
+            fullscreen_topmost: false,
+            double_click_lists: false,
+        }
+    }
 }
 fn default_auto_delay() -> u32 {
     1500
@@ -34,6 +108,9 @@ fn default_channels() -> [bool; 3] {
 }
 fn default_window_scale() -> u16 {
     100
+}
+fn enabled() -> bool {
+    true
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -46,6 +123,12 @@ impl Default for Preferences {
             channels: default_channels(),
             fullscreen: false,
             window_scale: default_window_scale(),
+            font: None,
+            duck_bgm: true,
+            acs: AcsSettings::default(),
+            mouse_follow: true,
+            read_skip: true,
+            system: SystemPreferences::default(),
         }
     }
 }
@@ -56,7 +139,17 @@ impl Preferences {
                 && (250..=10000).contains(&self.auto_delay_ms)
                 && self.levels.iter().all(|&v| v <= 100)
                 && (50..=250).contains(&self.window_scale)
-                && self.window_scale.is_multiple_of(25),
+                && self.window_scale.is_multiple_of(25)
+                && self.font.as_ref().is_none_or(|f| {
+                    (16..=32).contains(&f.size)
+                        && f.style.outline <= 2
+                        && f.family
+                            .as_ref()
+                            .is_none_or(|n| !n.is_empty() && n.len() <= 256)
+                })
+                && self.acs.output <= 2
+                && self.acs.model <= 3
+                && HISTORY_SIZES.contains(&self.system.history_pages),
             "invalid settings value"
         );
         Ok(())
@@ -134,6 +227,26 @@ mod tests {
             channels: [false, true, true],
             fullscreen: true,
             window_scale: 150,
+            font: Some(FontPreferences {
+                family: Some("IPAGothic".into()),
+                size: 28,
+                face_bold: false,
+                style: TextStyle {
+                    shadow: true,
+                    ..TextStyle::default()
+                },
+            }),
+            duck_bgm: false,
+            acs: AcsSettings {
+                output: 0,
+                ..AcsSettings::default()
+            },
+            mouse_follow: false,
+            read_skip: false,
+            system: SystemPreferences {
+                history_pages: 1024,
+                ..SystemPreferences::default()
+            },
         };
         assert_eq!(settings.output_levels(), [80, 0, 100, 45]);
         settings.save(Some(&directory))?;
@@ -143,6 +256,9 @@ mod tests {
         assert!(invalid.save(Some(&directory)).is_err());
         invalid = settings.clone();
         invalid.window_scale = 110;
+        assert!(invalid.save(Some(&directory)).is_err());
+        invalid = settings.clone();
+        invalid.system.history_pages = 100;
         assert!(invalid.save(Some(&directory)).is_err());
         assert_eq!(Preferences::load(Some(&directory))?, settings);
         let path = directory.join("settings.json");

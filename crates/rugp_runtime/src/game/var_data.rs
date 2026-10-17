@@ -245,10 +245,17 @@ mod tests {
                 ("色1".into(), Value::Bytes(vec![0, 1, 2, 3])),
             ]),
         })?;
+        // Pending until the window's next background install takes it.
         assert!(matches!(
-            game.objects[&212259].properties["render.lighting.周期"],
+            game.objects[&212259].properties["render.lighting_pending.周期"],
             Value::Integer(100)
         ));
+        assert!(
+            !game.objects[&212259]
+                .properties
+                .contains_key("render.lighting.色1")
+        );
+        game.install_lighting(212259);
         assert!(
             matches!(&game.objects[&212259].properties["render.lighting.色1"], Value::Bytes(bytes) if bytes == &[0, 1, 2, 3])
         );

@@ -442,13 +442,15 @@ fn chapter_one_dialogue_blocks_renders_and_advances() -> Result<()> {
     game.step(1000)?; // finish any asynchronous scene fade
     let first = game.frame().to_vec();
     assert!(game.objects[&212741].visible);
+    // Retail telop text: no backdrop fill over the scene (verified against
+    // the 2008 engine), only outlined glyphs.
     assert!(
-        first
+        !first
             .as_chunks::<4>()
             .0
             .iter()
             .any(|p| p[..3] == [24, 24, 120])
-    ); // native configured backdrop over black
+    );
     assert!(
         first
             .as_chunks::<4>()

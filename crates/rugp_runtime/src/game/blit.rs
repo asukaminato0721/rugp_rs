@@ -143,19 +143,15 @@ impl Game {
             .get(&id)
             .context("parse image source missing")?;
         if self.rasterize_scene {
-            source.render(&mut frame)?;
+            Self::render_scene_object(&self.objects, id, source, &mut frame)?;
         } else {
             source.validate_projection()?;
-        }
-        for (&other_id, object) in &self.objects {
-            if other_id != id
-                && object.parent == Some(id)
-                && object.visible
-                && object.has_character_image()
-            {
-                if self.rasterize_scene {
-                    object.render_in_world(&mut frame, Some(source))?;
-                } else {
+            for (&other_id, object) in &self.objects {
+                if other_id != id
+                    && object.parent == Some(id)
+                    && object.visible
+                    && object.has_character_image()
+                {
                     object.validate_projection()?;
                 }
             }
@@ -169,6 +165,32 @@ impl Game {
                 rgba: frame.rgba,
             },
         )
+    }
+    /// A copy of the presented frame inside a window rectangle.
+    fn frame_region(&self, (x, y, w, h): (i32, i32, u32, u32)) -> Result<Texture> {
+        let source = self.world_frame.as_ref().unwrap_or(&self.frame);
+        let mut region = Framebuffer::transparent(w.max(1), h.max(1))?;
+        for row in 0..region.height as i32 {
+            let sy = y + row;
+            if sy < 0 || sy >= source.height as i32 {
+                continue;
+            }
+            for column in 0..region.width as i32 {
+                let sx = x + column;
+                if sx < 0 || sx >= source.width as i32 {
+                    continue;
+                }
+                let from = (sy as usize * source.width as usize + sx as usize) * 4;
+                let to = (row as usize * region.width as usize + column as usize) * 4;
+                region.rgba[to..to + 4].copy_from_slice(&source.rgba[from..from + 4]);
+            }
+        }
+        Ok(Texture {
+            width: region.width,
+            height: region.height,
+            display_scale: 1.0,
+            rgba: region.rgba,
+        })
     }
     fn surface(&mut self, reference: &ObjectRef) -> Result<Arc<Texture>> {
         if reference.inline.is_some() {
@@ -281,7 +303,7 @@ impl Game {
         let [Argument::Bytes(data), source, background, destination] = arguments.as_slice() else {
             bail!("invalid fade reference fields");
         };
-        let fade = Fade::from_inline(&class.name, data)?;
+        let fade = Fade::from_inline(&class.name, data)?; eprintln!("FADE {} mode={:#x} at {:?}", class.name, fade.mode, self.vm.cursor().map(|c| (c.scene, c.address)));
         ensure!(
             matches!(fade.mode, 0 | 0x11),
             "unsupported fade region mode {:#x}",
@@ -325,10 +347,30 @@ impl Game {
             let id = destination
                 .offset
                 .context("window-effect destination identity missing")?;
+            let start = self.effect_start(id);
+            // The native window keeps showing its last drawn image (its
+            // backing store) after its logical content is cleared, and the
+            // effect distorts that image. Freeze it beneath newer content.
+            if !self
+                .objects
+                .get(&id)
+                .is_some_and(|o| o.layers.contains_key(&super::effects::XS_FROZEN_LAYER))
+            {
+                let rect = self
+                    .objects
+                    .get(&id)
+                    .map_or((0, 0, self.frame.width, self.frame.height), |o| o.rect);
+                let frozen = self.frame_region(rect)?;
+                self.objects.entry(id).or_default().layers.insert(
+                    super::effects::XS_FROZEN_LAYER,
+                    Layer::Screen(Arc::new(frozen)),
+                );
+            }
             let properties = &mut self.objects.entry(id).or_default().properties;
             for (key, value) in [
                 ("class", Value::Text(class.name.clone())),
                 ("duration", Value::Integer(duration)),
+                ("start", Value::Integer(start)),
                 ("source", Value::Reference(source)),
                 ("background", Value::Reference(background)),
                 ("packet", Value::Bytes(data.clone())),

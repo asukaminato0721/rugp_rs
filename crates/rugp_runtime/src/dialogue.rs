@@ -76,6 +76,11 @@ impl Dialogue {
     pub fn waiting(&self) -> bool {
         self.wait.is_some()
     }
+    /// Unconsumed text tokens; with the message instruction this identifies
+    /// a page boundary across playthroughs.
+    pub fn remaining(&self) -> usize {
+        self.tokens.len()
+    }
     pub fn set_speed(&mut self, speed_ms: u32) -> Result<()> {
         ensure!(speed_ms <= 3000, "invalid message output speed");
         self.speed_ms = speed_ms;

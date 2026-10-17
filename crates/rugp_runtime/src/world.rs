@@ -167,6 +167,10 @@ impl Plane {
         }
         Ok(())
     }
+    /// Distance in front of the camera, for depth-sorting sprite passes.
+    pub(crate) fn camera_depth(&self, camera: &Camera) -> i32 {
+        self.depth.wrapping_sub(self.relative_position(camera)[2])
+    }
     pub(crate) fn projected_camera_center_y(
         &self,
         camera: &Camera,

@@ -46,6 +46,15 @@ impl Viewport {
             (y * f64::from(self.game_height) / f64::from(self.height)) as i32,
         ))
     }
+    /// Window position of a logical pixel's center; inverse of [`Self::point`].
+    pub fn window_point(self, x: i32, y: i32) -> (f64, f64) {
+        (
+            f64::from(self.left)
+                + (f64::from(x) + 0.5) * f64::from(self.width) / f64::from(self.game_width),
+            f64::from(self.top)
+                + (f64::from(y) + 0.5) * f64::from(self.height) / f64::from(self.game_height),
+        )
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -56,6 +65,10 @@ mod tests {
         assert_eq!((v.left, v.top, v.width, v.height), (26, 0, 1228, 719));
         assert_eq!(v.point(26.0, 0.0), Some((0, 0)));
         assert_eq!(v.point(1253.999, 718.999), Some((1023, 599)));
+        for (x, y) in [(0, 0), (512, 300), (1023, 599)] {
+            let (wx, wy) = v.window_point(x, y);
+            assert_eq!(v.point(wx, wy), Some((x, y)));
+        }
         for (x, y) in [
             (25.0, 0.0),
             (1254.0, 0.0),

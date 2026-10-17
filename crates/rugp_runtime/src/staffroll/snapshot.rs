@@ -111,6 +111,7 @@ impl StaffRollSnapshot {
                     width: g.width,
                     height: g.height,
                     alpha: g.alpha.clone(),
+                    edge: Vec::new(),
                 })
             })
             .collect::<Vec<_>>();
@@ -211,6 +212,7 @@ mod tests {
             width: 1,
             height: 1,
             alpha: vec![255],
+            edge: Vec::new(),
         });
         StaffRoll {
             window: 1,
@@ -254,6 +256,7 @@ mod tests {
                 width: 0,
                 height: 0,
                 alpha: vec![],
+                edge: Vec::new(),
             }),
             0,
             2,
@@ -266,6 +269,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 alpha: vec![255],
+                edge: Vec::new(),
             }),
             0,
             3,

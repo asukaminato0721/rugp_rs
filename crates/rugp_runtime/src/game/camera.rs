@@ -10,9 +10,11 @@
 use super::*;
 use crate::world::CameraTween;
 
+/// Bit 0 only keeps requested angles unclamped (`prepare_camera`); the
+/// axis-aligned projection of modes 0..3 ignores the low bits otherwise.
 pub(super) fn validate_world_projection(mode: u8) -> Result<()> {
     ensure!(
-        [0, 2, 3, 17, 19, 21, 25, 27, 29].contains(&mode),
+        [0, 1, 2, 3, 17, 19, 21, 25, 27, 29].contains(&mode),
         "unsupported world projection mode {mode}"
     );
     Ok(())
@@ -88,7 +90,7 @@ impl Game {
         Ok(())
     }
 
-    /// Independent cameras used by omitted weather effects retain their named
+    /// Independent cameras used by weather effects retain their named
     /// scalar settings. They are not the background's live ParseScreen camera.
     pub(super) fn set_effect_camera_member(
         &mut self,
@@ -124,20 +126,6 @@ impl Game {
             .or_default()
             .properties
             .insert(format!("member.{name}"), value.clone());
-        Ok(())
-    }
-    pub(super) fn set_weather(&mut self, id: u64, fields: BTreeMap<String, Value>) -> Result<()> {
-        // Omit particles, masks and their intensity interpolation. The packet
-        // does not block its caller; explicit VM timer waits still execute.
-        // Callback handles need a completion implementation, not a silent ACK.
-        ensure!(
-            matches!(fields.get("非同期ハンドル"), None | Some(Value::Null)),
-            "weather completion handles are not implemented"
-        );
-        let properties = &mut self.objects.entry(id).or_default().properties;
-        for (key, value) in fields {
-            properties.insert(format!("render.weather.{key}"), value);
-        }
         Ok(())
     }
     pub(super) fn set_camera(

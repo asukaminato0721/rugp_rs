@@ -127,7 +127,7 @@ impl MenuPanel {
             Page::Context => [
                 "ゲームに戻る",
                 "文字を消す   [Space]",
-                "スキップ   [S / Ctrl]",
+                "読んだ文章を飛ばす   [S]",
                 "文章自動送り   [A]",
                 "文章履歴   [PageUp]",
                 "ロード   [F9]",

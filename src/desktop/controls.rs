@@ -5,7 +5,8 @@ use winit::keyboard::KeyCode;
 pub(super) struct Controls {
     left: bool,
     right: bool,
-    toggle: bool,
+    /// 読んだ文章を飛ばす is passing read pages now (after confirming one).
+    reading_skip: bool,
     automatic: bool,
     auto_elapsed: u32,
 }
@@ -21,15 +22,16 @@ impl Controls {
             _ => {}
         }
     }
+    /// Ctrl skips everything only while held (retail manual).
     pub fn active(&self) -> bool {
-        self.left || self.right || self.toggle
+        self.left || self.right
     }
-    pub fn toggle(&mut self) {
-        self.toggle = !self.active();
-        self.left = false;
-        self.right = false;
-        self.automatic = false;
-        self.auto_elapsed = 0;
+    pub fn reading_skip(&self) -> bool {
+        self.reading_skip
+    }
+    /// Pass read pages until unread text, a choice or other input.
+    pub fn set_reading_skip(&mut self, skipping: bool) {
+        self.reading_skip = skipping;
     }
     pub fn toggle_auto(&mut self) {
         let automatic = !self.automatic;
@@ -91,10 +93,10 @@ mod tests {
         assert!(controls.active());
         controls.key(KeyCode::ControlRight, false);
         assert!(!controls.active());
-        controls.toggle();
-        assert!(controls.active());
+        controls.set_reading_skip(true);
+        assert!(controls.reading_skip() && !controls.active());
         controls.stop();
-        assert!(!controls.active());
+        assert!(!controls.reading_skip());
     }
     #[test]
     fn auto_waits_for_reveal_and_voice_and_cancels_for_skip_or_modal_input() {
@@ -109,11 +111,10 @@ mod tests {
         assert!(!controls.auto_ready(true, false, 1, 1500));
         assert!(controls.auto_ready(true, false, u32::MAX, 1500));
         assert!(!controls.auto_ready(true, false, 1, 1500));
-        controls.toggle();
-        assert!(!controls.automatic());
-        assert!(controls.active());
+        controls.set_reading_skip(true);
         controls.toggle_auto();
-        assert!(!controls.active());
+        assert!(!controls.reading_skip() && !controls.automatic());
+        controls.toggle_auto();
         assert!(controls.automatic());
         controls.key(KeyCode::ControlLeft, true);
         assert!(!controls.automatic());

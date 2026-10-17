@@ -168,5 +168,4 @@ mod tests {
         assert_eq!(read_scalar(&[0, 0, 0, 0, 7, 0])?, None);
         Ok(())
     }
-
 }

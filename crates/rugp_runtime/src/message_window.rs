@@ -3,7 +3,7 @@
 //! colour table, kinsoku rules or all text-layout flags.
 use crate::{
     dialogue::TextPart,
-    font::TextFont,
+    font::{Glyph, TextFont},
     image_manager::ImageManager,
     render::{Framebuffer, Texture},
 };
@@ -161,6 +161,56 @@ impl MessageConfig {
     }
 }
 
+/// Message font face and decoration, as the retail フォント page edits them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextSettings {
+    /// None keeps the configured retail face (or a `--font` file).
+    pub family: Option<String>,
+    pub size: u16,
+    /// Face weight from the descriptor's `%$-B` suffix.
+    pub face_bold: bool,
+    pub style: crate::font::TextStyle,
+}
+impl TextSettings {
+    /// Setup.ini rvmmUISettings strMainFont ("family%#size%$-B%$-A") and
+    /// dwMainFontStyle; disc defaults when the file is absent.
+    pub fn load(root: &Path) -> Result<Self> {
+        use std::io::Read;
+        let text = match std::fs::File::open(root.join("Setup.ini")) {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                ensure!(bytes.len() <= 1024 * 1024, "oversized Setup.ini");
+                rugp_assets::binary::decode_text(&bytes)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error).context("open text defaults in Setup.ini"),
+        };
+        Ok(Self::parse(&text))
+    }
+    fn parse(text: &str) -> Self {
+        let literal = |key: &str| {
+            text.lines().find_map(|line| {
+                line.trim_start()
+                    .strip_prefix(key)
+                    .and_then(|s| s.strip_prefix('='))
+                    .and_then(|s| s.trim().strip_suffix(';'))
+            })
+        };
+        let descriptor = literal("rvmmUISettings|strMainFont").unwrap_or("\"%#24%$-B%$-A\"");
+        let bits = literal("rvmmUISettings|dwMainFontStyle")
+            .and_then(|v| v.strip_prefix('#'))
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0x1008);
+        Self {
+            family: None,
+            size: MessageConfig::default().font_size,
+            face_bold: descriptor.contains("%$-B"),
+            style: crate::font::TextStyle::from_native(bits, descriptor.contains("%$-A")),
+        }
+    }
+}
+
 pub struct MessageWindow {
     source: ObjectRef,
     pub data: MessageBox,
@@ -228,7 +278,9 @@ impl MessageWindow {
         pressed: Option<usize>,
     ) -> Result<(Texture, Vec<SelectorRect>)> {
         let mut frame = Framebuffer::transparent(width, height)?;
-        paint_border(&self.border, &self.pieces, &mut frame)?;
+        if !self.telop() {
+            paint_border(&self.border, &self.pieces, &mut frame)?;
+        }
         let g = &self.border.geometry;
         let left = i32::from(g[12]);
         let top = i32::from(g[13]);
@@ -265,13 +317,10 @@ impl MessageWindow {
             }
             let h = y + line + 8;
             total += h;
-            ensure!(
-                total <= bottom - top,
-                "text selectors exceed portable viewport"
-            );
             rows.push((glyphs, h));
         }
-        let mut y = top + (bottom - top - total) / 2;
+        // Oversized choices (large user fonts) start at the top and clip.
+        let mut y = top + (bottom - top - total).max(0) / 2;
         let mut hits = Vec::new();
         for (index, (glyphs, h)) in rows.into_iter().enumerate() {
             hits.push((left, y, (right - left) as u32, h as u32));
@@ -288,19 +337,7 @@ impl MessageWindow {
                 }
             }
             for (glyph, x, gy) in glyphs {
-                for sy in 0..glyph.height {
-                    for sx in 0..glyph.width {
-                        let dx = x + glyph.left + sx as i32;
-                        let dy = y + 4 + gy + glyph.top + sy as i32;
-                        if dx >= left && dx < right && dy >= y && dy < y + h {
-                            frame.pixel(
-                                dx,
-                                dy,
-                                [255, 255, 255, glyph.alpha[(sy * glyph.width + sx) as usize]],
-                            );
-                        }
-                    }
-                }
+                glyph.paint(&mut frame, x, y + 4 + gy, [left, y, right, y + h], [255; 3]);
             }
             y += h;
         }
@@ -314,75 +351,101 @@ impl MessageWindow {
             hits,
         ))
     }
+    /// The retail 0x311/0x711 layouts (bit 0x100) draw dialogue as telop:
+    /// outlined text over the scene, without the frame or backdrop fill
+    /// (verified against the 2008 engine under Wine).
+    pub fn telop(&self) -> bool {
+        self.data.layout & 0x100 != 0
+    }
+    fn insets(&self, width: u32, height: u32) -> Result<[i32; 4]> {
+        let g = &self.border.geometry;
+        let inset = [
+            i32::from(g[12]),
+            i32::from(g[13]),
+            width as i32 - i32::from(g[14]),
+            height as i32 - i32::from(g[15]),
+        ];
+        ensure!(
+            inset[0] >= 0 && inset[1] >= 0 && inset[2] > inset[0] && inset[3] > inset[1],
+            "invalid message content insets"
+        );
+        Ok(inset)
+    }
     pub fn compose(
         &self,
         font: &mut TextFont,
         width: u32,
         height: u32,
         page: &[TextPart],
+        style: PageStyle,
     ) -> Result<Texture> {
         let mut frame = Framebuffer::transparent(width, height)?;
-        paint_border(&self.border, &self.pieces, &mut frame)?;
-        let g = &self.border.geometry;
-        let left = i32::from(g[12]);
-        let top = i32::from(g[13]);
-        let right = width as i32 - i32::from(g[14]);
-        let bottom = height as i32 - i32::from(g[15]);
-        ensure!(
-            left >= 0 && top >= 0 && right > left && bottom > top,
-            "invalid message content insets"
-        );
-        let mut x = left;
-        let mut y = top;
-        // Portable preview metrics: exact native layout/name styles remain
-        // separate work, not inferred from CViewBox's saved scroll position.
-        let line = i32::from(font.size);
+        if !self.telop() {
+            paint_border(&self.border, &self.pieces, &mut frame)?;
+        }
+        let [left, top, right, bottom] = self.insets(width, height)?;
+        // Wrap into lines; the speaker leads inline as 【name】.
+        let mut lines: Vec<Vec<Arc<Glyph>>> = vec![Vec::new()];
+        let mut widths = vec![0];
+        let mut push = |font: &mut TextFont, ch: char| -> Result<()> {
+            if ch == '\n' {
+                lines.push(Vec::new());
+                widths.push(0);
+                return Ok(());
+            }
+            let glyph = font.glyph(ch)?;
+            let last = widths.len() - 1;
+            if widths[last] + glyph.advance > right - left && widths[last] > 0 {
+                lines.push(Vec::new());
+                widths.push(0);
+            }
+            let last = widths.len() - 1;
+            widths[last] += glyph.advance;
+            lines[last].push(glyph);
+            Ok(())
+        };
         for part in page {
-            let text = match part {
-                TextPart::Newline => {
-                    x = left;
-                    y += line;
-                    continue;
-                }
-                TextPart::Glyph(c) => c.to_string(),
+            match part {
+                TextPart::Newline => push(font, '\n')?,
+                TextPart::Glyph(c) => push(font, *c)?,
                 TextPart::Speaker(name) => {
-                    if x != left {
-                        y += line;
+                    for ch in format!("【{name}】").chars() {
+                        push(font, ch)?;
                     }
-                    x = left;
-                    format!("{name}\n")
                 }
+            }
+        }
+        // Retail 24 px text advances 29 px per line; its last line's top is
+        // 46 px above the content bottom, and each line is centred.
+        let pitch = i32::from(font.size) * 29 / 24;
+        let count = lines.len() as i32;
+        let first_top = if self.telop() {
+            (bottom - pitch - i32::from(font.size) * 17 / 24 - (count - 1) * pitch).max(top)
+        } else {
+            top
+        };
+        let clip = [left, top, right, bottom];
+        let mut end = (left, first_top);
+        for (index, (line, line_width)) in lines.iter().zip(&widths).enumerate() {
+            let y = first_top + index as i32 * pitch;
+            // A larger user font can outgrow the window; native pagination
+            // is not ported, so clip instead of failing.
+            if y + pitch > bottom + pitch / 2 {
+                break;
+            }
+            let mut x = if self.telop() {
+                left + (right - left - line_width) / 2
+            } else {
+                left
             };
-            for ch in text.chars() {
-                if ch == '\n' {
-                    x = left;
-                    y += line;
-                    continue;
-                }
-                let glyph = font.glyph(ch)?;
-                if x + glyph.advance > right {
-                    x = left;
-                    y += line;
-                }
-                ensure!(
-                    y + line <= bottom,
-                    "message text exceeds portable viewport; native pagination/layout not implemented"
-                );
-                for gy in 0..glyph.height {
-                    for gx in 0..glyph.width {
-                        let dx = x + glyph.left + gx as i32;
-                        let dy = y + glyph.top + gy as i32;
-                        if dx >= left && dx < right && dy >= top && dy < bottom {
-                            frame.pixel(
-                                dx,
-                                dy,
-                                [255, 255, 255, glyph.alpha[(gy * glyph.width + gx) as usize]],
-                            );
-                        }
-                    }
-                }
+            for glyph in line {
+                glyph.paint(&mut frame, x, y, clip, style.color);
                 x += glyph.advance;
             }
+            end = (x, y);
+        }
+        if style.marker {
+            paint_marker(&mut frame, end.0 + 4, end.1, i32::from(font.size), clip);
         }
         Ok(Texture {
             width,
@@ -392,6 +455,100 @@ impl MessageWindow {
         })
     }
 }
+
+/// The page-wait marker: a white downward triangle with a black edge.
+fn paint_marker(frame: &mut Framebuffer, x: i32, y: i32, size: i32, clip: [i32; 4]) {
+    let w = (size / 2).max(4);
+    let h = (size * 5 / 12).max(3);
+    let top = y + size / 3;
+    for dy in -1..=h + 1 {
+        for dx in -1..=w + 1 {
+            let inside = |dx: i32, dy: i32| {
+                dy >= 0 && dy <= h && {
+                    let half = w * (h - dy) / (2 * h.max(1));
+                    (dx - w / 2).abs() <= half
+                }
+            };
+            let (px, py) = (x + dx, top + dy);
+            if px < clip[0] || py < clip[1] || px >= clip[2] || py >= clip[3] {
+                continue;
+            }
+            if inside(dx, dy) {
+                frame.pixel(px, py, [255, 255, 255, 255]);
+            } else if (-1..=1).any(|ox| (-1..=1).any(|oy| inside(dx + ox, dy + oy))) {
+                frame.pixel(px, py, [0, 0, 0, 255]);
+            }
+        }
+    }
+}
+
+/// Per-page presentation chosen by the host runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageStyle {
+    /// Text fill colour (the speaker's セリフ別設定 colour).
+    pub color: [u8; 3],
+    /// Draw the page-wait marker after the last character.
+    pub marker: bool,
+}
+impl Default for PageStyle {
+    fn default() -> Self {
+        Self {
+            color: [255; 3],
+            marker: false,
+        }
+    }
+}
+
+/// CTxtStDlg_arraySerifSetting from the title's CStdb profile, e.g.
+/// "_その他/16777215/0//速瀬:水月/11591935/0//": family:given / 0xRRGGBB /
+/// flag. `_その他` colours every other speaker and narration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SerifColors {
+    entries: Vec<(String, String, [u8; 3])>,
+    other: [u8; 3],
+}
+impl Default for SerifColors {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            other: [255; 3],
+        }
+    }
+}
+impl SerifColors {
+    pub fn parse(text: &str) -> Self {
+        let mut colors = Self::default();
+        for entry in text.split("//") {
+            let mut fields = entry.split('/');
+            let (Some(name), Some(value)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            let Ok(value) = value.trim().parse::<u32>() else {
+                continue;
+            };
+            let rgb = [(value >> 16) as u8, (value >> 8) as u8, value as u8];
+            if name == "_その他" {
+                colors.other = rgb;
+            } else {
+                let (family, given) = name.split_once(':').unwrap_or((name, ""));
+                colors.entries.push((family.into(), given.into(), rgb));
+            }
+        }
+        colors
+    }
+    /// The colour of a page whose speaker tag is `speaker` (family or given
+    /// name, as the scripts write it).
+    pub fn color(&self, speaker: Option<&str>) -> [u8; 3] {
+        speaker
+            .and_then(|name| {
+                self.entries.iter().find(|(family, given, _)| {
+                    name == family || name == given || name == format!("{family}{given}")
+                })
+            })
+            .map_or(self.other, |(_, _, rgb)| *rgb)
+    }
+}
+
 fn paint_border(border: &FrameImage, p: &[Arc<Texture>], frame: &mut Framebuffer) -> Result<()> {
     ensure!(p.len() == 8, "message border must have eight pieces");
     let g = border.geometry.map(i32::from);
@@ -440,6 +597,18 @@ fn invariant_edge(p: &Texture, horizontal: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn serif_colors_match_family_or_given_names_and_default_others() {
+        let colors = SerifColors::parse(
+            "_その他/16777215/0//涼宮:遙/16761008/0//速瀬:水月/11591935/0//broken//",
+        );
+        assert_eq!(colors.color(Some("速瀬")), [176, 224, 255]);
+        assert_eq!(colors.color(Some("水月")), [176, 224, 255]);
+        assert_eq!(colors.color(Some("遙")), [255, 192, 176]);
+        assert_eq!(colors.color(Some("孝之")), [255; 3]);
+        assert_eq!(colors.color(None), [255; 3]);
+        assert_eq!(SerifColors::parse("").color(Some("速瀬")), [255; 3]);
+    }
     #[test]
     fn missing_setup_uses_disc_defaults_but_invalid_existing_setup_fails() -> Result<()> {
         let directory = std::env::temp_dir().join(format!(

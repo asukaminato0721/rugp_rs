@@ -93,7 +93,15 @@ impl Game {
         for object in self.objects.values_mut() {
             object.properties.remove("character.angles_pending");
         }
-        let next = self.scene_frame()?;
+        let next = if self.rasterize_scene {
+            let world = Self::render_world(&self.objects, self.size())?;
+            let mut next = world.clone();
+            Self::render_message_windows(&self.objects, &mut next)?;
+            self.world_frame = Some(world);
+            next
+        } else {
+            self.scene_frame()?
+        };
         if let Some(parse) = &mut self.parse_transition {
             // An explicit presentation (e.g. live dialogue) refreshes the
             // captured scene, including projection caches updated by rendering;
@@ -195,6 +203,34 @@ impl Game {
             .as_ref()
             .and_then(|s| self.objects.get(&s.target))
             .and_then(|o| o.menu)
+    }
+    /// Center of the highlighted, else first enabled, choice of a pending
+    /// selection in logical coordinates (マウス追尾 moves the cursor here).
+    pub fn selection_focus_point(&self) -> Option<(i32, i32)> {
+        if let Some(target) = self.selection_text_target() {
+            let rect = self.objects.get(&target)?.rect;
+            let menu = &self.text_menus[&target];
+            let (x, y, w, h) = *menu.hits.get(menu.hover.unwrap_or(0))?;
+            return Some((rect.0 + x + w as i32 / 2, rect.1 + y + h as i32 / 2));
+        }
+        let id = self.selection_menu()?;
+        let rect = self.objects.get(&self.selection.as_ref()?.target)?.rect;
+        let menu = &self.menus[&id];
+        let selector = menu
+            .data
+            .selectors
+            .iter()
+            .filter(|s| s.id != 0 && s.status & 1 != 0)
+            .find(|s| menu.hover.is_none_or(|key| key == s.header))?;
+        let [x, y, w, h] = selector.rect.map(i64::from);
+        let (mw, mh) = (
+            i64::from(menu.data.width).max(1),
+            i64::from(menu.data.height).max(1),
+        );
+        Some((
+            (i64::from(rect.0) + (x + w / 2) * i64::from(rect.2) / mw) as i32,
+            (i64::from(rect.1) + (y + h / 2) * i64::from(rect.3) / mh) as i32,
+        ))
     }
     /// Pointer positions are in the game's logical framebuffer coordinates.
     pub fn pointer_move(&mut self, x: i32, y: i32) -> Result<()> {

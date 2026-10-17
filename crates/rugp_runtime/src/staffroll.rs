@@ -179,6 +179,7 @@ mod tests {
             width: 1,
             height: 1,
             alpha: vec![255],
+            edge: Vec::new(),
         });
         let mut roll = StaffRoll {
             window: 1,

@@ -9,12 +9,12 @@ use std::{
 };
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalSize,
+    dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, run_on_demand::EventLoopExtRunOnDemand},
     keyboard::{KeyCode, PhysicalKey},
     monitor::Fullscreen,
-    window::{Window, WindowAttributes, WindowId},
+    window::{Window, WindowAttributes, WindowId, WindowLevel},
 };
 mod config_window;
 mod controls;
@@ -23,10 +23,11 @@ mod history;
 mod menu_panel;
 mod native_store;
 mod preferences;
+mod read_log;
 mod save_panel;
-use config_window::{Action as ConfigAction, ConfigWindow};
+use config_window::{Action as ConfigAction, ConfigWindow, FontChoices};
 use menu_panel::{Action as MenuAction, MenuPanel, Page};
-use preferences::Preferences;
+use preferences::{FontPreferences, Preferences};
 use save_panel::{Action as PanelAction, Mode as PanelMode, Panel};
 
 pub fn run(
@@ -38,9 +39,11 @@ pub fn run(
 ) -> Result<()> {
     let mut event_loop = EventLoop::new().context("create desktop event loop")?;
     let preferences = Preferences::load(game.user_data_dir())?;
+    let read_log = read_log::ReadLog::load(game.user_data_dir())?;
     let native_saves = native_store::NativeStore::detect(&game, save_dir, choices)?;
     eprintln!("Original saves: {}", native_saves.directory.display());
     let mut app = App::new(game, quit_after_ms, native_saves);
+    app.read_log = read_log;
     app.apply_preferences(preferences)?;
     app.panel_audio = initial_audio;
     event_loop
@@ -80,6 +83,12 @@ struct App {
     exit_requested: bool,
     audio: Option<rugp_runtime::audio_device::DeviceAudio>,
     audio_tickets: std::collections::BTreeMap<u64, u64>,
+    read_log: read_log::ReadLog,
+    /// The waiting page; it counts as read once the player moves past it.
+    shown_page: Option<u64>,
+    font_families: Option<Vec<String>>,
+    /// Fullscreen was dropped because another application became active.
+    left_fullscreen: bool,
 }
 impl App {
     fn new(
@@ -115,6 +124,10 @@ impl App {
             exit_requested: false,
             audio: None,
             audio_tickets: std::collections::BTreeMap::new(),
+            read_log: read_log::ReadLog::default(),
+            shown_page: None,
+            font_families: None,
+            left_fullscreen: false,
         }
     }
     fn point(&self, x: f64, y: f64) -> (i32, i32) {
@@ -195,14 +208,28 @@ impl App {
     }
     fn apply_preferences(&mut self, preferences: Preferences) -> Result<()> {
         self.game.set_text_speed(preferences.text_speed_ms)?;
+        let text = match &preferences.font {
+            Some(font) => font.to_runtime(),
+            None => self.game.native_text_settings()?,
+        };
+        self.game.set_text_settings(text)?;
         if let Some(audio) = &mut self.audio {
-            audio.set_output_levels(preferences.output_levels())?;
+            Self::configure_audio(audio, &preferences)?;
         }
+        self.history
+            .set_capacity(usize::from(preferences.system.history_pages));
         if let Some(window) = &self.window {
             window.set_fullscreen(
                 preferences
                     .fullscreen
                     .then(|| Fullscreen::Borderless(window.current_monitor())),
+            );
+            window.set_window_level(
+                if preferences.fullscreen && preferences.system.fullscreen_topmost {
+                    WindowLevel::AlwaysOnTop
+                } else {
+                    WindowLevel::Normal
+                },
             );
             // Only an explicit size choice overrides a window the user resized.
             if !preferences.fullscreen
@@ -214,6 +241,79 @@ impl App {
         }
         self.preferences = preferences;
         Ok(())
+    }
+    fn configure_audio(
+        audio: &mut rugp_runtime::audio_device::DeviceAudio,
+        preferences: &Preferences,
+    ) -> Result<()> {
+        audio.set_output_levels(preferences.output_levels())?;
+        audio.set_bgm_ducking(preferences.duck_bgm);
+        audio.set_acs(preferences.acs);
+        Ok(())
+    }
+    fn open_audio(&mut self) -> Result<&mut rugp_runtime::audio_device::DeviceAudio> {
+        if self.audio.is_none() {
+            let mut audio =
+                rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(&self.game.archive))?;
+            Self::configure_audio(&mut audio, &self.preferences)?;
+            self.audio = Some(audio);
+        }
+        Ok(self.audio.as_mut().unwrap())
+    }
+    /// 設定 → 読んだ文章は飛ばす. Turning it on starts passing read pages.
+    fn set_read_skip(&mut self, enabled: bool) -> Result<()> {
+        let mut preferences = self.preferences.clone();
+        preferences.read_skip = enabled;
+        if let Err(error) = preferences.save(self.game.user_data_dir()) {
+            eprintln!("Settings: {error:#}");
+        }
+        self.preferences = preferences;
+        self.controls.set_reading_skip(enabled);
+        Ok(())
+    }
+    /// The waiting page was read before, so read-skip may pass it.
+    fn page_read(&self) -> bool {
+        self.game
+            .dialogue_page_key()
+            .is_some_and(|page| self.read_log.contains(page))
+    }
+    fn track_read_page(&mut self) {
+        let page = self.game.dialogue_page_key();
+        if page != self.shown_page {
+            if let Some(previous) = self.shown_page.take() {
+                self.read_log.insert(previous);
+            }
+            self.shown_page = page;
+        }
+    }
+    /// マウス追尾: put the cursor on a choice when it appears.
+    fn follow_selection(&mut self) -> Result<()> {
+        let (Some(window), Some((x, y))) = (&self.window, self.game.selection_focus_point()) else {
+            return Ok(());
+        };
+        let size = window.surface_size();
+        let (gw, gh) = self.game.size();
+        let Some(viewport) = Viewport::fit(size.width, size.height, gw, gh) else {
+            return Ok(());
+        };
+        let (wx, wy) = viewport.window_point(x, y);
+        if window
+            .set_cursor_position(PhysicalPosition::new(wx, wy).into())
+            .is_ok()
+        {
+            self.cursor = Some((wx, wy));
+        }
+        Ok(())
+    }
+    fn font_choices(&mut self) -> Result<FontChoices> {
+        let families = self
+            .font_families
+            .get_or_insert_with(rugp_runtime::font::japanese_families)
+            .clone();
+        Ok(FontChoices {
+            families,
+            standard: FontPreferences::from_runtime(&self.game.native_text_settings()?),
+        })
     }
     fn window_size(&self, preferences: &Preferences) -> PhysicalSize<u32> {
         let (width, height) = self.game.size();
@@ -267,10 +367,12 @@ impl App {
         Ok(())
     }
     fn create_config(&mut self, event_loop: &dyn ActiveEventLoop) -> Result<()> {
+        let fonts = self.font_choices()?;
         let font = self.panel_font.as_ref().context("settings font missing")?;
         self.config = Some(ConfigWindow::open(
             event_loop,
             self.preferences.clone(),
+            fonts,
             font.face(),
         )?);
         Ok(())
@@ -308,6 +410,10 @@ impl App {
             if self.modal_open() {
                 return self.close_panel();
             }
+            // Retail manual: right click cancels 読んだ文章は飛ばす.
+            if self.controls.reading_skip() {
+                return self.set_read_skip(false);
+            }
             return self.open_menu(Page::Context);
         }
         Ok(())
@@ -332,8 +438,7 @@ impl App {
             }
             MenuAction::Skip => {
                 self.close_panel()?;
-                self.controls.toggle();
-                Ok(())
+                self.set_read_skip(!self.preferences.read_skip)
             }
         }
     }
@@ -347,22 +452,15 @@ impl App {
         self.menu = None;
         self.text_hidden = false;
         self.history.close();
-        self.panel = Some(Panel::new(mode, self.slot, occupied));
+        let mut panel = Panel::new(mode, self.slot, occupied);
+        panel.double_click = self.preferences.system.double_click_lists;
+        self.panel = Some(panel);
         self.refresh_panel()
     }
     fn close_panel(&mut self) -> Result<()> {
         self.game.cancel_load_request()?;
         for playback in std::mem::take(&mut self.panel_audio) {
-            if self.audio.is_none() {
-                self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
-                    &self.game.archive,
-                ))?);
-                self.audio
-                    .as_mut()
-                    .unwrap()
-                    .set_output_levels(self.preferences.output_levels())?;
-            }
-            if let Some(ticket) = self.audio.as_mut().unwrap().resume(&playback)? {
+            if let Some(ticket) = self.open_audio()?.resume(&playback)? {
                 self.audio_tickets.insert(playback.ticket, ticket);
             } else {
                 self.game.finish_audio_ticket(playback.ticket);
@@ -430,7 +528,7 @@ impl App {
     }
     fn sounds(&mut self) -> Result<()> {
         for request in self.game.take_sounds() {
-            if self.controls.active()
+            if (self.controls.active() || self.controls.reading_skip())
                 && [2, 4].contains(&request.kind)
                 && let (Some(source), Some(ticket)) = (&request.source, request.ticket)
             {
@@ -448,20 +546,14 @@ impl App {
                     self.game.time_audio_ticket(ticket, duration);
                 }
             }
-            if self.audio.is_none() {
-                if request.source.is_none() && [254, 255].contains(&request.kind) {
-                    continue;
-                }
-                self.audio = Some(rugp_runtime::audio_device::DeviceAudio::open(Arc::clone(
-                    &self.game.archive,
-                ))?);
-                self.audio
-                    .as_mut()
-                    .unwrap()
-                    .set_output_levels(self.preferences.output_levels())?;
+            if self.audio.is_none()
+                && request.source.is_none()
+                && [254, 255].contains(&request.kind)
+            {
+                continue;
             }
             let runtime_ticket = request.ticket;
-            if let Some(ticket) = self.audio.as_mut().unwrap().request(request)? {
+            if let Some(ticket) = self.open_audio()?.request(request)? {
                 self.audio_tickets.insert(
                     runtime_ticket.context("play request lacks runtime identity")?,
                     ticket,
@@ -503,19 +595,52 @@ impl App {
             .panel_frame
             .as_ref()
             .map_or_else(|| self.game.frame(), |f| f.rgba.as_slice());
-        for y in 0..height {
-            let sy = y * gh as usize / height;
-            for x in 0..width {
-                let sx = x * gw as usize / width;
-                let i = (sy * gw as usize + sx) * 4;
-                output[(y + top) * size.width as usize + x + left] =
-                    (frame[i] as u32) << 16 | (frame[i + 1] as u32) << 8 | frame[i + 2] as u32;
+        let stride = size.width as usize;
+        if self.preferences.system.bilinear && (width, height) != (gw as usize, gh as usize) {
+            scale_bilinear(
+                frame,
+                (gw as usize, gh as usize),
+                &mut output,
+                stride,
+                viewport,
+            );
+        } else {
+            for y in 0..height {
+                let sy = y * gh as usize / height;
+                for x in 0..width {
+                    let sx = x * gw as usize / width;
+                    let i = (sy * gw as usize + sx) * 4;
+                    output[(y + top) * stride + x + left] =
+                        (frame[i] as u32) << 16 | (frame[i + 1] as u32) << 8 | frame[i + 2] as u32;
+                }
             }
         }
         output
             .present()
             .map_err(|e| anyhow::anyhow!("present frame: {e}"))?;
         Ok(())
+    }
+    /// Pointer left or focus moved away: drop presses and continuous input.
+    fn lose_pointer(&mut self) {
+        self.cursor = None;
+        self.controls.stop();
+        self.right_pressed = false;
+        self.history.cancel_press();
+        if let Some(menu) = &mut self.menu {
+            menu.cancel_press();
+            return;
+        }
+        if let Some(panel) = &mut self.panel {
+            panel.cancel_press();
+            return;
+        }
+        if let Err(error) = self
+            .game
+            .pointer_move(-1, -1)
+            .and_then(|()| self.game.pointer_button(false))
+        {
+            self.fail(error);
+        }
     }
     fn fail(&mut self, error: anyhow::Error) {
         // A failing VM tick may already have queued playback. Do not start it
@@ -529,6 +654,38 @@ impl App {
             window.set_title(&format!("rUGP — {message}"));
         }
         self.error = Some(message);
+    }
+}
+
+/// システム: 拡大縮小系のバイリニアフィルタリング. RGBA source into the 0RGB
+/// window buffer's viewport, sampling at pixel centres in 8-bit fixed point.
+fn scale_bilinear(
+    frame: &[u8],
+    (gw, gh): (usize, usize),
+    output: &mut [u32],
+    stride: usize,
+    viewport: Viewport,
+) {
+    let (width, height) = (viewport.width as usize, viewport.height as usize);
+    let sample = |position: usize, target: usize, source: usize| {
+        let at = ((2 * position + 1) * source * 256 / (2 * target)).saturating_sub(128);
+        let low = (at >> 8).min(source - 1);
+        (low, (low + 1).min(source - 1), (at & 255) as u32)
+    };
+    let columns: Vec<_> = (0..width).map(|x| sample(x, width, gw)).collect();
+    for y in 0..height {
+        let (y0, y1, fy) = sample(y, height, gh);
+        let row = (y + viewport.top as usize) * stride + viewport.left as usize;
+        for (x, &(x0, x1, fx)) in columns.iter().enumerate() {
+            let texel = |sx: usize, sy: usize, c: usize| u32::from(frame[(sy * gw + sx) * 4 + c]);
+            let mut pixel = 0;
+            for c in 0..3 {
+                let top = texel(x0, y0, c) * (256 - fx) + texel(x1, y0, c) * fx;
+                let bottom = texel(x0, y1, c) * (256 - fx) + texel(x1, y1, c) * fx;
+                pixel = pixel << 8 | (top * (256 - fy) + bottom * fy) >> 16;
+            }
+            output[row + x] = pixel;
+        }
     }
 }
 
@@ -600,28 +757,28 @@ impl ApplicationHandler for App {
                     self.fail(error);
                 }
             }
+            WindowEvent::Focused(focused) if self.error.is_none() && self.config.is_none() => {
+                // システム: 他のプロセスがアクティブになった時、フルスクリーンを解除する.
+                if let Some(window) = &self.window {
+                    if !focused
+                        && self.preferences.fullscreen
+                        && self.preferences.system.leave_fullscreen_inactive
+                    {
+                        window.set_fullscreen(None);
+                        self.left_fullscreen = true;
+                    } else if focused && std::mem::take(&mut self.left_fullscreen) {
+                        window
+                            .set_fullscreen(Some(Fullscreen::Borderless(window.current_monitor())));
+                    }
+                }
+                if !focused {
+                    self.lose_pointer();
+                }
+            }
             WindowEvent::PointerLeft { .. } | WindowEvent::Focused(false)
                 if self.error.is_none() =>
             {
-                self.cursor = None;
-                self.controls.stop();
-                self.right_pressed = false;
-                self.history.cancel_press();
-                if let Some(menu) = &mut self.menu {
-                    menu.cancel_press();
-                    return;
-                }
-                if let Some(panel) = &mut self.panel {
-                    panel.cancel_press();
-                    return;
-                }
-                if let Err(error) = self
-                    .game
-                    .pointer_move(-1, -1)
-                    .and_then(|()| self.game.pointer_button(false))
-                {
-                    self.fail(error);
-                }
+                self.lose_pointer();
             }
             WindowEvent::PointerButton { state, button, .. }
                 if self.error.is_none()
@@ -661,7 +818,10 @@ impl ApplicationHandler for App {
                         config.focus();
                     }
                     Ok(())
-                } else if self.controls.active() || self.controls.automatic() {
+                } else if self.controls.active()
+                    || self.controls.automatic()
+                    || self.controls.reading_skip()
+                {
                     self.controls.stop();
                     Ok(())
                 } else {
@@ -752,13 +912,14 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) => {
                         if self.game.video().is_some_and(|v| !v.finished()) {
                             self.game.skip_video().map(|_| ())
+                        } else if self.controls.reading_skip() {
+                            self.set_read_skip(false)
                         } else {
                             self.open_menu(Page::Context)
                         }
                     }
                     PhysicalKey::Code(KeyCode::KeyS) => {
-                        self.controls.toggle();
-                        Ok(())
+                        self.set_read_skip(!self.preferences.read_skip)
                     }
                     PhysicalKey::Code(KeyCode::KeyA) => {
                         self.controls.toggle_auto();
@@ -791,6 +952,9 @@ impl ApplicationHandler for App {
                 self.tick_remainder = remainder;
                 self.last = now;
                 if self.error.is_none() && !self.modal_open() {
+                    if let Some(audio) = &mut self.audio {
+                        audio.update();
+                    }
                     if let Some(audio) = &self.audio {
                         self.audio_tickets.retain(|&runtime, &mut ticket| {
                             if audio.finished(ticket) {
@@ -814,10 +978,33 @@ impl ApplicationHandler for App {
                     {
                         self.fail(error);
                     }
+                    if self.preferences.read_skip && self.page_read() {
+                        self.controls.set_reading_skip(true);
+                    }
+                    let log = &mut self.read_log;
                     let result = if self.error.is_some() {
                         Ok(RunState::Waiting)
                     } else if self.controls.active() {
-                        self.game.fast_forward_step(dt)
+                        // Ctrl passes every page; they have been seen.
+                        self.game
+                            .fast_forward_step_with(dt, |page| {
+                                log.insert(page);
+                                true
+                            })
+                            .map(|(state, _)| state)
+                    } else if self.preferences.read_skip && self.controls.reading_skip() {
+                        match self
+                            .game
+                            .fast_forward_step_with(dt, |page| log.contains(page))
+                        {
+                            Ok((state, stopped)) => {
+                                if stopped {
+                                    self.controls.set_reading_skip(false);
+                                }
+                                Ok(state)
+                            }
+                            Err(error) => Err(error),
+                        }
                     } else {
                         self.game.step(dt)
                     };
@@ -827,18 +1014,24 @@ impl ApplicationHandler for App {
                         Err(e) => self.fail(e),
                     }
                     self.remember_dialogue();
+                    self.track_read_page();
                     if self.game.waiting_for_selection()
                         || self.game.waiting_for_input()
                         || self.game.waiting_for_load()
                     {
                         self.controls.stop();
                     }
-                    if !selecting
-                        && self.game.waiting_for_selection()
-                        && let Some((x, y)) = self.cursor
-                        && let Err(error) = self.move_pointer(x, y)
-                    {
-                        self.fail(error);
+                    if !selecting && self.game.waiting_for_selection() {
+                        if self.preferences.mouse_follow
+                            && let Err(error) = self.follow_selection()
+                        {
+                            self.fail(error);
+                        }
+                        if let Some((x, y)) = self.cursor
+                            && let Err(error) = self.move_pointer(x, y)
+                        {
+                            self.fail(error);
+                        }
                     }
                     if self.error.is_none()
                         && let Err(e) = self.sounds()
@@ -931,7 +1124,7 @@ mod tests {
         let pixels = app.game.frame().to_vec();
         app.right_button(false)?;
         assert!(!app.modal_open());
-        app.controls.toggle();
+        app.controls.key(KeyCode::ControlLeft, true);
         app.right_button(true)?;
         app.right_button(false)?;
         assert!(app.menu.as_ref().is_some_and(|m| m.page == Page::Context));

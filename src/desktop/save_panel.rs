@@ -27,6 +27,9 @@ pub(super) struct Panel {
     slots: Vec<(u32, bool)>,
     pressed: Option<Hit>,
     pub notice: String,
+    /// システム: execute a slot by double-clicking it.
+    pub double_click: bool,
+    last_click: Option<(usize, std::time::Instant)>,
 }
 impl Panel {
     pub fn new(mode: Mode, slot: usize, slots: Vec<(u32, bool)>) -> Self {
@@ -35,6 +38,8 @@ impl Panel {
             slot: slot.min(slots.len() - 1),
             slots,
             pressed: None,
+            double_click: false,
+            last_click: None,
             notice: if mode == Mode::Save {
                 "原版セーブの書き込みは未対応です。".into()
             } else {
@@ -133,6 +138,15 @@ impl Panel {
         match hit.unwrap() {
             Hit::Slot(slot) => {
                 self.select(slot);
+                let now = std::time::Instant::now();
+                let repeated = self.last_click.is_some_and(|(previous, at)| {
+                    previous == slot && now.duration_since(at).as_millis() < 500
+                });
+                self.last_click = Some((slot, now));
+                if self.double_click && repeated {
+                    self.last_click = None;
+                    return self.confirm();
+                }
                 Action::None
             }
             Hit::Confirm => self.confirm(),
@@ -253,5 +267,10 @@ mod tests {
         panel.button(180, 120, false);
         assert_eq!(panel.key(KeyCode::Enter), Action::Save(1));
         assert_eq!(panel.key(KeyCode::Escape), Action::Cancel);
+        panel.button(180, 120, true);
+        assert_eq!(panel.button(180, 120, false), Action::None);
+        panel.double_click = true;
+        panel.button(180, 120, true);
+        assert_eq!(panel.button(180, 120, false), Action::Save(1));
     }
 }

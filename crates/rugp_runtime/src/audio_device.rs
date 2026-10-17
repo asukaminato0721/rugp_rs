@@ -37,11 +37,20 @@ struct PlaybackStart {
     stop_after_ms: Option<u32>,
     stereo: StereoGains,
 }
+/// BGM gain while a voice plays when ducking is on. The retail setting
+/// (CSoundManEx bSmallBgmInPlayVoice) exists; its native factor is not ported,
+/// so this is a -6 dB approximation.
+const DUCKED_BGM: f64 = 0.5;
+const DUCK_TWEEN_MS: u64 = 300;
+
 pub struct Mixer<B: Backend> {
     manager: AudioManager<B>,
     tracks: [TrackHandle; 3],
     playing: BTreeMap<u64, Playing>,
     next: u64,
+    bgm_level: f64,
+    duck_bgm: bool,
+    ducked: bool,
 }
 impl<B: Backend> Mixer<B> {
     pub fn new(mut manager: AudioManager<B>) -> Result<Self> {
@@ -56,7 +65,34 @@ impl<B: Backend> Mixer<B> {
             tracks,
             playing: BTreeMap::new(),
             next: 1,
+            bgm_level: 1.0,
+            duck_bgm: false,
+            ducked: false,
         })
+    }
+    /// 音声再生中にＢＧＭの音量を小さくする.
+    pub fn set_bgm_ducking(&mut self, enabled: bool) {
+        self.duck_bgm = enabled;
+        self.update_ducking();
+    }
+    /// Follow voice start/finish; hosts call this once per frame.
+    pub fn update_ducking(&mut self) {
+        let voice = self
+            .playing
+            .values()
+            .any(|p| p.bus == Bus::Voice && p.handle.state() != PlaybackState::Stopped);
+        let ducked = self.duck_bgm && voice;
+        if ducked != self.ducked {
+            self.ducked = ducked;
+            self.apply_bgm_level(Tween {
+                duration: std::time::Duration::from_millis(DUCK_TWEEN_MS),
+                ..Tween::default()
+            });
+        }
+    }
+    fn apply_bgm_level(&mut self, tween: Tween) {
+        let scale = if self.ducked { DUCKED_BGM } else { 1.0 };
+        self.tracks[0].set_volume(Volume::Amplitude(self.bgm_level * scale), tween);
     }
     /// Host levels use separate mixer tracks. Script gain envelopes and fades
     /// continue without replacing or restarting active sounds.
@@ -66,12 +102,14 @@ impl<B: Backend> Mixer<B> {
             Volume::Amplitude(f64::from(levels[0]) / 100.0),
             Tween::default(),
         );
-        for (track, level) in self.tracks.iter_mut().zip(&levels[1..]) {
+        for (track, level) in self.tracks.iter_mut().zip(&levels[1..]).skip(1) {
             track.set_volume(
                 Volume::Amplitude(f64::from(*level) / 100.0),
                 Tween::default(),
             );
         }
+        self.bgm_level = f64::from(levels[1]) / 100.0;
+        self.apply_bgm_level(Tween::default());
         Ok(())
     }
     pub fn play(&mut self, source: u64, bus: Bus, data: &SoundData, looped: bool) -> Result<u64> {
@@ -230,6 +268,7 @@ impl<B: Backend> Mixer<B> {
                 gain_scale: start.gain_scale,
             },
         );
+        self.update_ducking();
         Ok(ticket)
     }
     pub fn finished(&self, ticket: u64) -> bool {
@@ -316,10 +355,57 @@ fn resume_frame(data: &SoundData, looped: bool, elapsed_ms: u64) -> Result<Optio
         Some(position as usize)
     })
 }
+/// AGES-ACS page (Vm60 CSoundManEx nAcsOn/nAcsMode/bAcsAtVoice/bAcsAtEffect).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AcsSettings {
+    /// 0 無効, 1 2ch ヘッドフォン, 2 5.1ch スピーカー.
+    pub output: u8,
+    /// Dialog order of 詳細設定: 0 2D, 1 2D (回折・骨導音), 2 擬似バイノーラル, 3 3D.
+    pub model: u8,
+    pub voice: bool,
+    pub effect: bool,
+}
+impl Default for AcsSettings {
+    /// Retail defaults: nAcsOn 1, nAcsMode 2, applied to voice and effects.
+    fn default() -> Self {
+        Self {
+            output: 1,
+            model: 2,
+            voice: true,
+            effect: true,
+        }
+    }
+}
+impl AcsSettings {
+    /// Portable stereo placement: no binaural filters or room model; models
+    /// with diffraction or bone conduction let the far ear hear the source.
+    pub fn place(self, bus: Bus, stereo: StereoGains) -> StereoGains {
+        let applies = match bus {
+            Bus::Voice => self.voice,
+            Bus::Effect => self.effect,
+            Bus::Bgm => false,
+        };
+        if self.output == 0 || !applies {
+            return StereoGains::UNITY;
+        }
+        let crossfeed = match self.model {
+            0 => 0.0,
+            1 => 0.2,
+            3 => 0.25,
+            _ => 0.3,
+        };
+        StereoGains {
+            left: stereo.left + (stereo.right - stereo.left).max(0.0) * crossfeed,
+            right: stereo.right + (stereo.left - stereo.right).max(0.0) * crossfeed,
+        }
+    }
+}
+
 pub struct DeviceAudio {
     mixer: Mixer<DefaultBackend>,
     resources: AudioResources,
     archive: Arc<RioArchive>,
+    acs: AcsSettings,
 }
 impl DeviceAudio {
     pub fn open(archive: Arc<RioArchive>) -> Result<Self> {
@@ -330,7 +416,18 @@ impl DeviceAudio {
             mixer: Mixer::new(manager)?,
             resources,
             archive,
+            acs: AcsSettings::default(),
         })
+    }
+    pub fn set_acs(&mut self, acs: AcsSettings) {
+        self.acs = acs;
+    }
+    pub fn set_bgm_ducking(&mut self, enabled: bool) {
+        self.mixer.set_bgm_ducking(enabled);
+    }
+    /// Per-frame housekeeping such as BGM ducking.
+    pub fn update(&mut self) {
+        self.mixer.update_ducking();
     }
     pub fn request(&mut self, request: SoundRequest) -> Result<Option<u64>> {
         if request.null_source_is_noop() {
@@ -395,7 +492,7 @@ impl DeviceAudio {
             &data,
             looped,
             envelope.context("playback envelope missing")?,
-            request.stereo,
+            self.acs.place(bus, request.stereo),
         )?;
         // Every playback needs completion reporting, including asynchronous
         // sounds that a later CVmSync may query. VM waiting is runtime-owned.
@@ -416,7 +513,9 @@ impl DeviceAudio {
         playback.validate()?;
         let looped = self.resources.looped(&playback.source)?;
         let data = self.resources.load(&playback.source)?;
-        self.mixer.resume_playback(playback, &data, looped)
+        let mut playback = playback.clone();
+        playback.stereo = self.acs.place(playback.bus, playback.stereo);
+        self.mixer.resume_playback(&playback, &data, looped)
     }
 }
 

@@ -375,7 +375,6 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
         .iter()
         .map(|l| Texture::from_image(l.image.inline.as_ref().unwrap().decode_bitmap()?))
         .collect::<Result<_>>()?;
-    let mut native_initial = None;
     for all_visible in [false, true] {
         let mut untranslated = None;
         // Test the native initial hidden state, then exercise every layer's
@@ -415,10 +414,27 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
             for p in expected.as_chunks_mut::<4>().0 {
                 p[3] = 255;
             }
-            for (layer, texture) in scene.layers.iter().zip(&decoded) {
-                if !all_visible && layer.parameters[2] & 2 != 0 {
-                    continue;
+            // Flag bit 1 planes skip the background pass and draw in the
+            // sprite pass, far to near (retail-verified: the park tree).
+            let camera_z = |layer: &rugp_assets::background::BackgroundLayer| {
+                if layer.attributes[1] == 1 {
+                    layer.position[2]
+                } else {
+                    layer.position[2] - position[2]
                 }
+            };
+            let sprite = |layer: &rugp_assets::background::BackgroundLayer| {
+                !all_visible && layer.parameters[2] & 2 != 0
+            };
+            let mut order: Vec<_> = (0..scene.layers.len())
+                .filter(|&i| !sprite(&scene.layers[i]))
+                .collect();
+            let mut sprites: Vec<_> = (0..scene.layers.len())
+                .filter(|&i| sprite(&scene.layers[i]))
+                .collect();
+            sprites.sort_by_key(|&i| std::cmp::Reverse(camera_z(&scene.layers[i])));
+            order.extend(sprites);
+            for (layer, texture) in order.iter().map(|&i| (&scene.layers[i], &decoded[i])) {
                 // Native edge construction + signed MulDiv Q16 rounding,
                 // independently implemented without Plane or the compositor.
                 let raw_depth = f64::from(layer.position[2]);
@@ -483,17 +499,9 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
             if pitch == 2 {
                 if position == [0; 3] {
                     untranslated = Some(game.frame().to_vec());
-                } else if all_visible {
+                } else {
+                    // Foreground planes move with the camera in both passes.
                     assert_ne!(game.frame(), untranslated.as_ref().unwrap());
-                } else {
-                    assert_eq!(game.frame(), untranslated.as_ref().unwrap());
-                }
-            }
-            if pitch == -2 {
-                if all_visible {
-                    assert_ne!(game.frame(), native_initial.as_ref().unwrap());
-                } else {
-                    native_initial = Some(game.frame().to_vec());
                 }
             }
         }

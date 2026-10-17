@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     dialogue::Dialogue,
     font::TextFont,
-    message_window::{MessageConfig, MessageWindow},
+    message_window::{MessageConfig, MessageWindow, PageStyle, SerifColors, TextSettings},
 };
 
 pub(super) struct DialogueWait {
@@ -56,6 +56,24 @@ impl Game {
     pub fn dialogue_waits_for_input(&self) -> bool {
         self.dialogue.as_ref().is_some_and(|d| d.stream.waiting())
     }
+    /// Stable identity of the page now waiting for confirmation, for
+    /// read-text tracking (読んだ文章は飛ばす).
+    pub fn dialogue_page_key(&self) -> Option<u64> {
+        let dialogue = self.dialogue.as_ref().filter(|d| d.stream.waiting())?;
+        let cursor = self.vm.cursor()?;
+        // FNV-1a over fixed-width fields.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for word in [
+            cursor.scene as u64,
+            cursor.address as u64,
+            dialogue.stream.remaining() as u64,
+        ] {
+            for byte in word.to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        Some(hash)
+    }
     /// Displayed parts only. Message control codes and unrevealed text stay
     /// inside the dialogue stream.
     pub fn dialogue_page(&self) -> Option<&[crate::dialogue::TextPart]> {
@@ -93,6 +111,42 @@ impl Game {
         }
         Ok(())
     }
+    /// The title's speaker colours (CStdb CTxtStDlg_arraySerifSetting).
+    pub(super) fn serif_colors(&mut self) -> &SerifColors {
+        if self.serif_colors.is_none() {
+            let table = self
+                .archive
+                .nodes
+                .iter()
+                .filter(|n| n.class.name == "CStdb")
+                .filter_map(|n| self.archive.read_node(n.id).ok())
+                .filter_map(|data| rugp_assets::profile::Profile::parse_object(&data).ok())
+                .map(|profile| {
+                    profile
+                        .read_string("CTxtStDlg_arraySerifSetting", "")
+                        .to_owned()
+                })
+                .find(|text| !text.is_empty())
+                .unwrap_or_default();
+            self.serif_colors = Some(SerifColors::parse(&table));
+        }
+        self.serif_colors.as_ref().unwrap()
+    }
+    /// Colour a page by its speaker; mark it while it waits for input.
+    pub(super) fn page_style(
+        &mut self,
+        page: &[crate::dialogue::TextPart],
+        marker: bool,
+    ) -> PageStyle {
+        let speaker = page.iter().find_map(|part| match part {
+            crate::dialogue::TextPart::Speaker(name) => Some(name.clone()),
+            _ => None,
+        });
+        PageStyle {
+            color: self.serif_colors().color(speaker.as_deref()),
+            marker,
+        }
+    }
     pub(super) fn ensure_message_window(&mut self, reference: &ObjectRef) -> Result<u64> {
         let id = reference.offset.context("message box has no identity")?;
         if !self.message_windows.contains_key(&id) {
@@ -103,32 +157,123 @@ impl Game {
                 !self.objects.contains_key(&id),
                 "message window was instantiated without resource defaults"
             );
-            self.objects.insert(
-                id,
-                ObjectState {
-                    rect: (i32::from(x), i32::from(y), w as u32, h as u32),
-                    ..ObjectState::default()
-                },
-            );
+            let mut object = ObjectState {
+                rect: (i32::from(x), i32::from(y), w as u32, h as u32),
+                ..ObjectState::default()
+            };
+            if window.telop() {
+                object
+                    .properties
+                    .insert("render.text.telop".into(), Value::Integer(1));
+            }
+            self.objects.insert(id, object);
             self.message_windows.insert(id, window);
         }
         Ok(id)
     }
+    fn game_root(&self) -> Result<&Path> {
+        self.archive.volumes[0]
+            .path
+            .parent()
+            .context("game directory missing")
+    }
+    /// Setup.ini's face, size and decoration for message text.
+    pub fn native_text_settings(&self) -> Result<TextSettings> {
+        let root = self.game_root()?;
+        let mut settings = TextSettings::load(root)?;
+        settings.size = MessageConfig::load(root)?.font_size;
+        Ok(settings)
+    }
+    fn load_text_font(&self, config: &MessageConfig, settings: &TextSettings) -> Result<TextFont> {
+        let mut font = match (&settings.family, &self.font_file) {
+            (None, Some((path, index))) => TextFont::from_file(path, *index, settings.size)?,
+            (family, _) => TextFont::system_weighted(
+                family.as_deref().unwrap_or(&config.family),
+                settings.size,
+                settings.face_bold,
+            )?,
+        };
+        font.set_style(settings.style);
+        Ok(font)
+    }
+    /// Change the message face/size/decoration, redrawing visible text.
+    pub fn set_text_settings(&mut self, settings: TextSettings) -> Result<()> {
+        ensure!(
+            (4..=128).contains(&settings.size) && settings.style.outline <= 2,
+            "invalid text settings"
+        );
+        if self.text_settings.as_ref() == Some(&settings) {
+            return Ok(());
+        }
+        self.text_settings = Some(settings.clone());
+        let Some(mut config) = self.message_config.clone() else {
+            // Applied when the first message needs a font.
+            return Ok(());
+        };
+        let font = self.load_text_font(&config, &settings)?;
+        config.font_size = settings.size;
+        if let Some(family) = &settings.family {
+            config.family = family.clone();
+        }
+        self.font = Some(font);
+        self.message_config = Some(config);
+        self.redraw_text()
+    }
+    /// Recompose retained pages, a pending page and text choices.
+    fn redraw_text(&mut self) -> Result<()> {
+        let pending = self.dialogue.as_ref().map(|d| d.target);
+        let choices = self.selection_text_target();
+        let retained: Vec<u64> = self
+            .message_windows
+            .iter()
+            .filter(|(id, w)| {
+                !w.page.is_empty()
+                    && Some(**id) != pending
+                    && Some(**id) != choices
+                    && self
+                        .objects
+                        .get(id)
+                        .is_some_and(|o| o.layers.contains_key(&0))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in retained {
+            let rect = self.objects[&id].rect;
+            let page = self.message_windows[&id].page.clone();
+            let style = self.page_style(&page, false);
+            let window = &self.message_windows[&id];
+            let texture =
+                window.compose(self.font.as_mut().unwrap(), rect.2, rect.3, &page, style)?;
+            self.objects
+                .get_mut(&id)
+                .unwrap()
+                .layers
+                .insert(0, Layer::Screen(Arc::new(texture)));
+        }
+        if let Some(target) = choices {
+            self.refresh_text_menu(target)?;
+        }
+        if pending.is_some() {
+            self.refresh_dialogue()?;
+        }
+        self.present_scene()
+    }
     pub(super) fn ensure_text_font(&mut self) -> Result<()> {
         if self.font.is_none() {
-            let root = self.archive.volumes[0]
-                .path
-                .parent()
-                .context("game directory missing")?;
-            let config = self
+            let root = self.game_root()?;
+            let mut config = self
                 .message_config
                 .clone()
                 .map_or_else(|| MessageConfig::load(root), Ok)?;
-            let font = if let Some((path, index)) = &self.font_file {
-                TextFont::from_file(path, *index, config.font_size)?
-            } else {
-                TextFont::system(&config.family, config.font_size)?
+            let settings = match &self.text_settings {
+                Some(settings) => settings.clone(),
+                None => self.native_text_settings()?,
             };
+            let font = self.load_text_font(&config, &settings)?;
+            config.font_size = settings.size;
+            if let Some(family) = &settings.family {
+                config.family = family.clone();
+            }
             eprintln!(
                 "Dialogue font: {}; portable outline layout (native GDI/speaker styling and pagination are incomplete).",
                 font.source
@@ -214,13 +359,17 @@ impl Game {
     }
     fn refresh_dialogue(&mut self) -> Result<()> {
         let d = self.dialogue.as_ref().context("no pending dialogue")?;
-        let rect = self.objects[&d.target].rect;
-        let texture = Arc::new(self.message_windows[&d.target].compose(
+        let (target, page, waiting) = (d.target, d.stream.page.clone(), d.stream.waiting());
+        let style = self.page_style(&page, waiting);
+        let rect = self.objects[&target].rect;
+        let texture = Arc::new(self.message_windows[&target].compose(
             self.font.as_mut().unwrap(),
             rect.2,
             rect.3,
-            &d.stream.page,
+            &page,
+            style,
         )?);
+        let d = self.dialogue.as_ref().context("no pending dialogue")?;
         let object = self.objects.get_mut(&d.target).unwrap();
         object.layers.insert(0, Layer::Screen(texture));
         self.present_scene()
@@ -451,7 +600,13 @@ mod tests {
                         stream.tick(u32::MAX).with_context(location)?;
                         if !stream.page.is_empty() {
                             let texture = window
-                                .compose(&mut font, width as u32, height as u32, &stream.page)
+                                .compose(
+                                    &mut font,
+                                    width as u32,
+                                    height as u32,
+                                    &stream.page,
+                                    PageStyle::default(),
+                                )
                                 .with_context(location)?;
                             ensure!(
                                 texture.width == width as u32

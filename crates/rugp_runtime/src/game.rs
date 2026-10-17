@@ -20,6 +20,7 @@ mod character;
 #[cfg(test)]
 mod checkpoint_test_wire;
 mod dialogue;
+mod effects;
 #[cfg(test)]
 mod ending_tests;
 mod fast_forward;
@@ -170,7 +171,10 @@ impl ObjectState {
         self.render_in_world(frame, None)
     }
     fn render_in_world(&self, frame: &mut Framebuffer, parent: Option<&ObjectState>) -> Result<()> {
-        if let Some(backdrop) = self.backdrop {
+        // Telop windows keep their backdrop (UI ordering) but draw no fill.
+        if let Some(backdrop) = self.backdrop
+            && !self.properties.contains_key("render.text.telop")
+        {
             backdrop.paint(frame, self.rect);
         }
         for layer in self.layers.values() {
@@ -201,8 +205,17 @@ impl ObjectState {
             } else {
                 self.opacity
             };
+            // Window lighting tints actors and OM_SetShading blends one
+            // toward a colour; both need the actor rendered apart.
+            let tint = parent.and_then(ObjectState::actor_tint);
+            let shade = effects::actor_shade(self);
+            let mut lit = if (tint.is_some() || shade.is_some()) && self.character.has_image() {
+                Some(Framebuffer::transparent(frame.width, frame.height)?)
+            } else {
+                None
+            };
             self.character.render(
-                frame,
+                lit.as_mut().unwrap_or(frame),
                 world.rect,
                 opacity,
                 character::CharacterView {
@@ -216,6 +229,15 @@ impl ObjectState {
                     ],
                 },
             )?;
+            if let Some(mut layer) = lit {
+                if let Some(tint) = tint {
+                    effects::tint_layer(&mut layer, tint);
+                }
+                if let Some(shade) = shade {
+                    effects::shade_layer(&mut layer, shade);
+                }
+                frame.composite(&layer);
+            }
         }
         Ok(())
     }
@@ -236,6 +258,9 @@ pub struct Game {
     frame: Framebuffer,
     rasterize_scene: bool,
     primary_buffer: u64,
+    /// The last presented scene without message windows; a window frozen
+    /// for an Xs effect shows this, as the native backing store would.
+    world_frame: Option<Framebuffer>,
     buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
     parse_transition: Option<parse_screen::ParseTransition>,
@@ -266,6 +291,9 @@ pub struct Game {
     message_config: Option<crate::message_window::MessageConfig>,
     font: Option<crate::font::TextFont>,
     font_file: Option<(std::path::PathBuf, u32)>,
+    /// Host フォント settings; None follows Setup.ini.
+    text_settings: Option<crate::message_window::TextSettings>,
+    serif_colors: Option<crate::message_window::SerifColors>,
     pointer_inside: bool,
     dialogue_pressed: bool,
     pointer_armed: bool,
@@ -306,6 +334,7 @@ impl Game {
             frame: Framebuffer::new(1024, 600)?,
             rasterize_scene: true,
             primary_buffer,
+            world_frame: None,
             buffers: BTreeMap::new(),
             transition: None,
             parse_transition: None,
@@ -334,6 +363,8 @@ impl Game {
             message_config: None,
             font: None,
             font_file: None,
+            text_settings: None,
+            serif_colors: None,
             pointer_inside: false,
             dialogue_pressed: false,
             pointer_armed: false,
@@ -454,21 +485,102 @@ impl Game {
         objects: &BTreeMap<u64, ObjectState>,
         size: (u32, u32),
     ) -> Result<Framebuffer> {
+        let mut frame = Self::render_world(objects, size)?;
+        Self::render_message_windows(objects, &mut frame)?;
+        Ok(frame)
+    }
+    /// The scene and its window effects, without message windows.
+    fn render_world(objects: &BTreeMap<u64, ObjectState>, size: (u32, u32)) -> Result<Framebuffer> {
         let mut frame = Framebuffer::new(size.0, size.1)?;
         // Message-window backdrops/text stay above standing portraits, even
         // when the character's serialized object address sorts after the UI.
-        for object in objects
+        let scene = objects
             .values()
-            .filter(|o| o.visible && o.backdrop.is_none())
-            .chain(
-                objects
-                    .values()
-                    .filter(|o| o.visible && o.backdrop.is_some()),
-            )
+            .filter(|o| o.visible && o.backdrop.is_none());
+        let in_scene = |id: &u64| {
+            objects
+                .get(id)
+                .is_some_and(|o| o.visible && o.backdrop.is_none())
+        };
+        for (id, object) in objects
+            .iter()
+            .filter(|(_, o)| o.visible && o.backdrop.is_none())
         {
-            object.render_in_world(&mut frame, object.parent.and_then(|id| objects.get(&id)))?;
+            // Actors of a scene window are drawn in that window's sprite pass.
+            if object.parent.as_ref().is_some_and(in_scene) {
+                continue;
+            }
+            Self::render_scene_object(objects, *id, object, &mut frame)?;
+        }
+        // Window effects cover the world and its actors, not the text.
+        for object in scene {
+            effects::render_effects(object, objects, &mut frame);
         }
         Ok(frame)
+    }
+    /// One window: its background pass, then the sprite pass, which draws
+    /// planes flagged with bit 1 (skipped by the background pass, Vm60
+    /// 1003bff3) together with the window's actors, far to near.
+    fn render_scene_object(
+        objects: &BTreeMap<u64, ObjectState>,
+        id: u64,
+        object: &ObjectState,
+        frame: &mut Framebuffer,
+    ) -> Result<()> {
+        object.render_in_world(frame, object.parent.and_then(|p| objects.get(&p)))?;
+        enum Sprite<'a> {
+            Plane(&'a crate::image_manager::WorldImagePlane),
+            Actor(&'a ObjectState),
+        }
+        let mut sprites = Vec::new();
+        for layer in object.layers.values() {
+            if let Layer::World(image) = layer {
+                for (slot, plane) in image.planes.iter().enumerate() {
+                    if plane.draw_flags & 2 != 0
+                        && object.world_layers.draws_in_sprite_pass(slot as u8)
+                    {
+                        let depth = i64::from(plane.plane.camera_depth(&object.camera));
+                        sprites.push((depth, Sprite::Plane(plane)));
+                    }
+                }
+            }
+        }
+        for child in objects
+            .values()
+            .filter(|c| c.parent == Some(id) && c.visible)
+        {
+            let depth =
+                i64::from(child.character.position[2]) - i64::from(object.camera.position[2]);
+            sprites.push((depth, Sprite::Actor(child)));
+        }
+        // Stable: equal depths keep plane order, then object order.
+        sprites.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+        for (_, sprite) in sprites {
+            match sprite {
+                Sprite::Plane(plane) => plane.plane.render(
+                    frame,
+                    &plane.texture,
+                    &object.camera,
+                    object.rect,
+                    object.world_projection,
+                    object.opacity,
+                )?,
+                Sprite::Actor(actor) => actor.render_in_world(frame, Some(object))?,
+            }
+        }
+        Ok(())
+    }
+    fn render_message_windows(
+        objects: &BTreeMap<u64, ObjectState>,
+        frame: &mut Framebuffer,
+    ) -> Result<()> {
+        for object in objects
+            .values()
+            .filter(|o| o.visible && o.backdrop.is_some())
+        {
+            object.render_in_world(frame, object.parent.and_then(|id| objects.get(&id)))?;
+        }
+        Ok(())
     }
     fn update_frame(&mut self) {
         if let Some(transition) = &mut self.transition {
@@ -525,6 +637,7 @@ impl Game {
         }
     }
     fn message(&mut self, message: Message) -> Result<()> {
+        if message.class == "OM_HumanIn" { eprintln!("HUMANIN {:?} {:?} {:?}", message.fields.get("３ＤＸ"), match message.fields.get("ベース画像") { Some(Value::Reference(r)) => r.offset, _ => None }, message.fields.get("スタイル")); if let Ok(t) = std::env::var("SCRATCH_ARM_IMG") { if matches!(message.fields.get("ベース画像"), Some(Value::Reference(r)) if r.offset.map(|o| o.to_string()) == Some(t)) { SCRATCH_ARM.store(true, std::sync::atomic::Ordering::Relaxed); } } }
         let fields = message.fields;
         if message.class == "OM_VmmFinishByUser" {
             ensure!(
@@ -651,13 +764,14 @@ impl Game {
                     .as_ref()
                     .is_some_and(|c| c.name == "CLayerSimpleFlush") =>
             {
-                // Omit this visual-only layer effect, with an instantaneous
-                // completion event. It must not leave a subsequent sync stuck.
+                // Asynchronous flash: completion is immediate for the VM, so a
+                // later sync never waits on it; the pixels follow the clock.
                 self.objects
                     .entry(id)
                     .or_default()
                     .properties
                     .extend(fields);
+                self.play_flush(id)?;
             }
             "OM_SetColorData"
                 if target
@@ -700,12 +814,8 @@ impl Game {
                     .as_ref()
                     .is_some_and(|c| c.name == "CParseBgBox") =>
             {
-                // Portable projection omits pulsing/recoloring of this world
-                // surface. Retain its settings without inventing a VM wait.
-                let properties = &mut self.objects.entry(id).or_default().properties;
-                for (key, value) in fields {
-                    properties.insert(format!("render.lighting.{key}"), value);
-                }
+                // No VM wait; applied by the next background install.
+                self.set_lighting(id, fields);
             }
             "OM_AllDisableSelecter"
             | "OM_AllEnableSelecter"
@@ -849,13 +959,18 @@ impl Game {
                 );
                 // Only the separately retained native window effect is stopped.
                 // Do not cancel a framebuffer fade or a posture/camera motion.
-                // The omitted distortion has no intermediate pixels to retain
-                // versus finalize, so both stop variants clear its settings.
+                // The portable distortion keeps no intermediate pixels to
+                // retain versus finalize, so both stop variants clear it.
                 self.objects
                     .entry(id)
                     .or_default()
                     .properties
                     .retain(|key, _| !key.starts_with("render.xs_fade."));
+                self.objects
+                    .entry(id)
+                    .or_default()
+                    .layers
+                    .remove(&effects::XS_FROZEN_LAYER);
             }
             "OM_SetWorldCameraAsScreen" => {
                 self.set_camera(id, fields, true)?;
@@ -870,7 +985,9 @@ impl Game {
                     .is_some_and(|c| c.name == "CParseBgBox")
                 {
                     // Vm60 10040ba0 excludes persistent actors (entry bit
-                    // 0x1000). The background image remains in the world.
+                    // 0x1000). A styled HumanOut keeps the background image
+                    // in the world; style 0 also clears the box's images,
+                    // as the startup logo fade to white requires.
                     for object in self
                         .objects
                         .values_mut()
@@ -880,7 +997,9 @@ impl Game {
                         object.clear_character_sources();
                         object.properties.remove("character.core");
                     }
-                    return Ok(());
+                    if number(&fields, "スタイル", 0)? != 0 {
+                        return Ok(());
+                    }
                 }
                 let style = number(&fields, "スタイル", 0)?;
                 let object = self.objects.entry(id).or_default();
@@ -902,9 +1021,13 @@ impl Game {
                 }
                 if style == 0 {
                     object.layers.clear();
-                    object
-                        .properties
-                        .retain(|name, _| !name.starts_with("native.layer."));
+                    // Weather belongs to the cleared background; retail
+                    // scripts re-issue it for each new one (SC155 calls).
+                    object.properties.retain(|name, _| {
+                        !name.starts_with("native.layer.")
+                            && !name.starts_with("render.weather.")
+                            && !name.starts_with("render.weather_ramp.")
+                    });
                     object.menu = None;
                     self.buffers.remove(&id);
                 } else {
@@ -941,6 +1064,13 @@ impl Game {
                     object.menu = None;
                     self.buffers.remove(&id);
                     return Ok(());
+                }
+                if target
+                    .class
+                    .as_ref()
+                    .is_some_and(|c| c.name == "CParseBgBox")
+                {
+                    self.install_lighting(id);
                 }
                 let Some(Value::Reference(image)) = fields.get("ベース画像") else {
                     bail!("image message has no bound image");
@@ -1289,6 +1419,7 @@ impl Game {
         self.advance_async_images(dt_ms)?;
         self.advance_parse_transition(dt_ms)?;
         self.advance_postures(dt_ms)?;
+        self.advance_effects(dt_ms)?;
         self.finish_parse_transition();
         if let Some(t) = &mut self.transition {
             t.elapsed = t.elapsed.saturating_add(dt_ms).min(t.duration);
@@ -1388,3 +1519,5 @@ impl Game {
         Ok(RunState::Running)
     }
 }
+
+pub(crate) static SCRATCH_ARM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

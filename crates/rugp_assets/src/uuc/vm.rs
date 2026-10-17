@@ -173,5 +173,4 @@ mod tests {
         assert!(writer.cached(3).is_err()); // class entry
         Ok(())
     }
-
 }

@@ -840,6 +840,7 @@ impl RestoredScene {
         game.frame = self.frame;
         game.objects = self.objects;
         game.buffers = self.buffers;
+        game.world_frame = None;
         game.transition = self.transition;
         game.parse_transition = self.parse_transition;
         game.parse_wait = self.parse_wait;

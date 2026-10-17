@@ -248,5 +248,4 @@ mod tests {
         assert_eq!(&writer.data[6..9], &[2, 0, 8]);
         Ok(())
     }
-
 }

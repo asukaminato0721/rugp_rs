@@ -231,5 +231,4 @@ mod tests {
         assert_eq!(&records[4].1[33..37], &1.0f32.to_le_bytes());
         Ok(())
     }
-
 }

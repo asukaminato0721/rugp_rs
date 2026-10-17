@@ -403,6 +403,17 @@ impl UiSnapshot {
                 }
             })
             .transpose()?;
+        // Decoration is a host setting, not saved UI state.
+        let font = match font {
+            Some(mut font) => {
+                font.set_style(match &game.text_settings {
+                    Some(settings) => settings.style,
+                    None => game.native_text_settings()?.style,
+                });
+                Some(font)
+            }
+            None => None,
+        };
         let selection = self
             .selection
             .as_ref()
@@ -530,6 +541,15 @@ impl RestoredUi {
     pub(super) fn commit(self, game: &mut Game) {
         game.menus = self.menus;
         game.message_windows = self.windows;
+        for (id, window) in &game.message_windows {
+            if window.telop()
+                && let Some(object) = game.objects.get_mut(id)
+            {
+                object
+                    .properties
+                    .insert("render.text.telop".into(), Value::Integer(1));
+            }
+        }
         game.text_menus = self.text_menus;
         game.selection = self.selection;
         game.dialogue = self.dialogue;
