@@ -52,6 +52,8 @@ pub struct Mixer<B: Backend> {
     bgm_level: f64,
     duck_bgm: bool,
     ducked: bool,
+    /// AGES-ACS headphone model and the retail HRTF table, when available.
+    binaural: Option<(std::sync::Arc<crate::acs::Hrtf>, u8)>,
 }
 impl<B: Backend> Mixer<B> {
     pub fn new(mut manager: AudioManager<B>) -> Result<Self> {
@@ -69,7 +71,12 @@ impl<B: Backend> Mixer<B> {
             bgm_level: 1.0,
             duck_bgm: false,
             ducked: false,
+            binaural: None,
         })
+    }
+    /// Headphone ACS rendering for placed sounds (AcsSettings::model).
+    pub fn set_binaural(&mut self, binaural: Option<(std::sync::Arc<crate::acs::Hrtf>, u8)>) {
+        self.binaural = binaural;
     }
     /// 音声再生中にＢＧＭの音量を小さくする.
     pub fn set_bgm_ducking(&mut self, enabled: bool) {
@@ -206,13 +213,33 @@ impl<B: Backend> Mixer<B> {
             self.stop_bus(bus);
         }
         let mut frames = Vec::with_capacity(data.pcm.len() / data.channels as usize);
-        for samples in data.pcm.chunks(data.channels as usize) {
-            let left = samples[0] as f32 / 32768.0;
-            let right = samples.get(1).map_or(left, |v| *v as f32 / 32768.0);
-            frames.push(Frame::new(
-                left * start.stereo.left,
-                right * start.stereo.right,
-            ));
+        if let (Some(azimuth), Some((hrtf, model))) = (start.stereo.azimuth, &self.binaural) {
+            // The filters carry the direction; keep only the distance gain.
+            let gain = start.stereo.left.max(start.stereo.right);
+            let mono: Vec<f32> = data
+                .pcm
+                .chunks(data.channels as usize)
+                .map(|s| s.iter().map(|&v| f32::from(v)).sum::<f32>() / (32768.0 * s.len() as f32))
+                .collect();
+            let azimuth = f64::from(azimuth);
+            let rendered = match model {
+                0 | 1 => crate::acs::emulate(&mono, azimuth, data.sample_rate, *model == 1),
+                _ => hrtf.render(&mono, azimuth, data.sample_rate, looped),
+            };
+            frames.extend(
+                rendered
+                    .into_iter()
+                    .map(|[l, r]| Frame::new(l * gain, r * gain)),
+            );
+        } else {
+            for samples in data.pcm.chunks(data.channels as usize) {
+                let left = samples[0] as f32 / 32768.0;
+                let right = samples.get(1).map_or(left, |v| *v as f32 / 32768.0);
+                frames.push(Frame::new(
+                    left * start.stereo.left,
+                    right * start.stereo.right,
+                ));
+            }
         }
         let settings = if looped {
             StaticSoundSettings::default().loop_region(..)
@@ -378,8 +405,9 @@ impl Default for AcsSettings {
     }
 }
 impl AcsSettings {
-    /// Portable stereo placement: no binaural filters or room model; models
-    /// with diffraction or bone conduction let the far ear hear the source.
+    /// Gains for the plain stereo mix, keeping the source direction only
+    /// where the headphone models filter it (see [`crate::acs`]). The 5.1
+    /// speaker mode has no multichannel output here and pans in stereo.
     pub fn place(self, bus: Bus, stereo: StereoGains) -> StereoGains {
         let applies = match bus {
             Bus::Voice => self.voice,
@@ -389,15 +417,9 @@ impl AcsSettings {
         if self.output == 0 || !applies {
             return StereoGains::UNITY;
         }
-        let crossfeed = match self.model {
-            0 => 0.0,
-            1 => 0.2,
-            3 => 0.25,
-            _ => 0.3,
-        };
         StereoGains {
-            left: stereo.left + (stereo.right - stereo.left).max(0.0) * crossfeed,
-            right: stereo.right + (stereo.left - stereo.right).max(0.0) * crossfeed,
+            azimuth: stereo.azimuth.filter(|_| self.output == 1),
+            ..stereo
         }
     }
 }
@@ -407,21 +429,44 @@ pub struct DeviceAudio {
     resources: AudioResources,
     archive: Arc<RioArchive>,
     acs: AcsSettings,
+    hrtf: Option<Arc<crate::acs::Hrtf>>,
 }
 impl DeviceAudio {
     pub fn open(archive: Arc<RioArchive>) -> Result<Self> {
         let manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())
             .map_err(|e| anyhow::anyhow!("open audio device: {e}"))?;
         let resources = AudioResources::new(Arc::clone(&archive))?;
-        Ok(Self {
+        // The HRTF table ships in the game's ACS plugin; without it placed
+        // sounds fall back to stereo panning.
+        let hrtf = archive
+            .volumes
+            .first()
+            .and_then(|v| v.path.parent())
+            .and_then(|dir| match crate::acs::Hrtf::load(dir) {
+                Ok(hrtf) => Some(Arc::new(hrtf)),
+                Err(error) => {
+                    eprintln!("AGES-ACS: {error:#}");
+                    None
+                }
+            });
+        let mut device = Self {
             mixer: Mixer::new(manager)?,
             resources,
             archive,
             acs: AcsSettings::default(),
-        })
+            hrtf,
+        };
+        device.set_acs(AcsSettings::default());
+        Ok(device)
     }
     pub fn set_acs(&mut self, acs: AcsSettings) {
         self.acs = acs;
+        self.mixer.set_binaural(
+            self.hrtf
+                .clone()
+                .filter(|_| acs.output == 1)
+                .map(|hrtf| (hrtf, acs.model)),
+        );
     }
     pub fn set_bgm_ducking(&mut self, enabled: bool) {
         self.mixer.set_bgm_ducking(enabled);
@@ -616,6 +661,7 @@ mod tests {
         let stereo = StereoGains {
             left: 0.75,
             right: 0.25,
+            azimuth: None,
         };
         for resumed in [false, true] {
             let mut mixer = mock_mixer(1000)?;

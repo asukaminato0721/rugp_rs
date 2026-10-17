@@ -338,10 +338,12 @@ mod tests {
         let left = StereoGains {
             left: 0.75,
             right: 0.25,
+            azimuth: None,
         };
         let right = StereoGains {
             left: 0.25,
             right: 0.75,
+            azimuth: None,
         };
         for stereo in [left, right] {
             live.play_sound_spatial(&source("CPmEffect", 7), GainEnvelope::UNITY, stereo)?;

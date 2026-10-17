@@ -26,9 +26,10 @@ pub(super) struct ParseTransition {
     pub(super) cameras: BTreeMap<u64, crate::world::CameraTween>,
     pub(super) elapsed: u32,
     pub(super) duration: u32,
-    /// Scene cleared by a timed background HumanOut, still swept by the
-    /// moving camera while it fades out (retail keeps drawing it).
-    pub(super) outgoing: Option<(BTreeMap<u64, ObjectState>, u32)>,
+    /// Image of the scene a timed background HumanOut cleared, drawn at its
+    /// own camera and over-stretched out while it fades (see
+    /// [`stretch_outgoing`]), with its fade time.
+    pub(super) outgoing: Option<(Framebuffer, u32)>,
 }
 impl Game {
     pub(super) fn set_draw_ratio(
@@ -128,17 +129,20 @@ impl Game {
             .filter_map(|(&id, o)| o.pending_camera.take().map(|t| (id, t)))
             .collect();
         let cameras_present = !cameras.is_empty();
+        let outgoing = match self.outgoing_scene.take().filter(|_| cameras_present) {
+            Some((scene, fade)) => Some((
+                Self::render_objects_mode(&scene, self.size(), self.rasterize_scene)?,
+                fade,
+            )),
+            None => None,
+        };
         self.parse_transition = Some(ParseTransition {
             scene: self.objects.clone(),
             curves,
             cameras,
             elapsed: 0,
             duration,
-            outgoing: if cameras_present {
-                self.outgoing_scene.take()
-            } else {
-                None
-            },
+            outgoing,
         });
         self.outgoing_scene = None;
         self.transition = None;
@@ -158,9 +162,6 @@ impl Game {
             let mut camera = tween.sample(progress)?;
             if let Some(object) = parse.scene.get_mut(&id) {
                 camera = object.prepare_camera(camera)?;
-                object.camera = camera;
-            }
-            if let Some(object) = parse.outgoing.as_mut().and_then(|(s, _)| s.get_mut(&id)) {
                 object.camera = camera;
             }
             if let Some(object) = self.objects.get_mut(&id) {
@@ -183,17 +184,8 @@ impl Game {
                 object.camera_center_y.set(snapshot.camera_center_y.get());
             }
         }
-        if let Some((scene, fade_ms)) = &parse.outgoing {
-            let remaining = 256
-                - (u64::from(parse.elapsed) * 256 / u64::from((*fade_ms).max(1))).min(256) as u32;
-            if remaining > 0 {
-                let old = Self::render_objects_mode(scene, size, self.rasterize_scene)?;
-                for (out, &from) in next.rgba.iter_mut().zip(&old.rgba) {
-                    *out =
-                        ((u32::from(from) * remaining + u32::from(*out) * (256 - remaining) + 128)
-                            >> 8) as u8;
-                }
-            }
+        if let Some((old, fade_ms)) = &parse.outgoing {
+            stretch_outgoing(&mut next, old, parse.elapsed, *fade_ms);
         }
         if afterimage && next.rgba.len() == self.frame.rgba.len() {
             blend_afterimage(&mut next.rgba, &self.frame.rgba, dt_ms);
@@ -217,6 +209,32 @@ impl Game {
                 }
             }
             self.parse_transition = None;
+        }
+    }
+}
+
+/// The retail whip-pan (park, chapter 1) keeps the cleared scene still and
+/// stretches it out about the window centre: frame fits of the recording
+/// give ln(sx) = 3.1 t / fade horizontally and ln(sy) = 0.25 t / fade
+/// vertically, while it fades out linearly over the HumanOut time.
+fn stretch_outgoing(next: &mut Framebuffer, old: &Framebuffer, elapsed: u32, fade_ms: u32) {
+    let progress = f64::from(elapsed) / f64::from(fade_ms.max(1));
+    if progress >= 1.0 || old.rgba.len() != next.rgba.len() {
+        return;
+    }
+    let remaining = ((1.0 - progress) * 256.0).round() as u32;
+    let (sx, sy) = ((3.1 * progress).exp(), (0.25 * progress).exp());
+    let (w, h) = (next.width as usize, next.height as usize);
+    let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+    for y in 0..h {
+        let v = (((y as f64 + 0.5 - cy) / sy + cy).floor() as usize).min(h - 1);
+        for x in 0..w {
+            let u = (((x as f64 + 0.5 - cx) / sx + cx).floor() as usize).min(w - 1);
+            let (o, i) = ((y * w + x) * 4, (v * w + u) * 4);
+            for c in 0..3 {
+                let (from, to) = (u32::from(old.rgba[i + c]), u32::from(next.rgba[o + c]));
+                next.rgba[o + c] = ((from * remaining + to * (256 - remaining) + 128) >> 8) as u8;
+            }
         }
     }
 }
@@ -250,6 +268,28 @@ mod tests {
     use super::*;
     use rugp_assets::object::ClassId;
 
+    #[test]
+    fn outgoing_scene_stretches_sideways_about_the_centre_and_fades() -> Result<()> {
+        let mut old = Framebuffer::new(8, 2)?;
+        for x in 0..8 {
+            for y in 0..2 {
+                old.pixel(x, y, [x as u8 * 30, 0, 0, 255]);
+            }
+        }
+        let blank = Framebuffer::new(8, 2)?;
+        let mut start = blank.clone();
+        stretch_outgoing(&mut start, &old, 0, 400);
+        assert_eq!(start.rgba, old.rgba);
+        let mut mid = blank.clone();
+        stretch_outgoing(&mut mid, &old, 200, 400);
+        // Edges sample nearer the centre; the image is half faded.
+        assert!(mid.rgba[0] > 0 && mid.rgba[0] < old.rgba[0] + 60);
+        assert!(mid.rgba[7 * 4] < old.rgba[7 * 4]);
+        let mut end = blank.clone();
+        stretch_outgoing(&mut end, &old, 400, 400);
+        assert_eq!(end.rgba, blank.rgba);
+        Ok(())
+    }
     #[test]
     fn afterimage_trail_decays_with_elapsed_time() {
         let mut next = [200u8; 4];

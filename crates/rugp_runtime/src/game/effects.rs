@@ -136,7 +136,6 @@ impl Game {
             matches!(fields.get("非同期ハンドル"), None | Some(Value::Null)),
             "weather completion handles are not implemented"
         );
-        eprintln!("WEATHER {:?}", fields.iter().map(|(k, v)| format!("{k}={}", match v { Value::Integer(i) => i.to_string(), Value::Real(r) => r.to_string(), Value::Null => "null".into(), o => format!("{o:?}").chars().take(30).collect() })).collect::<Vec<_>>());
         self.objects.entry(id).or_default().set_weather(fields);
         Ok(())
     }
@@ -509,9 +508,12 @@ fn weather(
     ];
     let low = [-half[0], -half[1], near];
     let span = [2.0 * half[0], 2.0 * half[1], far - near];
-    let knob = |k: &str, d: f64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let count = (strength * if rain { 260.0 * knob("RAIN_COUNT", 1.0) } else { 60.0 }).min(8000.0) as u64;
-    let opacity = opacity * if independent.is_some() { knob("RAIN_IND_ALPHA", 1.0) } else { knob("RAIN_ALPHA", 1.0) };
+    let count = (strength * if rain { 260.0 } else { 60.0 }).min(8000.0) as u64;
+    // Calibrated against the retail prologue (school gate and the
+    // independent-camera sky shot): streak coverage and high-pass energy
+    // match within about 10 %. The native kernel (Vm60 100552b5) is not
+    // ported.
+    let opacity = opacity * if independent.is_some() { 0.55 } else { 0.8 };
     let t = f64::from(clock) / 1000.0;
     let project = |q: [f64; 3]| {
         (q[2] > near * 0.5).then(|| [cx + q[0] * focal / q[2], cy + q[1] * focal / q[2]])

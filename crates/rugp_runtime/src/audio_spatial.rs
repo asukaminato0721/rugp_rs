@@ -7,6 +7,10 @@ use anyhow::{Result, ensure};
 pub struct StereoGains {
     pub left: f32,
     pub right: f32,
+    /// Source direction for AGES-ACS headphone rendering, degrees clockwise
+    /// from the front; `None` for unplaced sounds.
+    #[serde(default)]
+    pub azimuth: Option<f32>,
 }
 impl Default for StereoGains {
     fn default() -> Self {
@@ -17,6 +21,7 @@ impl StereoGains {
     pub const UNITY: Self = Self {
         left: 1.0,
         right: 1.0,
+        azimuth: None,
     };
     pub fn validate(self) -> Result<()> {
         ensure!(
@@ -71,6 +76,7 @@ impl StereoGains {
         let gains = Self {
             left: (attenuation * (1.0 - pan.max(0.0))) as f32,
             right: (attenuation * (1.0 + pan.min(0.0))) as f32,
+            azimuth: (horizontal > 0.0).then(|| x.atan2(z).to_degrees() as f32),
         };
         gains.validate()?;
         Ok(gains)
@@ -113,14 +119,17 @@ mod tests {
             StereoGains {
                 left: f32::NAN,
                 right: 1.0,
+                azimuth: None,
             },
             StereoGains {
                 left: -0.1,
                 right: 1.0,
+                azimuth: None,
             },
             StereoGains {
                 left: 1.0,
                 right: 1.1,
+                azimuth: None,
             },
         ] {
             assert!(gains.validate().is_err());
