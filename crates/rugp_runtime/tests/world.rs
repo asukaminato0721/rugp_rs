@@ -7,6 +7,53 @@ use rugp_scene_vm::{
 };
 use std::sync::Arc;
 
+/// Independent bilinear filter at texel-space coordinates: texel centres sit
+/// at half-integers, weights are 1/256 steps, colour is filtered
+/// premultiplied (only opaque neighbourhoods skip the alpha division).
+fn bilinear(texture: &rugp_assets::image::Image, x: f64, y: f64) -> [u8; 4] {
+    let tap = |value: f64, extent: u32| {
+        let value = (value - 0.5).clamp(0.0, f64::from(extent - 1));
+        let low = value.floor();
+        let weight = ((value - low) * 256.0).round() as u64;
+        let low = low as usize;
+        (low, (low + 1).min(extent as usize - 1), weight)
+    };
+    let (x0, x1, fx) = tap(x, texture.width);
+    let (y0, y1, fy) = tap(y, texture.height);
+    let texel = |x: usize, y: usize| {
+        let i = (y * texture.width as usize + x) * 4;
+        &texture.rgba[i..i + 4]
+    };
+    let taps = [
+        (texel(x0, y0), (256 - fx) * (256 - fy)),
+        (texel(x1, y0), fx * (256 - fy)),
+        (texel(x0, y1), (256 - fx) * fy),
+        (texel(x1, y1), fx * fy),
+    ];
+    let mut out = [0u8; 4];
+    if taps.iter().all(|(p, _)| p[3] == 255) {
+        for (c, value) in out.iter_mut().take(3).enumerate() {
+            let sum: u64 = taps.iter().map(|(p, w)| u64::from(p[c]) * w).sum();
+            *value = ((sum + (1 << 15)) >> 16) as u8;
+        }
+        out[3] = 255;
+        return out;
+    }
+    let alpha: u64 = taps.iter().map(|(p, w)| u64::from(p[3]) * w).sum();
+    if alpha == 0 {
+        return out;
+    }
+    for (c, value) in out.iter_mut().take(3).enumerate() {
+        let sum: u64 = taps
+            .iter()
+            .map(|(p, w)| u64::from(p[c]) * u64::from(p[3]) * w)
+            .sum();
+        *value = ((sum + alpha / 2) / alpha).min(255) as u8;
+    }
+    out[3] = ((alpha + (1 << 15)) >> 16).min(255) as u8;
+    out
+}
+
 fn reference(name: &str, schema: u16, offset: u64, size: u32) -> ObjectRef {
     ObjectRef {
         class: Some(ClassId {
@@ -155,13 +202,15 @@ fn native_background_geometry_and_instant_camera_pan_reach_real_pixels() -> Resu
         // focal length 1440. Do not use Plane or the compositor as an oracle.
         for y in 0..600 {
             for x in 0..1024 {
-                let sx = ((f64::from(x) + 0.5 + 512.0) / 2.0).floor() as usize;
-                let sy = ((f64::from(y) + 0.5 - top) / 2.0).floor() as usize;
-                let si = (sy * 1024 + sx) * 4;
+                let pixel = bilinear(
+                    &source,
+                    (f64::from(x) + 0.5 + 512.0) / 2.0,
+                    (f64::from(y) + 0.5 - top) / 2.0,
+                );
                 let di = (y as usize * 1024 + x as usize) * 4;
-                let alpha = u32::from(source.rgba[si + 3]);
-                for c in 0..3 {
-                    let expected = ((u32::from(source.rgba[si + c]) * alpha + 127) / 255) as u8;
+                let alpha = u32::from(pixel[3]);
+                for (c, &value) in pixel[..3].iter().enumerate() {
+                    let expected = ((u32::from(value) * alpha + 127) / 255) as u8;
                     assert_eq!(game.frame()[di + c], expected, "pixel {x},{y}, channel {c}");
                 }
                 assert_eq!(game.frame()[di + 3], 255);

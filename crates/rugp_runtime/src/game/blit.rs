@@ -57,6 +57,17 @@ fn place_region(
     })
 }
 
+/// The LE scripts kept many 800x600 extents from the 800x600 release. The
+/// LE engine treats them as the whole surface: chapter title cards copy a
+/// 1024-wide logo through `[0, 0, 800, 600]` and show all of it.
+fn legacy_full_screen(rectangle: [i16; 4]) -> [i16; 4] {
+    if rectangle[2..] == [800, 600] {
+        [rectangle[0], rectangle[1], 0, 0]
+    } else {
+        rectangle
+    }
+}
+
 /// Only the Stretch classes scale. Every other fade copies its source
 /// region 1:1 to the destination origin: the LE scripts still carry 800-wide
 /// destination extents from the 800x600 release beside 1024-wide sources.
@@ -322,7 +333,12 @@ impl Game {
         let [Argument::Bytes(data), source, background, destination] = arguments.as_slice() else {
             bail!("invalid fade reference fields");
         };
-        let fade = Fade::from_inline(&class.name, data)?;
+        let mut fade = Fade::from_inline(&class.name, data)?;
+        if !class.name.contains("Stretch") && self.frame.width != 800 {
+            for rectangle in &mut fade.rectangles {
+                *rectangle = legacy_full_screen(*rectangle);
+            }
+        }
         ensure!(
             matches!(fade.mode, 0 | 0x11),
             "unsupported fade region mode {:#x}",
@@ -1097,6 +1113,8 @@ mod tests {
         )?;
         assert_eq!(&wide.rgba[..16], &source.rgba);
         assert_eq!(&wide.rgba[16..], &destination.rgba[16..]);
+        assert_eq!(legacy_full_screen([0, 0, 800, 600]), [0, 0, 0, 0]);
+        assert_eq!(legacy_full_screen([0, 0, 1024, 600]), [0, 0, 1024, 600]);
         Ok(())
     }
 }
