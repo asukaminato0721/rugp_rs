@@ -57,6 +57,25 @@ fn place_region(
     })
 }
 
+/// Only the Stretch classes scale. Every other fade copies its source
+/// region 1:1 to the destination origin: the LE scripts still carry 800-wide
+/// destination extents from the 800x600 release beside 1024-wide sources.
+fn unscaled_destination(source: &Texture, src: [i16; 4], dst: [i16; 4]) -> [i16; 4] {
+    let extent = |value: i16, full: u32| {
+        if value == 0 {
+            i16::try_from(full).unwrap_or(i16::MAX)
+        } else {
+            value
+        }
+    };
+    [
+        dst[0],
+        dst[1],
+        extent(src[2], source.width),
+        extent(src[3], source.height),
+    ]
+}
+
 impl Game {
     pub(super) fn load_vm_image(&mut self, instruction: &Instruction) -> Result<()> {
         ensure!(
@@ -412,6 +431,7 @@ impl Game {
         {
             *history = background_reference.offset == destination.offset;
         }
+        let scales = class.name.contains("Stretch");
         let source = if spatial
             .as_ref()
             .is_some_and(|s| matches!(s.operator, super::spatial_fade::Operator::Stretch { .. }))
@@ -423,13 +443,23 @@ impl Game {
                 rgba: source.rgba.clone(),
             }
         } else {
-            place_region(&source, fade.rectangles[0], &previous, fade.rectangles[1])?
+            let destination = if scales {
+                fade.rectangles[1]
+            } else {
+                unscaled_destination(&source, fade.rectangles[0], fade.rectangles[1])
+            };
+            place_region(&source, fade.rectangles[0], &previous, destination)?
+        };
+        let background_destination = if scales {
+            fade.rectangles[1]
+        } else {
+            unscaled_destination(&background, fade.rectangles[2], fade.rectangles[1])
         };
         let background = place_region(
             &background,
             fade.rectangles[2],
             &previous,
-            fade.rectangles[1],
+            background_destination,
         )?;
         if duration > 0
             && spatial.is_none()
@@ -1057,6 +1087,16 @@ mod tests {
         assert_eq!(&full.rgba[..16], &source.rgba);
         assert_eq!(&full.rgba[16..], &source.rgba);
         assert!(place_region(&source, [0, 0, -1, 1], &destination, [0; 4]).is_err());
+        // An 800-wide destination left over from the 800x600 scripts must not
+        // squeeze a full-width source; it copies 1:1 from the origin.
+        let wide = place_region(
+            &source,
+            [0; 4],
+            &destination,
+            unscaled_destination(&source, [0; 4], [0, 0, 2, 1]),
+        )?;
+        assert_eq!(&wide.rgba[..16], &source.rgba);
+        assert_eq!(&wide.rgba[16..], &destination.rgba[16..]);
         Ok(())
     }
 }

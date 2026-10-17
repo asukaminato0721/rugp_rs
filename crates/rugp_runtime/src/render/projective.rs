@@ -1,4 +1,4 @@
-//! Perspective-correct nearest-neighbor rasterization for world image planes.
+//! Perspective-correct bilinear rasterization for world image planes.
 //! Camera-space clipping precedes perspective division and rasterization.
 use super::{Framebuffer, Texture, source_over};
 use anyhow::{Result, ensure};
@@ -44,18 +44,77 @@ fn clip_polygon(vertices: &[ClipVertex], distance: impl Fn([f64; 3]) -> f64) -> 
     output
 }
 
-fn texel_coordinate(uv: f64, extent: u32) -> usize {
-    let value = uv * f64::from(extent);
-    // Barycentric sums can land a few ulps below an exact texel boundary.
-    // Define that tie consistently, independently of the chosen triangle.
-    // This is numerical stabilization, not a half-texel sampling offset.
+/// One bilinear tap pair along an axis: two texels and the 0..=256 weight of
+/// the second. Pixel centers of an unscaled plane land on texel centers, so
+/// a 1:1 draw samples exactly one texel.
+#[derive(Clone, Copy)]
+struct Tap {
+    low: usize,
+    high: usize,
+    weight: u32,
+}
+
+fn bilinear_tap(uv: f64, extent: u32) -> Tap {
+    let value = uv * f64::from(extent) - 0.5;
     let nearest = value.round();
-    let value = if (value - nearest).abs() <= 8.0 * f64::EPSILON * value.abs().max(1.0) {
+    let value = if (value - nearest).abs() <= 1e-6 {
         nearest
     } else {
         value
     };
-    value.floor().clamp(0.0, f64::from(extent - 1)) as usize
+    let value = value.clamp(0.0, f64::from(extent - 1));
+    let low = value.floor();
+    let weight = ((value - low) * 256.0).round() as u32;
+    let low = low as usize;
+    Tap {
+        low,
+        high: (low + 1).min(extent as usize - 1),
+        weight,
+    }
+}
+
+/// Filter in premultiplied alpha so transparent texels do not darken edges.
+fn sample_bilinear(texture: &Texture, x: Tap, y: Tap) -> [u8; 4] {
+    let width = texture.width as usize;
+    let texel = |sx: usize, sy: usize| -> &[u8] {
+        let i = (sy * width + sx) * 4;
+        &texture.rgba[i..i + 4]
+    };
+    if x.weight == 0 && y.weight == 0 {
+        return texel(x.low, y.low).try_into().unwrap();
+    }
+    let taps = [
+        (texel(x.low, y.low), (256 - x.weight) * (256 - y.weight)),
+        (texel(x.high, y.low), x.weight * (256 - y.weight)),
+        (texel(x.low, y.high), (256 - x.weight) * y.weight),
+        (texel(x.high, y.high), x.weight * y.weight),
+    ];
+    if taps.iter().all(|(pixel, _)| pixel[3] == 255) {
+        // Weights total 1 << 16; no alpha normalization is needed.
+        let mut output = [255u8; 4];
+        for (c, value) in output.iter_mut().take(3).enumerate() {
+            let sum: u32 = taps.iter().map(|(p, w)| u32::from(p[c]) * w).sum();
+            *value = ((sum + (1 << 15)) >> 16) as u8;
+        }
+        return output;
+    }
+    let mut sum = [0u64; 4];
+    for (pixel, weight) in taps {
+        let alpha = u64::from(pixel[3]) * u64::from(weight);
+        for c in 0..3 {
+            sum[c] += u64::from(pixel[c]) * alpha;
+        }
+        sum[3] += alpha;
+    }
+    if sum[3] == 0 {
+        return [0; 4];
+    }
+    let mut output = [0u8; 4];
+    for c in 0..3 {
+        output[c] = ((sum[c] + sum[3] / 2) / sum[3]).min(255) as u8;
+    }
+    output[3] = ((sum[3] + (1 << 15)) >> 16).min(255) as u8;
+    output
 }
 
 /// A directed edge equation. Reversing an edge negates all coefficients
@@ -296,14 +355,13 @@ impl Framebuffer {
             return;
         }
         let columns: Vec<_> = (x0..x1)
-            .map(|x| texel_coordinate((x as f64 + 0.5 - left) / (right - left), texture.width))
+            .map(|x| bilinear_tap((x as f64 + 0.5 - left) / (right - left), texture.width))
             .collect();
         for y in y0..y1 {
-            let sy = texel_coordinate((y as f64 + 0.5 - top) / (bottom - top), texture.height);
-            for (column, sx) in columns.iter().enumerate() {
-                let si = (sy * texture.width as usize + sx) * 4;
+            let sy = bilinear_tap((y as f64 + 0.5 - top) / (bottom - top), texture.height);
+            for (column, &sx) in columns.iter().enumerate() {
                 let di = (y as usize * self.width as usize + x0 as usize + column) * 4;
-                let mut source: [u8; 4] = texture.rgba[si..si + 4].try_into().unwrap();
+                let mut source = sample_bilinear(texture, sx, sy);
                 source[3] = ((u32::from(source[3]) * u32::from(opacity) + 127) / 255) as u8;
                 source_over(&mut self.rgba[di..di + 4], source);
             }
@@ -380,11 +438,10 @@ impl Framebuffer {
                         .sum::<f64>()
                         / inverse_z
                 });
-                let sx = texel_coordinate(uv[0], texture.width);
-                let sy = texel_coordinate(uv[1], texture.height);
-                let si = (sy * texture.width as usize + sx) * 4;
+                let sx = bilinear_tap(uv[0], texture.width);
+                let sy = bilinear_tap(uv[1], texture.height);
                 let di = (y as usize * self.width as usize + x as usize) * 4;
-                let mut source: [u8; 4] = texture.rgba[si..si + 4].try_into().unwrap();
+                let mut source = sample_bilinear(texture, sx, sy);
                 source[3] = ((u32::from(source[3]) * u32::from(opacity) + 127) / 255) as u8;
                 source_over(&mut self.rgba[di..di + 4], source);
             }
@@ -407,12 +464,50 @@ mod tests {
         }
     }
 
+    /// Bilinear oracle at texture coordinates in texels, with straight alpha
+    /// scaled by `opacity` exactly as the rasterizer applies it.
+    fn filtered(texture: &Texture, u: f64, v: f64, opacity: u8) -> [u8; 4] {
+        let mut pixel = sample_bilinear(
+            texture,
+            bilinear_tap(u / f64::from(texture.width), texture.width),
+            bilinear_tap(v / f64::from(texture.height), texture.height),
+        );
+        pixel[3] = ((u32::from(pixel[3]) * u32::from(opacity) + 127) / 255) as u8;
+        pixel
+    }
+
+    /// Ray-oracle UVs and rasterizer UVs differ in the last bits; allow one
+    /// unit of filtered rounding per channel.
+    fn assert_close(actual: &[u8], expected: [u8; 4], context: &str) {
+        assert!(
+            actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 1),
+            "{context}: {actual:?} != {expected:?}"
+        );
+    }
+
     #[test]
-    fn stabilizes_texel_boundary_ties_without_shifting_samples() {
-        assert_eq!(texel_coordinate(0.25 - f64::EPSILON, 4), 1);
-        assert_eq!(texel_coordinate(0.25 - 1e-10, 4), 0);
-        assert_eq!(texel_coordinate(0.25 + 1e-10, 4), 1);
-        assert_eq!(texel_coordinate(1.0, 4), 3);
+    fn magnified_planes_are_filtered_without_dark_transparent_fringes() -> Result<()> {
+        let texture = Texture {
+            width: 2,
+            height: 1,
+            display_scale: 1.0,
+            rgba: vec![200, 100, 50, 255, 0, 0, 0, 0],
+        };
+        let mut frame = Framebuffer::transparent(8, 1)?;
+        frame.blit_projective(
+            &texture,
+            [[0.0, 0.0, 1.0], [8.0, 0.0, 1.0], [8.0, 1.0, 1.0], [0.0, 1.0, 1.0]],
+            (0, 0, 8, 1),
+            255,
+        )?;
+        let pixels = frame.rgba.as_chunks::<4>().0;
+        // Opaque texel center region, then a smooth alpha ramp keeping color.
+        assert_eq!(pixels[0], [200, 100, 50, 255]);
+        let alphas: Vec<_> = pixels.iter().map(|p| p[3]).collect();
+        assert!(alphas.windows(2).all(|w| w[0] >= w[1]));
+        assert!(alphas[3] > 0 && alphas[3] < 255 && alphas[4] > 0 && alphas[4] < 255);
+        assert!(pixels[2..6].iter().all(|p| p[..3] == [200, 100, 50]));
+        Ok(())
     }
 
     #[test]
@@ -498,17 +593,12 @@ mod tests {
                 let world_x = sx / (8.0 - sx);
                 let world_y = sy * (1.0 + world_x) / 8.0;
                 let expected = if (0.0..4.0).contains(&world_x) && (0.0..4.0).contains(&world_y) {
-                    [
-                        world_x.floor() as u8 * 30,
-                        world_y.floor() as u8 * 30,
-                        47,
-                        128,
-                    ]
+                    filtered(&texture, world_x, world_y, 255)
                 } else {
                     [0; 4]
                 };
                 let at = (y * 8 + x) as usize * 4;
-                assert_eq!(&frame.rgba[at..at + 4], &expected, "pixel {x},{y}");
+                assert_close(&frame.rgba[at..at + 4], expected, &format!("pixel {x},{y}"));
             }
         }
         Ok(())
@@ -547,18 +637,18 @@ mod tests {
                                 && (-2.0..2.0).contains(&world_x)
                                 && (-2.0..2.0).contains(&world_y)
                             {
-                                let sx = ((world_x + 2.0) * 2.0).floor() as u8;
-                                let sy = ((world_y + 2.0) * 2.0).floor() as u8;
-                                let [sx, sy] = if reverse { [sy, sx] } else { [sx, sy] };
-                                [sx * 30, sy * 30, 47, 64]
+                                let u = (world_x + 2.0) * 2.0;
+                                let v = (world_y + 2.0) * 2.0;
+                                let [u, v] = if reverse { [v, u] } else { [u, v] };
+                                filtered(&texture, u, v, 128)
                             } else {
                                 [0; 4]
                             };
                             let at = (y * 16 + x) * 4;
-                            assert_eq!(
+                            assert_close(
                                 &frame.rgba[at..at + 4],
-                                &expected,
-                                "pixel {x},{y}, plane {offset}+{a}X+{b}Y, near {near}, reversed {reverse}"
+                                expected,
+                                &format!("pixel {x},{y}, plane {offset}+{a}X+{b}Y, near {near}, reversed {reverse}"),
                             );
                         }
                     }
@@ -606,7 +696,8 @@ mod tests {
 
     #[test]
     fn camera_clipping_culls_hidden_planes_and_handles_vertices_on_the_near_plane() -> Result<()> {
-        let texture = grid(2, 2, 128);
+        // Unscaled, so filtering samples single texels like `blit`.
+        let texture = grid(8, 8, 128);
         let mut frame = Framebuffer::transparent(8, 8)?;
         let quad = [
             [-4.0, -4.0, 1.0],
