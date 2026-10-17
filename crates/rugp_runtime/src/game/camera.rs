@@ -183,6 +183,7 @@ impl Game {
         if let Some(object) = object {
             target = object.prepare_camera(target)?;
         }
+        let mut staged_start = None;
         let pending = if style == 0x800 {
             object
                 .and_then(|o| o.pending_camera)
@@ -191,15 +192,41 @@ impl Game {
         } else if matches!(fade, 4 | 8 | 12) {
             // Mode 12 shares the portable absolute interpolation clock. Its
             // native spatial/effect presentation is intentionally approximate.
-            let start = object.map_or(Camera::default(), |o| o.camera_start.unwrap_or(o.camera));
+            let start = object.map_or(Camera::default(), |o| {
+                let mut start = o.camera_start.unwrap_or(o.camera);
+                // Components this request names start from their current
+                // (immediately applied) value; the others keep the start
+                // captured before the immediate change.
+                if o.camera_start_staged {
+                    if screen {
+                        start.focal_length = o.camera.focal_length;
+                    } else {
+                        start.position = o.camera.position;
+                        start.angles_q4 = o.camera.angles_q4;
+                    }
+                }
+                start
+            });
+            staged_start = Some(start);
             Some(CameraTween::new(start, target, style as u8)?)
         } else {
             None
         };
         let object = self.objects.entry(id).or_default();
+        if object.camera_start_staged {
+            object.camera_start = staged_start.or(object.camera_start);
+        }
         if style == 0x800 {
             object.camera_start = Some(target);
+            object.camera_start_staged = false;
         } else if fade == 0 {
+            // Vm60 1004033e captures the move's start only while no change
+            // is pending (mask 0x88c); a later mode 4/8 request then tweens
+            // every accumulated change, zoom included, from that start.
+            if object.camera_start.is_none() {
+                object.camera_start = Some(object.camera);
+                object.camera_start_staged = true;
+            }
             object.camera = target;
         }
         object.pending_camera = pending;

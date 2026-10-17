@@ -85,6 +85,8 @@ pub struct ObjectState {
     pub camera: Camera,
     /// Native camera command style 0x800 records a start without applying it.
     camera_start: Option<Camera>,
+    /// `camera_start` was captured by an immediate (fade 0) command.
+    camera_start_staged: bool,
     pending_camera: Option<crate::world::CameraTween>,
     postures: Vec<posture::PostureInstance>,
     /// Native first slot's cached projected center (+56), updated on render.
@@ -115,6 +117,7 @@ impl Default for ObjectState {
             properties: BTreeMap::new(),
             camera: Camera::default(),
             camera_start: None,
+            camera_start_staged: false,
             pending_camera: None,
             postures: Vec::new(),
             camera_center_y: Cell::new(0),
@@ -264,6 +267,8 @@ pub struct Game {
     buffers: BTreeMap<u64, Arc<Texture>>,
     transition: Option<Transition>,
     parse_transition: Option<parse_screen::ParseTransition>,
+    /// Scene before a timed background HumanOut, until the next trigger.
+    outgoing_scene: Option<(BTreeMap<u64, ObjectState>, u32)>,
     /// A synchronous OM_ParseScreenTrigger remains pending on the VM.
     parse_wait: bool,
     wait_ms: Option<u32>,
@@ -338,6 +343,7 @@ impl Game {
             buffers: BTreeMap::new(),
             transition: None,
             parse_transition: None,
+            outgoing_scene: None,
             parse_wait: false,
             wait_ms: None,
             audio_wait: None,
@@ -637,7 +643,6 @@ impl Game {
         }
     }
     fn message(&mut self, message: Message) -> Result<()> {
-        if message.class == "OM_HumanIn" { eprintln!("HUMANIN {:?} {:?} {:?}", message.fields.get("３ＤＸ"), match message.fields.get("ベース画像") { Some(Value::Reference(r)) => r.offset, _ => None }, message.fields.get("スタイル")); if let Ok(t) = std::env::var("SCRATCH_ARM_IMG") { if matches!(message.fields.get("ベース画像"), Some(Value::Reference(r)) if r.offset.map(|o| o.to_string()) == Some(t)) { SCRATCH_ARM.store(true, std::sync::atomic::Ordering::Relaxed); } } }
         let fields = message.fields;
         if message.class == "OM_VmmFinishByUser" {
             ensure!(
@@ -988,6 +993,10 @@ impl Game {
                     // 0x1000). A styled HumanOut keeps the background image
                     // in the world; style 0 also clears the box's images,
                     // as the startup logo fade to white requires.
+                    let fade = number(&fields, "総処理時間基", 0)?;
+                    if number(&fields, "スタイル", 0)? == 0 && fade > 0 && self.outgoing_scene.is_none() {
+                        self.outgoing_scene = Some((self.objects.clone(), fade as u32));
+                    }
                     for object in self
                         .objects
                         .values_mut()
@@ -1162,6 +1171,7 @@ impl Game {
                 if self.start_parse_transition(duration)? {
                     return Ok(());
                 }
+                self.outgoing_scene = None;
                 let next = self.scene_frame()?;
                 if duration == 0 {
                     self.frame = next;
@@ -1520,4 +1530,3 @@ impl Game {
     }
 }
 
-pub(crate) static SCRATCH_ARM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

@@ -562,6 +562,7 @@ impl SceneSnapshot {
                     cameras: p.cameras.iter().map(|(id, c)| (*id, *c)).collect(),
                     elapsed: p.elapsed,
                     duration: p.duration,
+                    outgoing: None,
                 })
             })
             .transpose()?;
@@ -767,6 +768,7 @@ fn restore_objects(
                 properties: restore_properties(&o.properties, references)?,
                 camera: o.camera,
                 camera_start: o.camera_start,
+                camera_start_staged: false,
                 pending_camera: o.pending_camera,
                 postures,
                 camera_center_y: Cell::new(o.camera_center_y),
@@ -843,6 +845,7 @@ impl RestoredScene {
         game.world_frame = None;
         game.transition = self.transition;
         game.parse_transition = self.parse_transition;
+        game.outgoing_scene = None;
         game.parse_wait = self.parse_wait;
         game.posture_wait = self.posture_wait;
     }

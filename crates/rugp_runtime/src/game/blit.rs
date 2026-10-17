@@ -303,7 +303,7 @@ impl Game {
         let [Argument::Bytes(data), source, background, destination] = arguments.as_slice() else {
             bail!("invalid fade reference fields");
         };
-        let fade = Fade::from_inline(&class.name, data)?; eprintln!("FADE {} mode={:#x} at {:?}", class.name, fade.mode, self.vm.cursor().map(|c| (c.scene, c.address)));
+        let fade = Fade::from_inline(&class.name, data)?;
         ensure!(
             matches!(fade.mode, 0 | 0x11),
             "unsupported fade region mode {:#x}",

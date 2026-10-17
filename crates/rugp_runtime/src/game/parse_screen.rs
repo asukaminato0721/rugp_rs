@@ -26,6 +26,9 @@ pub(super) struct ParseTransition {
     pub(super) cameras: BTreeMap<u64, crate::world::CameraTween>,
     pub(super) elapsed: u32,
     pub(super) duration: u32,
+    /// Scene cleared by a timed background HumanOut, still swept by the
+    /// moving camera while it fades out (retail keeps drawing it).
+    pub(super) outgoing: Option<(BTreeMap<u64, ObjectState>, u32)>,
 }
 impl Game {
     pub(super) fn set_draw_ratio(
@@ -119,18 +122,21 @@ impl Game {
             .iter_mut()
             .filter_map(|(&id, o)| o.pending_draw_ratio.take().map(|c| (id, c)))
             .collect();
-        let cameras = self
+        let cameras: BTreeMap<_, _> = self
             .objects
             .iter_mut()
             .filter_map(|(&id, o)| o.pending_camera.take().map(|t| (id, t)))
             .collect();
+        let cameras_present = !cameras.is_empty();
         self.parse_transition = Some(ParseTransition {
             scene: self.objects.clone(),
             curves,
             cameras,
             elapsed: 0,
             duration,
+            outgoing: if cameras_present { self.outgoing_scene.take() } else { None },
         });
+        self.outgoing_scene = None;
         self.transition = None;
         self.advance_parse_transition(0)?;
         self.finish_parse_transition();
@@ -143,10 +149,14 @@ impl Game {
         };
         parse.elapsed = parse.elapsed.saturating_add(dt_ms).min(parse.duration);
         let progress = progress_q16(parse.elapsed, parse.duration);
+        let afterimage = !parse.cameras.is_empty() && dt_ms > 0 && parse.elapsed < parse.duration;
         for (&id, tween) in &parse.cameras {
             let mut camera = tween.sample(progress)?;
             if let Some(object) = parse.scene.get_mut(&id) {
                 camera = object.prepare_camera(camera)?;
+                object.camera = camera;
+            }
+            if let Some(object) = parse.outgoing.as_mut().and_then(|(s, _)| s.get_mut(&id)) {
                 object.camera = camera;
             }
             if let Some(object) = self.objects.get_mut(&id) {
@@ -163,11 +173,23 @@ impl Game {
                 object.opacity = opacity;
             }
         }
-        let next = Self::render_objects_mode(&parse.scene, size, self.rasterize_scene)?;
+        let mut next = Self::render_objects_mode(&parse.scene, size, self.rasterize_scene)?;
         for (&id, snapshot) in &parse.scene {
             if let Some(object) = self.objects.get(&id) {
                 object.camera_center_y.set(snapshot.camera_center_y.get());
             }
+        }
+        if let Some((scene, fade_ms)) = &parse.outgoing {
+            let remaining = 256 - (u64::from(parse.elapsed) * 256 / u64::from((*fade_ms).max(1))).min(256) as u32;
+            if remaining > 0 {
+                let old = Self::render_objects_mode(scene, size, self.rasterize_scene)?;
+                for (out, &from) in next.rgba.iter_mut().zip(&old.rgba) {
+                    *out = ((u32::from(from) * remaining + u32::from(*out) * (256 - remaining) + 128) >> 8) as u8;
+                }
+            }
+        }
+        if afterimage && next.rgba.len() == self.frame.rgba.len() {
+            blend_afterimage(&mut next.rgba, &self.frame.rgba, dt_ms);
         }
         self.frame = next;
         Ok(())
@@ -192,6 +214,19 @@ impl Game {
     }
 }
 
+/// Retail camera moves under ParseScreen leave trails of earlier frames
+/// (rvmm CMimeExclusiveForAfterImage keeps a constant weight until progress
+/// reaches 1.0, then yields the exact final frame). Recorded retail pans
+/// fade a trail over roughly this many milliseconds.
+const AFTERIMAGE_MS: f64 = 80.0;
+
+fn blend_afterimage(next: &mut [u8], previous: &[u8], dt_ms: u32) {
+    let keep = ((-f64::from(dt_ms) / AFTERIMAGE_MS).exp() * 256.0).round() as u32;
+    for (out, &old) in next.iter_mut().zip(previous) {
+        *out = ((u32::from(old) * keep + u32::from(*out) * (256 - keep) + 128) >> 8) as u8;
+    }
+}
+
 fn progress_q16(elapsed: u32, duration: u32) -> i32 {
     if duration == 0 {
         65536
@@ -208,6 +243,19 @@ mod tests {
     use super::*;
     use rugp_assets::object::ClassId;
 
+    #[test]
+    fn afterimage_trail_decays_with_elapsed_time() {
+        let mut next = [200u8; 4];
+        blend_afterimage(&mut next, &[0; 4], 0);
+        assert_eq!(next, [0; 4], "no time elapsed keeps the shown frame");
+        let mut next = [200u8; 4];
+        blend_afterimage(&mut next, &[0; 4], 80);
+        // exp(-1) of the old frame remains after one time constant.
+        assert_eq!(next, [127; 4]);
+        let mut next = [200u8; 4];
+        blend_afterimage(&mut next, &[0; 4], 2000);
+        assert_eq!(next, [200; 4]);
+    }
     #[test]
     fn progress_and_signed_opacity_cover_zero_duration_extremes_and_q5_steps() {
         assert_eq!(progress_q16(0, 0), 65536);
@@ -725,8 +773,11 @@ mod tests {
                 fields,
             )
         };
-        let verify = |game: &Game, camera: Camera, opacity: u8| {
+        // Mid-transition frames carry the retail afterimage of the previous
+        // frame; the camera-only state and the final frame stay exact.
+        let verify = |game: &Game, trail: Option<(&[u8], u32)>, camera: Camera, opacity: u8| {
             assert_eq!(game.objects[&212259].camera, camera);
+            let mut frame = vec![0u8; 64];
             let depth = 720 - i64::from(camera.position[2]);
             let project = |vertex: i32, axis: usize, center: f64| {
                 let numerator = ((i64::from(vertex) - i64::from(camera.position[axis])) * 65536
@@ -758,13 +809,13 @@ mod tests {
                                 / 255) as u8;
                         }
                     }
-                    assert_eq!(
-                        &game.frame()[(y * 4 + x) * 4..(y * 4 + x + 1) * 4],
-                        expected,
-                        "pixel {x},{y}, camera {camera:?}"
-                    );
+                    frame[(y * 4 + x) * 4..(y * 4 + x + 1) * 4].copy_from_slice(&expected);
                 }
             }
+            if let Some((previous, dt)) = trail.filter(|_| game.parse_transition.is_some()) {
+                blend_afterimage(&mut frame, previous, dt);
+            }
+            assert_eq!(game.frame(), frame, "camera {camera:?}");
         };
         let initial = game.frame().to_vec();
         game.message(call(
@@ -796,10 +847,12 @@ mod tests {
         assert_eq!(game.frame(), initial);
         game.message(trigger(400))?;
         assert!(game.transition.is_none());
-        verify(&game, Camera::default(), 255);
+        verify(&game, None, Camera::default(), 255);
+        let previous = game.frame().to_vec();
         game.step(100)?;
         verify(
             &game,
+            Some((&previous, 100)),
             Camera {
                 focal_length: 900,
                 angles_q4: [4, -8, 12],
@@ -816,9 +869,11 @@ mod tests {
             .is_err()
         );
         assert_eq!(game.frame(), before);
+        let previous = game.frame().to_vec();
         game.step(100)?;
         verify(
             &game,
+            Some((&previous, 100)),
             Camera {
                 focal_length: 1080,
                 angles_q4: [8, -16, 24],
@@ -826,9 +881,11 @@ mod tests {
             },
             255,
         );
+        let previous = game.frame().to_vec();
         game.step(200)?;
         verify(
             &game,
+            Some((&previous, 200)),
             Camera {
                 focal_length: 1440,
                 angles_q4: [16, -32, 48],
@@ -861,6 +918,7 @@ mod tests {
         game.message(trigger(400))?;
         verify(
             &game,
+            None,
             Camera {
                 focal_length: 0,
                 angles_q4: [0; 3],
@@ -868,9 +926,11 @@ mod tests {
             },
             0,
         );
+        let previous = game.frame().to_vec();
         game.step(100)?;
         verify(
             &game,
+            Some((&previous, 100)),
             Camera {
                 focal_length: 180,
                 angles_q4: [0; 3],
@@ -879,7 +939,7 @@ mod tests {
             64,
         );
         game.step(300)?;
-        verify(&game, Camera::default(), 255);
+        verify(&game, None, Camera::default(), 255);
         assert!(game.objects[&212259].camera_start.is_none());
         // Capture after preparation overwrites the start while preserving
         // its delta; an angular restage then uses the resulting zoom target.
@@ -925,6 +985,7 @@ mod tests {
         game.message(trigger(0))?;
         verify(
             &game,
+            None,
             Camera {
                 focal_length: 1080,
                 angles_q4: [16, 0, 0],
@@ -954,9 +1015,11 @@ mod tests {
         ))?;
         assert_eq!(game.objects[&212259].camera, Camera::default());
         game.message(trigger(400))?;
+        let previous = game.frame().to_vec();
         game.step(200)?;
         verify(
             &game,
+            Some((&previous, 200)),
             Camera {
                 focal_length: 1080,
                 position: [1, -1, 20],
@@ -964,9 +1027,11 @@ mod tests {
             },
             255,
         );
+        let previous = game.frame().to_vec();
         game.step(200)?;
         verify(
             &game,
+            Some((&previous, 200)),
             Camera {
                 focal_length: 1440,
                 position: [3, -1, 40],
@@ -1001,6 +1066,7 @@ mod tests {
         game.message(trigger(0))?;
         verify(
             &game,
+            None,
             Camera {
                 focal_length: 720,
                 position: [7, 7, 0],

@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 pub(super) enum Operator {
     Mosaic,
     Invert,
+    /// rvmm 1001e900: CFadeShock never blends. Each frame moves the window
+    /// by `rand() % 32 - 16` on both axes; full alpha (0x2000) restores it.
+    Shock {
+        frame: u32,
+    },
     RightCurtain,
     Curtain {
         direction: u8,
@@ -31,6 +36,7 @@ impl SpatialFade {
         let operator = match class {
             "CFadeMozaik" => Operator::Mosaic,
             "CFadeInvert" => Operator::Invert,
+            "CFadeShock" => Operator::Shock { frame: 0 },
             "CFadeRSideCarten" => Operator::RightCurtain,
             _ => return None,
         };
@@ -124,6 +130,17 @@ impl SpatialFade {
             self.previous_alpha = Some(progress >> 5);
             return;
         }
+        if let Operator::Shock { frame } = &mut self.operator {
+            *frame = frame.wrapping_add(1);
+            let offset = if progress >= 8192 {
+                (0, 0)
+            } else {
+                shake_offset(*frame)
+            };
+            render_shock(output, source, size, offset);
+            self.previous_alpha = Some(progress >> 5);
+            return;
+        }
         let alpha = progress >> 5;
         let [x, y, w, h] = self.rectangle.map(i64::from);
         let width = i64::from(size.0);
@@ -152,7 +169,7 @@ impl SpatialFade {
             for column in x.max(0)..(x + w).min(width) {
                 let target = ((row * width + column) * 4) as usize;
                 match self.operator {
-                    Operator::Stretch { .. } => unreachable!(),
+                    Operator::Stretch { .. } | Operator::Shock { .. } => unreachable!(),
                     Operator::Mosaic => {
                         // rvmm 1003b700 samples the upper-left pixel of each
                         // block. The grid starts at the effect rectangle.
@@ -272,6 +289,26 @@ impl SpatialFade {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shock_moves_the_whole_image_and_settles_at_full_alpha() {
+        let mut fade = SpatialFade::from_class("CFadeShock", [0; 4]).unwrap();
+        let source: Vec<u8> = (0..64u8).flat_map(|i| [i * 4, 0, 0, 255]).collect();
+        let mut output = vec![9; source.len()];
+        let mut moved = false;
+        for _ in 0..8 {
+            fade.render_q13(&mut output, &source, (8, 8), 4096);
+            let (dx, dy) = match fade.operator {
+                Operator::Shock { frame } => shake_offset(frame),
+                _ => unreachable!(),
+            };
+            assert!((-16..16).contains(&dx) && (-16..16).contains(&dy));
+            moved |= output != source;
+        }
+        assert!(moved);
+        fade.render_q13(&mut output, &source, (8, 8), 8192);
+        assert_eq!(output, source);
+    }
+
     use super::*;
     #[test]
     fn stretch_uses_source_geometry_q13_opacity_and_native_zero_extent() {
@@ -400,6 +437,32 @@ mod tests {
             assert_eq!(resumed, output);
             effect.render(&mut output, &source, size, 256);
             assert_eq!(output, source);
+        }
+    }
+}
+
+/// Native rand() per frame; a fixed sequence keeps replays reproducible.
+fn shake_offset(frame: u32) -> (i64, i64) {
+    let mut state = frame.wrapping_mul(0x9E37_79B9) ^ 0x5bd1_e995;
+    let mut next = || {
+        state = state.wrapping_mul(214_013).wrapping_add(2_531_011);
+        i64::from((state >> 16) & 0x7fff) % 32 - 16
+    };
+    (next(), next())
+}
+
+fn render_shock(output: &mut [u8], source: &[u8], size: (u32, u32), (dx, dy): (i64, i64)) {
+    let (width, height) = (i64::from(size.0), i64::from(size.1));
+    for row in 0..height {
+        for column in 0..width {
+            let target = ((row * width + column) * 4) as usize;
+            let (sx, sy) = (column - dx, row - dy);
+            if (0..width).contains(&sx) && (0..height).contains(&sy) {
+                let sample = ((sy * width + sx) * 4) as usize;
+                output[target..target + 4].copy_from_slice(&source[sample..sample + 4]);
+            } else {
+                output[target..target + 3].fill(0);
+            }
         }
     }
 }
