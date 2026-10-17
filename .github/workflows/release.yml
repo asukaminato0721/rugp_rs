@@ -64,6 +64,13 @@ jobs:
           rustup default stable
           rustup target add "$TARGET"
 
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          # Tag builds reuse master's cache but never write their own.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: Test
         run: cargo test --locked --workspace --target "$TARGET"
 
@@ -73,7 +80,7 @@ jobs:
       - name: Smoke test
         run: |
           "target/$TARGET/release/$BINARY" --version
-          "target/$TARGET/release/$BINARY" play --help
+          "target/$TARGET/release/$BINARY" --help
 
       - name: Package Linux and macOS
         if: runner.os != 'Windows'
