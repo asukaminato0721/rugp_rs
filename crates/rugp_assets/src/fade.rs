@@ -108,6 +108,25 @@ pub struct Fade {
     pub color: Option<[u8; 3]>,
     pub stretch: Option<Stretch>,
     pub curtain: Option<Curtain>,
+    pub qube: Option<Qube>,
+}
+/// CFadeQubeStretchAnti#12 after its CFadeStretchAnti base (rvmm 10020570).
+/// The face warp tilts about the screen axes; the blend weighs the warped
+/// source against the destination, both in 1/256 units.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Qube {
+    pub reserved: i16,
+    /// Source weight, then destination weight, each from start to end.
+    pub source_weight: [i16; 2],
+    pub destination_weight: [i16; 2],
+    /// Unused by the renderer; the vertical pivot when `pivot_from_rect` is 0.
+    pub center: [i16; 2],
+    /// Tilts about the vertical and horizontal axes (4096 per turn), then
+    /// one more unused axis; start triple and end triple.
+    pub angles: [[i16; 3]; 2],
+    /// Nonzero: pivot at the vertical centre of the interpolated destination.
+    pub pivot_from_rect: u8,
 }
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,7 +195,7 @@ impl Fade {
         let parameters = r.position;
         let stretch = if matches!(
             class,
-            "CFadeStretch" | "CFadeStretchAnti" | "CFadeOverStretchAnti"
+            "CFadeStretch" | "CFadeStretchAnti" | "CFadeOverStretchAnti" | "CFadeQubeStretchAnti"
         ) {
             let mut destination_end = [0; 4];
             let mut source_end = [0; 4];
@@ -202,6 +221,25 @@ impl Fade {
         } else {
             None
         };
+        let qube = if class == "CFadeQubeStretchAnti" {
+            let mut words = [0i16; 13];
+            for word in &mut words {
+                *word = r.u16()? as i16;
+            }
+            Some(Qube {
+                reserved: words[0],
+                source_weight: [words[1], words[2]],
+                destination_weight: [words[3], words[4]],
+                center: [words[5], words[6]],
+                angles: [
+                    [words[7], words[8], words[9]],
+                    [words[10], words[11], words[12]],
+                ],
+                pivot_from_rect: r.u8()?,
+            })
+        } else {
+            None
+        };
         r.position = parameters;
         let color = match class {
             "CFadeMergeBlack" | "CFadeXsMergeBlack" => Some([0, 0, 0]),
@@ -220,6 +258,7 @@ impl Fade {
             color,
             stretch,
             curtain,
+            qube,
         })
     }
 }

@@ -477,13 +477,11 @@ fn retail_extended_background_host_group_matches_independent_pixel_oracle() -> R
                         if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
                             continue;
                         }
-                        let sx = (u * f64::from(texture.width)).floor() as usize;
-                        let sy = (v * f64::from(texture.height)).floor() as usize;
-                        let si = (sy * texture.width as usize + sx) * 4;
+                        let sample = crate::render::projective::sample_uv(texture, u, v);
                         let di = (y * 1024 + x) * 4;
-                        let alpha = u32::from(texture.rgba[si + 3]);
+                        let alpha = u32::from(sample[3]);
                         for c in 0..3 {
-                            expected[di + c] = ((u32::from(texture.rgba[si + c]) * alpha
+                            expected[di + c] = ((u32::from(sample[c]) * alpha
                                 + u32::from(expected[di + c]) * (255 - alpha)
                                 + 127)
                                 / 255) as u8;

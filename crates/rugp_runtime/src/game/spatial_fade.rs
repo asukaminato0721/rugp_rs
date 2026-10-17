@@ -1,5 +1,5 @@
 //! Pixel operators decoded from the retail rvmm.dll.
-use rugp_assets::fade::{Fade, Stretch};
+use rugp_assets::fade::{Fade, Qube, Stretch};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -19,6 +19,13 @@ pub(super) enum Operator {
         parameters: Stretch,
         source: [i16; 4],
         history: bool,
+    },
+    /// rvmm 10020720/10048030: a stretched face tilted in perspective,
+    /// blended over the frame it is drawn into (the turn's motion trail).
+    Qube {
+        parameters: Stretch,
+        source: [i16; 4],
+        qube: Qube,
     },
 }
 
@@ -74,12 +81,20 @@ impl SpatialFade {
                     }
                 }
             }
-            Self {
-                operator: Operator::Stretch {
+            let operator = match fade.qube {
+                Some(qube) => Operator::Qube {
+                    parameters,
+                    source: fade.rectangles[0],
+                    qube,
+                },
+                None => Operator::Stretch {
                     parameters,
                     source: fade.rectangles[0],
                     history: false,
                 },
+            };
+            Self {
+                operator,
                 rectangle,
                 previous_alpha: None,
                 source_size,
@@ -91,8 +106,16 @@ impl SpatialFade {
         Some(effect)
     }
 
+    /// Stretch-based operators sample the unplaced source surface.
+    pub fn samples_raw_source(&self) -> bool {
+        matches!(
+            self.operator,
+            Operator::Stretch { .. } | Operator::Qube { .. }
+        )
+    }
+
     pub fn source_size(&self, fallback: (u32, u32)) -> (u32, u32) {
-        if matches!(self.operator, Operator::Stretch { .. }) {
+        if self.samples_raw_source() {
             self.source_size
         } else {
             fallback
@@ -105,6 +128,7 @@ impl SpatialFade {
             Operator::RightCurtain
                 | Operator::Curtain { .. }
                 | Operator::Stretch { history: true, .. }
+                | Operator::Qube { .. }
         ) && self.previous_alpha.is_some()
     }
 
@@ -127,6 +151,16 @@ impl SpatialFade {
         } = self.operator
         {
             self.render_stretch(output, source, size, start, parameters, progress);
+            self.previous_alpha = Some(progress >> 5);
+            return;
+        }
+        if let Operator::Qube {
+            parameters,
+            source: start,
+            qube,
+        } = self.operator
+        {
+            self.render_qube(output, source, size, start, parameters, qube, progress);
             self.previous_alpha = Some(progress >> 5);
             return;
         }
@@ -169,7 +203,9 @@ impl SpatialFade {
             for column in x.max(0)..(x + w).min(width) {
                 let target = ((row * width + column) * 4) as usize;
                 match self.operator {
-                    Operator::Stretch { .. } | Operator::Shock { .. } => unreachable!(),
+                    Operator::Stretch { .. } | Operator::Qube { .. } | Operator::Shock { .. } => {
+                        unreachable!()
+                    }
                     Operator::Mosaic => {
                         // rvmm 1003b700 samples the upper-left pixel of each
                         // block. The grid starts at the effect rectangle.
@@ -222,6 +258,146 @@ impl SpatialFade {
         }
     }
 
+    /// rvmm 1001ff10 interpolates both rectangles in Q13. A zero source end
+    /// extent preserves the initial extent. Destination zero remains zero.
+    fn stretch_rects(
+        &self,
+        start: [i16; 4],
+        parameters: Stretch,
+        progress: u16,
+    ) -> ([i64; 4], [i64; 4]) {
+        let p = i64::from(progress);
+        let src = std::array::from_fn(|i| {
+            let end = if i >= 2 && parameters.source_end[i] == 0 {
+                start[i]
+            } else {
+                parameters.source_end[i]
+            };
+            i64::from(start[i]) * (8192 - p) + i64::from(end) * p
+        });
+        let dst = std::array::from_fn(|i| {
+            i64::from(self.rectangle[i]) * (8192 - p) + i64::from(parameters.destination_end[i]) * p
+        });
+        (src, dst)
+    }
+
+    /// The face maps the destination rectangle onto the source rectangle
+    /// about their centres. rvmm 10048030 adds second-order perspective
+    /// terms by forward differencing; this evaluates the same polynomial
+    /// directly, with bilinear taps that are black past the image edge.
+    #[allow(clippy::too_many_arguments)]
+    fn render_qube(
+        &self,
+        output: &mut [u8],
+        source: &[u8],
+        size: (u32, u32),
+        start: [i16; 4],
+        parameters: Stretch,
+        qube: Qube,
+        progress: u16,
+    ) {
+        let (src, dst) = self.stretch_rects(start, parameters, progress);
+        let (sw, sh) = self.source_size;
+        if src[2] <= 0 || src[3] <= 0 || dst[2] <= 0 || dst[3] <= 0 || sw == 0 || sh == 0 {
+            return;
+        }
+        let p = i32::from(progress);
+        // 10020720: weights round in Q13, angles truncate toward zero.
+        let weight = |[a, b]: [i16; 2]| {
+            let a = i32::from(a);
+            a + (((i32::from(b) - a) * p + 0x1000) >> 13)
+        };
+        let source_weight = weight(qube.source_weight);
+        let destination_weight = weight(qube.destination_weight);
+        let angle = |axis: usize| {
+            let a = i32::from(qube.angles[0][axis]);
+            a + (i32::from(qube.angles[1][axis]) - a) * p / 8192
+        };
+        let ratio = dst[2] as f64 / src[2] as f64;
+        let tilt = |axis| ratio * (f64::from(angle(axis)) * std::f64::consts::TAU / 4096.0).sin();
+        let (tilt_x, tilt_y) = (tilt(0), tilt(1));
+        let q13 = |v: i64| v as f64 / 8192.0;
+        let destination_center = [q13(dst[0] + dst[2] / 2), q13(dst[1] + dst[3] / 2)];
+        let source_center = [q13(src[0] + src[2] / 2), q13(src[1] + src[3] / 2)];
+        let scale = [src[2] as f64 / dst[2] as f64, src[3] as f64 / dst[3] as f64];
+        let pivot_y = if qube.pivot_from_rect != 0 {
+            destination_center[1]
+        } else {
+            f64::from(qube.center[1])
+        };
+        // Native forward-difference constants: 15 * 2^16 for the squared
+        // terms, 8.75 * 2^16 and -683 for the cross terms (rvmm 10083750).
+        let square = 15.0 / 16384.0;
+        let cross_u = 573_440.0 / f64::from(1u32 << 29);
+        let cross_v = 683.0 / f64::from(1u32 << 19);
+        let plain = source_weight == 256 && destination_weight == 0;
+        let width = i64::from(size.0);
+        let left = (dst[0] >> 13).max(0);
+        let top = (dst[1] >> 13).max(0);
+        let right = ((dst[0] + dst[2]) >> 13).min(width);
+        let bottom = ((dst[1] + dst[3]) >> 13).min(i64::from(size.1));
+        let texel = |x: i64, y: i64, channel: usize| -> i32 {
+            if x < i64::from(sw) && y < i64::from(sh) {
+                i32::from(source[((y * i64::from(sw) + x) * 4) as usize + channel])
+            } else {
+                0
+            }
+        };
+        for row in top..bottom {
+            let y = row as f64 - pivot_y;
+            let base_y = row as f64 - destination_center[1];
+            for column in left..right {
+                let x = column as f64 - destination_center[0];
+                let u = source_center[0]
+                    + x * scale[0]
+                    + x * x * square * tilt_x
+                    + x * y * cross_u * tilt_y;
+                let v = source_center[1]
+                    + base_y * scale[1]
+                    + y * y * square * tilt_y
+                    + x * y * cross_v * tilt_x;
+                let target = ((row * width + column) * 4) as usize;
+                let pixel = &mut output[target..target + 4];
+                if u < 0.0 || v < 0.0 {
+                    pixel.copy_from_slice(&[0, 0, 0, 255]);
+                    continue;
+                }
+                let (ui, vi) = (u.floor() as i64, v.floor() as i64);
+                if ui >= i64::from(sw) || vi >= i64::from(sh) {
+                    if plain {
+                        pixel.copy_from_slice(&[0, 0, 0, 255]);
+                    } else if parameters.options == 2 {
+                        for value in &mut pixel[..3] {
+                            *value = ((i32::from(*value) * destination_weight) >> 8) as u8;
+                        }
+                    }
+                    continue;
+                }
+                // 14-bit fractions, as the MMX loop keeps them.
+                let fx = ((u - ui as f64) * 16384.0) as i32;
+                let fy = ((v - vi as f64) * 16384.0) as i32;
+                for (channel, value) in pixel.iter_mut().take(3).enumerate() {
+                    let lerp = |a: i32, b: i32, f: i32| a + (((b - a) * 4 * f) >> 16);
+                    let top = lerp(texel(ui, vi, channel), texel(ui + 1, vi, channel), fx);
+                    let bottom = lerp(
+                        texel(ui, vi + 1, channel),
+                        texel(ui + 1, vi + 1, channel),
+                        fx,
+                    );
+                    let sample = lerp(top, bottom, fy).clamp(0, 255);
+                    *value = if plain {
+                        sample as u8
+                    } else {
+                        (((sample * source_weight) >> 8)
+                            + ((i32::from(*value) * destination_weight) >> 8))
+                            .clamp(0, 255) as u8
+                    };
+                }
+                pixel[3] = 255;
+            }
+        }
+    }
+
     fn render_stretch(
         &self,
         output: &mut [u8],
@@ -232,19 +408,7 @@ impl SpatialFade {
         progress: u16,
     ) {
         let p = i64::from(progress);
-        // rvmm 1001ff10 interpolates in Q13. A zero source end extent
-        // preserves the initial extent. Destination zero remains zero.
-        let src: [i64; 4] = std::array::from_fn(|i| {
-            let end = if i >= 2 && parameters.source_end[i] == 0 {
-                start[i]
-            } else {
-                parameters.source_end[i]
-            };
-            i64::from(start[i]) * (8192 - p) + i64::from(end) * p
-        });
-        let dst: [i64; 4] = std::array::from_fn(|i| {
-            i64::from(self.rectangle[i]) * (8192 - p) + i64::from(parameters.destination_end[i]) * p
-        });
+        let (src, dst) = self.stretch_rects(start, parameters, progress);
         if src[2] <= 0 || src[3] <= 0 || dst[2] <= 0 || dst[3] <= 0 {
             return;
         }
@@ -351,6 +515,93 @@ mod tests {
             output.chunks(4).map(|p| p[0]).collect::<Vec<_>>(),
             [50, 65, 80, 85]
         );
+    }
+
+    fn qube(
+        source: [i16; 4],
+        source_end: [i16; 4],
+        weights: [[i16; 2]; 2],
+        tilt: [i16; 2],
+        size: (u32, u32),
+    ) -> SpatialFade {
+        SpatialFade {
+            operator: Operator::Qube {
+                parameters: Stretch {
+                    destination_end: [0, 0, size.0 as i16, size.1 as i16],
+                    source_end,
+                    options: 1,
+                    frames: 0,
+                    opacity: [8192, 8192],
+                },
+                source,
+                qube: Qube {
+                    reserved: 0,
+                    source_weight: weights[0],
+                    destination_weight: weights[1],
+                    center: [size.0 as i16 / 2, size.1 as i16 / 2],
+                    angles: [[tilt[0], 0, 0], [tilt[1], 0, 0]],
+                    pivot_from_rect: 1,
+                },
+            },
+            rectangle: [0, 0, size.0 as i16, size.1 as i16],
+            previous_alpha: None,
+            source_size: size,
+        }
+    }
+
+    #[test]
+    fn untilted_unweighted_qube_copies_its_source() {
+        let size = (16u32, 8u32);
+        let source: Vec<u8> = (0..size.0 * size.1)
+            .flat_map(|i| [i as u8, (i * 3) as u8, 7, 255])
+            .collect();
+        let full = [0, 0, 16, 8];
+        let mut fade = qube(full, full, [[256, 256], [0, 0]], [0, 0], size);
+        let mut output = vec![9; source.len()];
+        fade.render_q13(&mut output, &source, size, 4096);
+        assert_eq!(output, source);
+        assert!(fade.keeps_previous_frame());
+    }
+
+    #[test]
+    fn qube_blends_over_its_trail_blackens_before_the_image_and_keeps_past_it() {
+        let size = (16u32, 4u32);
+        let source = [200, 100, 0, 255].repeat(64);
+        // The window starts half an image to the left and ends past the
+        // right edge: leading columns are black, trailing ones untouched.
+        let mut fade = qube(
+            [-8, 0, 16, 4],
+            [16, 0, 16, 4],
+            [[64, 64], [192, 192]],
+            [0, 0],
+            size,
+        );
+        let mut output = [40, 40, 40, 255].repeat(64);
+        fade.render_q13(&mut output, &source, size, 0);
+        assert_eq!(&output[..4], &[0, 0, 0, 255]);
+        // 200*64/256 + 40*192/256
+        assert_eq!(&output[12 * 4..][..4], &[80, 55, 30, 255]);
+        let mut output = [40, 40, 40, 255].repeat(64);
+        fade.render_q13(&mut output, &source, size, 8192);
+        assert_eq!(output, [40, 40, 40, 255].repeat(64));
+    }
+
+    #[test]
+    fn qube_tilt_recedes_one_side_in_perspective() {
+        let size = (64u32, 32u32);
+        let source = [255, 255, 255, 255].repeat(64 * 32);
+        let full = [0, 0, 64, 32];
+        let mut fade = qube(full, full, [[256, 256], [0, 0]], [-400, -400], size);
+        let mut output = [9, 9, 9, 255].repeat(64 * 32);
+        fade.render_q13(&mut output, &source, size, 0);
+        let lit = |column: usize| {
+            (0..32)
+                .filter(|row| output[(row * 64 + column) * 4] == 255)
+                .count()
+        };
+        // Columns left of the pivot sample beyond the image rows.
+        assert!(lit(2) < lit(32), "{} {}", lit(2), lit(32));
+        assert_eq!(lit(32), 32);
     }
 
     #[test]

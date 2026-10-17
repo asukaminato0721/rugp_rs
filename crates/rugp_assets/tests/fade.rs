@@ -103,3 +103,26 @@ fn over_stretch_preserves_signed_geometry_and_q13_envelopes() -> Result<()> {
     assert_eq!(fade.curve.alpha(65, 256), 128);
     Ok(())
 }
+
+#[test]
+fn qube_stretch_reads_its_weights_pivot_and_tilt_after_the_stretch_base() -> Result<()> {
+    // Retail scene 60 at 0x1034: the outgoing face of the 1024-wide turn.
+    let mut data = body(false);
+    data.extend([
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x58, 0x02, 0x7c, 0x00, 0x00, 0x00, 0x40, 0x01, 0x58,
+        0x02, 0x01, 0x00, 0x00, 0x40, 0x00, 0x04, 0x00, 0xc0, 0x00, 0xfc, 0x00, 0x00, 0x02, 0x2c,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x01,
+    ]);
+    let fade = Fade::from_inline("CFadeQubeStretchAnti", &data)?;
+    let stretch = fade.stretch.unwrap();
+    assert_eq!(stretch.destination_end, [0, 0, 1024, 600]);
+    assert_eq!(stretch.source_end, [124, 0, 320, 600]);
+    assert_eq!(stretch.options, 1);
+    let qube = fade.qube.unwrap();
+    assert_eq!(qube.source_weight, [64, 4]);
+    assert_eq!(qube.destination_weight, [192, 252]);
+    assert_eq!(qube.center, [512, 300]);
+    assert_eq!(qube.angles, [[0, 0, 0], [-400, 0, 0]]);
+    assert_eq!(qube.pivot_from_rect, 1);
+    Ok(())
+}

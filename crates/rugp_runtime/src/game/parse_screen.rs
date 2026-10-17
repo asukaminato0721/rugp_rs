@@ -863,13 +863,9 @@ mod tests {
                         && (0.0..1.0).contains(&u)
                         && (0.0..1.0).contains(&v)
                     {
-                        let sx = (u * 16.0).floor() as usize;
-                        let sy = (v * 16.0).floor() as usize;
+                        let sample = crate::render::projective::sample_uv(&texture, u, v);
                         for (c, out) in expected[..3].iter_mut().enumerate() {
-                            *out = ((u32::from(texture.rgba[(sy * 16 + sx) * 4 + c])
-                                * u32::from(opacity)
-                                + 127)
-                                / 255) as u8;
+                            *out = ((u32::from(sample[c]) * u32::from(opacity) + 127) / 255) as u8;
                         }
                     }
                     frame[(y * 4 + x) * 4..(y * 4 + x + 1) * 4].copy_from_slice(&expected);

@@ -117,6 +117,17 @@ fn sample_bilinear(texture: &Texture, x: Tap, y: Tap) -> [u8; 4] {
     output
 }
 
+/// Bilinear sample at normalized texture coordinates (independent test
+/// oracles share the filter, not the rasterizer's geometry).
+#[cfg(test)]
+pub(crate) fn sample_uv(texture: &Texture, u: f64, v: f64) -> [u8; 4] {
+    sample_bilinear(
+        texture,
+        bilinear_tap(u, texture.width),
+        bilinear_tap(v, texture.height),
+    )
+}
+
 /// A directed edge equation. Reversing an edge negates all coefficients
 /// exactly, including the shared diagonal: no double alpha blend or cracks.
 struct Edge {
@@ -496,7 +507,12 @@ mod tests {
         let mut frame = Framebuffer::transparent(8, 1)?;
         frame.blit_projective(
             &texture,
-            [[0.0, 0.0, 1.0], [8.0, 0.0, 1.0], [8.0, 1.0, 1.0], [0.0, 1.0, 1.0]],
+            [
+                [0.0, 0.0, 1.0],
+                [8.0, 0.0, 1.0],
+                [8.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ],
             (0, 0, 8, 1),
             255,
         )?;
@@ -648,7 +664,9 @@ mod tests {
                             assert_close(
                                 &frame.rgba[at..at + 4],
                                 expected,
-                                &format!("pixel {x},{y}, plane {offset}+{a}X+{b}Y, near {near}, reversed {reverse}"),
+                                &format!(
+                                    "pixel {x},{y}, plane {offset}+{a}X+{b}Y, near {near}, reversed {reverse}"
+                                ),
                             );
                         }
                     }

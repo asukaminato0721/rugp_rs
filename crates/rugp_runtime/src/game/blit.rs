@@ -434,7 +434,7 @@ impl Game {
         let scales = class.name.contains("Stretch");
         let source = if spatial
             .as_ref()
-            .is_some_and(|s| matches!(s.operator, super::spatial_fade::Operator::Stretch { .. }))
+            .is_some_and(super::spatial_fade::SpatialFade::samples_raw_source)
         {
             Texture {
                 width: source.width,

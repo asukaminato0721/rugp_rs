@@ -436,6 +436,9 @@ impl SceneSnapshot {
                 }
                 if let spatial_fade::Operator::Stretch {
                     parameters, source, ..
+                }
+                | spatial_fade::Operator::Qube {
+                    parameters, source, ..
                 } = spatial.operator
                 {
                     ensure!(

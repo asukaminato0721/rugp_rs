@@ -285,7 +285,15 @@ mod tests {
                     })
                     .chain([255])
                     .collect();
-                assert_eq!(&game.frame()[pixel..pixel + 4], expected.as_slice());
+                // Filtering blends neighbouring skin texels by a few units.
+                let actual = &game.frame()[pixel..pixel + 4];
+                assert!(
+                    actual
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, e)| a.abs_diff(*e) <= 3),
+                    "{actual:?} != {expected:?}"
+                );
                 if let Some(path) = std::env::var_os("RUGP_TEST_FRAME") {
                     let mut ppm = format!("P6\n{} {}\n255\n", game.frame.width, game.frame.height)
                         .into_bytes();
