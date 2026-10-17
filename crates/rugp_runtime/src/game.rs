@@ -383,13 +383,21 @@ impl Game {
     pub fn size(&self) -> (u32, u32) {
         (self.frame.width, self.frame.height)
     }
-    /// Script permission flag; the save operation additionally checks lifecycle/waits.
+    /// OM_SetUucSaveSwitch セーブモード設定, kept for checkpoints. It is not a save
+    /// lock: the retail scripts only ever set 0, from title-screen routines,
+    /// and the retail game still saves in the story.
     pub fn script_save_enabled(&self) -> bool {
         self.script_save_enabled
     }
     /// The script has finished; there is nothing left to save.
     pub fn ended(&self) -> bool {
         self.ended
+    }
+    /// Retail saves only at a key-input wait: a ▼ text page or a choice.
+    pub fn can_save(&self) -> bool {
+        !self.load_requested
+            && !self.ended
+            && (self.dialogue_waits_for_input() || self.waiting_for_selection())
     }
     pub fn waiting_for_load(&self) -> bool {
         self.load_requested

@@ -479,14 +479,12 @@ impl App {
                 _ => (width as i32 / 2, height as i32 / 2),
             }
         });
-        // Vm60 greys save/load/restart while the script disables saving.
-        let saving = self.game.script_save_enabled();
         let state = menu_panel::State {
             read_skip: self.preferences.read_skip,
             auto: self.controls.automatic(),
-            save: saving && !self.game.waiting_for_load(),
-            load: saving,
-            restart: saving && self.reopen.is_some(),
+            save: self.game.can_save(),
+            load: true,
+            restart: self.reopen.is_some(),
             fullscreen: self.preferences.fullscreen,
             scale: self.preferences.window_scale,
             sound: [
@@ -666,9 +664,6 @@ impl App {
             }
         }
     }
-    fn can_save(&self) -> bool {
-        self.game.script_save_enabled() && !self.game.waiting_for_load() && !self.game.ended()
-    }
     /// Drop a menu-bar menu under its title.
     fn open_bar(&mut self, index: usize) -> Result<()> {
         let top = if self.preferences.fullscreen {
@@ -689,7 +684,7 @@ impl App {
         self.apply_preferences(preferences)
     }
     fn open_browser(&mut self, mode: BrowserMode) -> Result<()> {
-        if mode == BrowserMode::Save && !self.can_save() {
+        if mode == BrowserMode::Save && !self.game.can_save() {
             return Ok(());
         }
         if let Some(browser) = &self.browser
@@ -782,7 +777,7 @@ impl App {
         }
     }
     fn write_save(&mut self, slot: u32, comment: String) -> Result<()> {
-        anyhow::ensure!(self.can_save(), "saving is not available now");
+        anyhow::ensure!(self.game.can_save(), "saving is not available now");
         let snapshot = self.game.snapshot()?;
         let header = save_store::header(&self.game, comment);
         self.saves.save(slot, &header, &snapshot)
@@ -1487,6 +1482,74 @@ impl ApplicationHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME; requires a Japanese outline font"]
+    fn retail_story_pages_save_and_load_back() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let directory = std::env::temp_dir().join(format!(
+            "rugp-story-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let game = Game::open_persistent(root.as_ref(), &directory)?;
+        let originals = Some(directory.join("Vmreg"));
+        let native_saves = native_store::NativeStore::detect(&game, originals, vec![])?;
+        let mut app = App::new(game, None, native_saves);
+        app.apply_preferences(Preferences::default())?;
+        let mut audio = None;
+        let mut saved = Vec::new();
+        // New Game, then save every few pages of the prologue.
+        for page in 0..20_000 {
+            if saved.len() == 6 {
+                break;
+            }
+            if app.game.waiting_for_selection() {
+                app.game.navigate_selection(1)?;
+                app.game.activate_selection()?;
+            } else if app.game.dialogue_waits_for_input() {
+                if page % 7 == 0 {
+                    let slot = saved.len() as u32 + 1;
+                    let state = (app.game.vm.cursor().cloned(), app.game.frame().to_vec());
+                    app.open_browser(BrowserMode::Save)?;
+                    app.browser_action(BrowserAction::Save {
+                        slot,
+                        comment: format!("{slot}"),
+                    })?;
+                    assert!(!app.browser_open(), "save {slot} failed");
+                    saved.push((slot, state));
+                }
+                app.game.activate_selection()?;
+            } else if app.game.waiting_for_input() {
+                app.game.activate_selection()?;
+            }
+            app.game.skip_video()?;
+            app.game.step(100)?;
+            rugp_runtime::audio::mute_requests(&mut app.game, &mut audio)?;
+        }
+        assert_eq!(saved.len(), 6);
+        for (slot, (cursor, frame)) in saved {
+            app.open_browser(BrowserMode::Load)?;
+            app.browser_action(BrowserAction::Load {
+                slot,
+                kind: save_store::Kind::Port,
+            })?;
+            assert!(!app.browser_open(), "load {slot} failed");
+            assert_eq!(app.game.vm.cursor(), cursor.as_ref());
+            assert!(app.game.frame() == frame.as_slice());
+            // A loaded page plays on.
+            for _ in 0..30 {
+                app.game.activate_selection()?;
+                app.game.step(100)?;
+                rugp_runtime::audio::mute_requests(&mut app.game, &mut audio)?;
+            }
+            assert_ne!(app.game.vm.cursor(), cursor.as_ref());
+        }
+        drop(app);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
     #[test]
     #[ignore = "set RUGP_TEST_GAME; requires a Japanese outline font"]
     fn retail_settings_and_context_menu_pause_preserve_input_and_handle_invalid_native_loads()

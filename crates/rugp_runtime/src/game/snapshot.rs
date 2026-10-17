@@ -40,13 +40,12 @@ impl Game {
         }
         format!("{:x}", digest.finalize())
     }
-    /// Capture a playable checkpoint only when the script allows saving.
+    /// Capture a playable checkpoint of a running game.
     pub fn snapshot(&self) -> Result<GameSnapshot> {
         ensure!(
             !self.load_requested,
             "cannot save while browsing for a load"
         );
-        ensure!(self.script_save_enabled, "saving is disabled by the script");
         ensure!(!self.ended, "cannot save an ended game");
         self.capture_snapshot()
     }
@@ -288,9 +287,6 @@ mod tests {
                 .read_string("key", ""),
             "newer"
         );
-        game.script_save_enabled = false;
-        assert!(game.snapshot().is_err());
-        game.script_save_enabled = true;
         game.ended = true;
         assert!(game.snapshot().is_err());
         Ok(())
