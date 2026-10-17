@@ -468,3 +468,36 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod scratch_rain {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn scratch_rain_scan() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let mut game = Game::open(root.as_ref())?;
+        let mut audio = None;
+        super::super::test_support::wait_selection(&mut game, &mut audio)?;
+        super::super::test_support::choose_image(&mut game, 1)?;
+        for _ in 0..20000 {
+            crate::audio::mute_requests(&mut game, &mut audio)?;
+            if game.dialogue_waits_for_input() {
+                let text: String = game.dialogue_page().unwrap_or(&[]).iter().filter_map(|p| match p { crate::dialogue::TextPart::Glyph(c) => Some(*c), _ => None }).collect();
+                for (want, name) in [("灰色一色の空から", "rs_school"), ("雨、やまないな", "rs_sky")] {
+                    if text.contains(want) {
+                        let mut ppm = format!("P6\n{} {}\n255\n", game.frame.width, game.frame.height).into_bytes();
+                        ppm.extend(game.frame().as_chunks::<4>().0.iter().flat_map(|p| p[..3].iter().copied()));
+                        std::fs::write(format!("{}/{name}.ppm", std::env::var("SCRATCH_OUT")?), ppm)?;
+                    }
+                }
+                if text.contains("雨、やまないな") { eprintln!("REACHED"); break; }
+                game.activate_selection()?;
+            }
+            if game.waiting_for_selection() { game.navigate_selection(1)?; game.activate_selection()?; }
+            game.skip_video()?;
+            game.step(100)?;
+        }
+        Ok(())
+    }
+}

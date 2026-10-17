@@ -23,6 +23,9 @@ impl Game {
             let data = fields
                 .get("データ")
                 .context("render variable-data payload missing")?;
+            if let Some(layer) = target.offset.filter(|_| class.name == "CLayerSimpleFlush") {
+                self.flush_parameter(layer, false, key);
+            }
             self.objects
                 .entry(target.offset.context("render object identity missing")?)
                 .or_default()
@@ -396,7 +399,9 @@ mod tests {
         game.step(0)?;
         assert_eq!(game.vm.cursor().unwrap().address, 48);
         assert_eq!(game.vm.synchronization_status, Some(true));
-        assert_eq!(game.frame(), pixels); // omitted effect has no stray overlay
+        // Mode 0 (var 15) over-exposes the window during its var 1 on-time.
+        assert_ne!(game.frame(), pixels);
+        let exposed = game.frame().to_vec();
         let cached = match &game.objects[&212259].layers[&512] {
             Layer::World(world) => Arc::clone(&world.planes[0].texture),
             _ => bail!("test background missing"),
@@ -421,7 +426,7 @@ mod tests {
             assert_eq!(object.pending_camera, pending);
             assert_eq!(game.wait_ms, wait);
             assert_eq!(game.vm.cursor().unwrap().address, 48);
-            assert_eq!(game.frame(), pixels); // clear is staged
+            assert_eq!(game.frame(), exposed); // clear is staged
         }
         game.present_scene()?;
         assert!(

@@ -1,11 +1,12 @@
 //! Window effects drawn over a parse screen after its world and actors:
 //! Xs raster distortion, OM_SetWeatherRainSnow particles and
-//! CLayerSimpleFlush flashes; plus the OM_SetSpecifyCmdLighting tint of the
+//! CLayerSimpleFlush filters; plus the OM_SetSpecifyCmdLighting tint of the
 //! actors standing in that window (the background art is already lit).
 //!
 //! Parameters, their units and their call sites are retail (see the message
-//! audit); the native particle/raster/flash kernels are not ported, so the
-//! pixels are portable approximations driven by those parameters. Every
+//! audit). The CLayerSimpleFlush kernels follow Vm60 (multiply tint and
+//! over-exposure); the particle and raster kernels are not ported, so those
+//! pixels are portable approximations driven by their parameters. Every
 //! effect is a pure function of saved object properties and a per-window
 //! effect clock, so snapshots need no extra state.
 use super::*;
@@ -43,7 +44,7 @@ fn get(properties: &BTreeMap<String, Value>, key: &str) -> i32 {
 }
 
 impl ObjectState {
-    fn effect_clock(&self) -> u32 {
+    pub(super) fn effect_clock(&self) -> u32 {
         get(&self.properties, CLOCK).max(0) as u32
     }
     fn weather_strength(&self) -> f64 {
@@ -135,6 +136,7 @@ impl Game {
             matches!(fields.get("非同期ハンドル"), None | Some(Value::Null)),
             "weather completion handles are not implemented"
         );
+        eprintln!("WEATHER {:?}", fields.iter().map(|(k, v)| format!("{k}={}", match v { Value::Integer(i) => i.to_string(), Value::Real(r) => r.to_string(), Value::Null => "null".into(), o => format!("{o:?}").chars().take(30).collect() })).collect::<Vec<_>>());
         self.objects.entry(id).or_default().set_weather(fields);
         Ok(())
     }
@@ -166,53 +168,89 @@ impl Game {
         });
         object.properties.extend(pending);
     }
-    /// CLayerSimpleFlush OM_PlayMedia: flash the window named by var 0 with
-    /// color 0, rising over var 1 and falling over var 2 (retail macros pass
-    /// 50/50 ms, or a single total in var 16).
+    /// CLayerSimpleFlush OM_PlayMedia (Vm60 10057d60 class): the layer
+    /// filters the window named by var 0 from now on. Its parameters stay
+    /// live on the layer object, so later SetColorData/SetVarData packets
+    /// (retail SC10 tint transitions) keep steering it.
     pub(super) fn play_flush(&mut self, layer: u64) -> Result<()> {
-        let Some(properties) = self.objects.get(&layer).map(|o| o.properties.clone()) else {
+        let Some(window) = flush_window(self.objects.get(&layer).map(|o| &o.properties)) else {
             return Ok(());
         };
-        let Some(Value::Reference(window)) = properties.get("render.var.0") else {
-            return Ok(());
-        };
-        let Some(window) = window.offset else {
-            return Ok(());
-        };
-        let Some(color) = color(properties.get("render.color.0")) else {
-            return Ok(());
-        };
-        let total = get(&properties, "render.var.16").clamp(0, 10_000);
-        let rise = properties
-            .get("render.var.1")
-            .map_or(total / 2, |_| get(&properties, "render.var.1"))
-            .clamp(0, 10_000);
-        let fall = properties
-            .get("render.var.2")
-            .map_or(total - total / 2, |_| get(&properties, "render.var.2"))
-            .clamp(0, 10_000);
         let start = self.effect_start(window);
-        let target = self.objects.entry(window).or_default();
-        for (key, value) in [
-            (
-                "color",
-                i32::from_le_bytes([color[2], color[1], color[0], color[3]]),
-            ),
-            ("rise", rise),
-            ("fall", fall.max(1)),
-            ("start", start),
-        ] {
-            target
-                .properties
-                .insert(format!("render.flush.{key}"), Value::Integer(value));
-        }
+        let properties = &mut self.objects.entry(window).or_default().properties;
+        properties.retain(|key, _| !key.starts_with("render.flush."));
+        properties.insert("render.flush.layer".into(), Value::Integer(layer as i32));
+        properties.insert("render.flush.start".into(), Value::Integer(start));
         Ok(())
+    }
+    /// SetColorData 11/12 and SetVarData 36 capture the value shown now as
+    /// the start of a transition that SetVarData 10 times (Vm60 10059496,
+    /// 100594be, 1005951d, 10059452); a direct color/amplitude write ends a
+    /// finished transition.
+    pub(super) fn flush_parameter(&mut self, layer: u64, color: bool, key: i32) {
+        let clock = flush_window(self.objects.get(&layer).map(|o| &o.properties))
+            .and_then(|w| self.objects.get(&w))
+            .map_or(0, ObjectState::effect_clock);
+        let Some(object) = self.objects.get_mut(&layer) else {
+            return;
+        };
+        let state = FlushState::at(&object.properties, clock);
+        let p = &mut object.properties;
+        if state.tween_done {
+            p.insert("render.color.0".into(), Value::Integer(dword(state.target)));
+            p.insert("render.color.1".into(), Value::Integer(dword(state.base)));
+            p.insert("render.var.32".into(), Value::Integer(state.amplitude));
+            p.retain(|k, _| {
+                !k.starts_with("render.flush_tween.") && !k.starts_with("render.flush_from.")
+            });
+        }
+        match (color, key) {
+            (true, 11) => {
+                p.insert(
+                    "render.flush_from.11".into(),
+                    Value::Integer(dword(state.target)),
+                );
+            }
+            (true, 12) => {
+                p.insert(
+                    "render.flush_from.12".into(),
+                    Value::Integer(dword(state.base)),
+                );
+            }
+            (false, 36) => {
+                p.insert(
+                    "render.flush_from.36".into(),
+                    Value::Integer(state.amplitude),
+                );
+            }
+            (false, 10) => {
+                p.insert(
+                    "render.flush_tween.start".into(),
+                    Value::Integer(clock as i32),
+                );
+            }
+            _ => {}
+        }
     }
     /// Advance window effect clocks, retire finished flashes and stopped
     /// weather, and redraw while something animates.
     pub(super) fn advance_effects(&mut self, dt_ms: u32) -> Result<()> {
         let mut animate = false;
-        for object in self.objects.values_mut().filter(|o| o.has_effects()) {
+        // A layer stops itself (vtable +0xc) once its run or its return to
+        // the identity tint completes.
+        let finished: Vec<u64> = self
+            .objects
+            .iter()
+            .filter_map(|(&id, window)| {
+                let layer = flush_layer(&window.properties, &self.objects)?;
+                let clock = window.effect_clock().saturating_add(dt_ms);
+                let start = get(&window.properties, "render.flush.start").max(0) as u32;
+                FlushState::at(layer, clock)
+                    .finished(layer, clock.saturating_sub(start))
+                    .then_some(id)
+            })
+            .collect();
+        for (&id, object) in self.objects.iter_mut().filter(|(_, o)| o.has_effects()) {
             let clock = object
                 .effect_clock()
                 .saturating_add(dt_ms)
@@ -220,15 +258,10 @@ impl Game {
             object
                 .properties
                 .insert(CLOCK.into(), Value::Integer(clock as i32));
-            let p = &object.properties;
-            if p.contains_key("render.flush.start") {
-                let elapsed = clock.saturating_sub(get(p, "render.flush.start").max(0) as u32);
-                let length = (get(p, "render.flush.rise") + get(p, "render.flush.fall")) as u32;
-                if elapsed > length {
-                    object
-                        .properties
-                        .retain(|key, _| !key.starts_with("render.flush."));
-                }
+            if finished.contains(&id) {
+                object
+                    .properties
+                    .retain(|key, _| !key.starts_with("render.flush."));
             }
             if object.weather_kind().is_some() && object.weather_strength() <= 0.0 {
                 let start = get(&object.properties, "render.weather_ramp.start").max(0) as u32;
@@ -267,7 +300,7 @@ pub(super) fn render_effects(
     };
     distortion(object, frame, rect, clock);
     weather(object, objects, frame, clock);
-    flush(object, frame, rect, clock);
+    flush(object, objects, frame, rect, clock);
 }
 
 /// The window rectangle intersected with the frame, as [x0, y0, x1, y1).
@@ -476,7 +509,9 @@ fn weather(
     ];
     let low = [-half[0], -half[1], near];
     let span = [2.0 * half[0], 2.0 * half[1], far - near];
-    let count = (strength * if rain { 260.0 } else { 60.0 }).min(8000.0) as u64;
+    let knob = |k: &str, d: f64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let count = (strength * if rain { 260.0 * knob("RAIN_COUNT", 1.0) } else { 60.0 }).min(8000.0) as u64;
+    let opacity = opacity * if independent.is_some() { knob("RAIN_IND_ALPHA", 1.0) } else { knob("RAIN_ALPHA", 1.0) };
     let t = f64::from(clock) / 1000.0;
     let project = |q: [f64; 3]| {
         (q[2] > near * 0.5).then(|| [cx + q[0] * focal / q[2], cy + q[1] * focal / q[2]])
@@ -550,27 +585,200 @@ fn line(
     }
 }
 
-fn flush(object: &ObjectState, frame: &mut Framebuffer, rect: [usize; 4], clock: u32) {
-    let p = &object.properties;
-    let Some(rgba) = color(p.get("render.flush.color")) else {
-        return;
-    };
-    let elapsed = f64::from(clock.saturating_sub(get(p, "render.flush.start").max(0) as u32));
-    let rise = f64::from(get(p, "render.flush.rise"));
-    let fall = f64::from(get(p, "render.flush.fall").max(1));
-    let envelope = if elapsed < rise {
-        elapsed / rise
-    } else {
-        1.0 - ((elapsed - rise) / fall).min(1.0)
-    };
-    let a = (f64::from(rgba[3]) * envelope).round() as u8;
-    if a == 0 {
-        return;
+/// The window a CLayerSimpleFlush filters (var 0).
+fn flush_window(layer: Option<&BTreeMap<String, Value>>) -> Option<u64> {
+    match layer?.get("render.var.0") {
+        Some(Value::Reference(window)) => window.offset,
+        _ => None,
     }
-    for y in rect[1]..rect[3] {
-        for x in rect[0]..rect[2] {
-            frame.pixel(x as i32, y as i32, [rgba[0], rgba[1], rgba[2], a]);
+}
+
+fn flush_layer<'a>(
+    window: &BTreeMap<String, Value>,
+    objects: &'a BTreeMap<u64, ObjectState>,
+) -> Option<&'a BTreeMap<String, Value>> {
+    let Some(Value::Integer(layer)) = window.get("render.flush.layer") else {
+        return None;
+    };
+    objects.get(&(*layer as u32 as u64)).map(|o| &o.properties)
+}
+
+fn dword(rgba: [u8; 4]) -> i32 {
+    i32::from_le_bytes([rgba[2], rgba[1], rgba[0], rgba[3]])
+}
+
+/// UnivUI ordinal 515: a random value below `n` (none for `n <= 0`). A hash
+/// of the effect time keeps replays reproducible.
+fn native_random(n: i32, seed: u32) -> i32 {
+    if n <= 0 {
+        return 0;
+    }
+    let mut x = seed.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    ((x >> 1) % n as u32) as i32
+}
+
+/// Multiply colours (0x80 per channel is identity) and amplitude, including
+/// a transition in progress (Vm60 10058300: per-channel lerp over var 10 ms).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FlushState {
+    target: [u8; 4],
+    base: [u8; 4],
+    amplitude: i32,
+    tween_done: bool,
+}
+
+impl FlushState {
+    fn at(p: &BTreeMap<String, Value>, clock: u32) -> Self {
+        // Constructor defaults: color 0 = 0xffffffff, color 1 = 0xff808080.
+        let mut state = Self {
+            target: color(p.get("render.color.0")).unwrap_or([255; 4]),
+            base: color(p.get("render.color.1")).unwrap_or([128, 128, 128, 255]),
+            amplitude: get(p, "render.var.32"),
+            tween_done: false,
+        };
+        if let Some(start) = p.get("render.flush_tween.start") {
+            let duration = get(p, "render.var.10");
+            let elapsed = i64::from(clock) - i64::from(start.integer().unwrap_or(0));
+            let progress = if duration <= 0 {
+                0x10000
+            } else {
+                (elapsed * 0x10000 / i64::from(duration)).clamp(0, 0x10000)
+            };
+            let lerp = |from: i64, to: i64| from + (((to - from) * progress) >> 16);
+            let channels =
+                |from: Option<[u8; 4]>, to: Option<[u8; 4]>, current: [u8; 4]| match (from, to) {
+                    (Some(from), Some(to)) => {
+                        std::array::from_fn(|c| lerp(i64::from(from[c]), i64::from(to[c])) as u8)
+                    }
+                    _ => current,
+                };
+            state.target = channels(
+                color(p.get("render.flush_from.11")),
+                color(p.get("render.color.11")),
+                state.target,
+            );
+            state.base = channels(
+                color(p.get("render.flush_from.12")),
+                color(p.get("render.color.12")),
+                state.base,
+            );
+            if p.contains_key("render.flush_from.36") {
+                state.amplitude = lerp(
+                    i64::from(get(p, "render.flush_from.36")),
+                    i64::from(get(p, "render.var.36")),
+                ) as i32;
+            }
+            state.tween_done = progress >= 0x10000;
         }
+        state
+    }
+    /// Whether the layer has stopped `elapsed` ms after OM_PlayMedia.
+    fn finished(&self, p: &BTreeMap<String, Value>, elapsed: u32) -> bool {
+        let identity = |c: [u8; 4]| c[..3] == [128; 3];
+        // 1005845d: a finished transition back to identity with no
+        // amplitude stops the layer.
+        if self.tween_done && self.amplitude == 0 && identity(self.target) && identity(self.base) {
+            return true;
+        }
+        match get(p, "render.var.15") & 0xff {
+            0 => flicker(p, elapsed).is_none(),
+            1 => {
+                let period = get(p, "render.var.16");
+                get(p, "render.var.64") == 1 && i64::from(elapsed) > i64::from(period)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Mode 0 timing (Vm60 100584b0): each cycle lasts var 1 + var 2 + a random
+/// extension and exposes for its first var 1 + rnd(var 1 / 2) ms; var 3 > 0
+/// limits the cycle count. Returns whether the image is exposed now, or
+/// `None` once the run is over.
+fn flicker(p: &BTreeMap<String, Value>, elapsed: u32) -> Option<bool> {
+    let (on, off, count) = (
+        get(p, "render.var.1").max(0),
+        get(p, "render.var.2").max(0),
+        get(p, "render.var.3"),
+    );
+    let (mut lead, mut extra) = (0, 0);
+    let mut t = i64::from(elapsed);
+    let mut cycles = 0;
+    loop {
+        let length = i64::from(on + off + extra);
+        if length <= 0 || t < length {
+            break;
+        }
+        t -= length;
+        cycles += 1;
+        lead = native_random(on / 2, cycles as u32);
+        extra = native_random(off, cycles as u32 ^ 0x5555) + lead;
+        if cycles > 100_000 {
+            break;
+        }
+    }
+    if count > 0 && cycles >= count {
+        return None;
+    }
+    Some(t < i64::from(lead + on))
+}
+
+fn flush(
+    object: &ObjectState,
+    objects: &BTreeMap<u64, ObjectState>,
+    frame: &mut Framebuffer,
+    rect: [usize; 4],
+    clock: u32,
+) {
+    let Some(layer) = flush_layer(&object.properties, objects) else {
+        return;
+    };
+    let elapsed = clock.saturating_sub(get(&object.properties, "render.flush.start").max(0) as u32);
+    let stride = frame.width as usize;
+    let mut each = |f: &dyn Fn(usize, u8) -> u8| {
+        for y in rect[1]..rect[3] {
+            for x in rect[0]..rect[2] {
+                let o = (y * stride + x) * 4;
+                for c in 0..3 {
+                    frame.rgba[o + c] = f(c, frame.rgba[o + c]);
+                }
+            }
+        }
+    };
+    match get(layer, "render.var.15") & 0xff {
+        0 => {
+            // 1005891c: square each channel, then shift by
+            // rnd(var 4) + 8 - var 4 (saturating): a strong over-exposure.
+            if flicker(layer, elapsed) != Some(true) {
+                return;
+            }
+            let strength = get(layer, "render.var.4");
+            let shift = (native_random(strength, clock) + 8 - strength).clamp(0, 15) as u32;
+            each(&|_, v| ((u32::from(v) * u32::from(v)) >> shift).min(255) as u8);
+        }
+        1 => {
+            // 10058794: the multiply colour swings from color 1 to color 0
+            // and back every var 16 ms; amplitude scales it by 1 + a/256.
+            let period = get(layer, "render.var.16");
+            if period <= 0 {
+                return;
+            }
+            let state = FlushState::at(layer, clock);
+            let wave = -(TAU * f64::from(elapsed) / f64::from(period)).cos();
+            let weight = (wave + 1.0) * 0.5;
+            let alpha = (f64::from(state.amplitude) * wave).round() as i32;
+            let scale = (alpha + 256).clamp(0, 512) as u32;
+            let multiply: [u32; 3] = std::array::from_fn(|c| {
+                let base = f64::from(state.base[c]);
+                let mixed = (f64::from(state.target[c]) - base) * weight + base;
+                (mixed.round().clamp(0.0, 255.0) as u32 * scale) >> 7
+            });
+            each(&|c, v| ((u32::from(v) * multiply[c]) >> 8).min(255) as u8);
+        }
+        _ => {}
     }
 }
 
@@ -621,22 +829,109 @@ mod tests {
         actor.clear([200, 100, 50]);
         tint_layer(&mut actor, lit.actor_tint().unwrap());
         assert_eq!(&actor.rgba[..3], &[100, 50, 25]);
-        let flash = |clock| {
-            let mut frame = Framebuffer::new(32, 32).unwrap();
-            render_effects(
-                &object(&[
-                    ("render.flush.color", Value::Integer(0xffff_ffffu32 as i32)),
-                    ("render.flush.rise", Value::Integer(50)),
-                    ("render.flush.fall", Value::Integer(50)),
-                    ("render.flush.start", Value::Integer(0)),
-                    (CLOCK, Value::Integer(clock)),
-                ]),
-                &BTreeMap::new(),
-                &mut frame,
-            );
-            frame.rgba[0]
+    }
+    fn flush_scene(
+        layer: &[(&str, Value)],
+        clock: i32,
+    ) -> (ObjectState, BTreeMap<u64, ObjectState>) {
+        let window = object(&[
+            ("render.flush.layer", Value::Integer(7)),
+            ("render.flush.start", Value::Integer(0)),
+            (CLOCK, Value::Integer(clock)),
+        ]);
+        (window, BTreeMap::from([(7, object(layer))]))
+    }
+    fn filtered(layer: &[(&str, Value)], clock: i32, pixel: u8) -> u8 {
+        let (window, objects) = flush_scene(layer, clock);
+        let mut frame = Framebuffer::new(32, 32).unwrap();
+        frame.clear([pixel; 3]);
+        render_effects(&window, &objects, &mut frame);
+        frame.rgba[0]
+    }
+    #[test]
+    fn simple_flush_mode_1_multiplies_by_the_swinging_tint() {
+        // Retail SC3: black, then a steady 0x2f tint (x 0.37), period 100 ms.
+        let tint = |c: u32| Value::Integer((0x8000_0000 | c * 0x01_0101) as i32);
+        let layer = |c| {
+            vec![
+                ("render.var.15", Value::Integer(1)),
+                ("render.var.16", Value::Integer(100)),
+                ("render.var.32", Value::Integer(0)),
+                ("render.color.0", tint(c)),
+                ("render.color.1", tint(c)),
+            ]
         };
-        assert!(flash(0) == 0 && flash(25) > 100 && flash(50) == 255 && flash(100) == 0);
+        assert_eq!(filtered(&layer(0), 30, 200), 0);
+        assert_eq!(filtered(&layer(0x2f), 30, 200), (200 * 94 / 256) as u8);
+        assert_eq!(filtered(&layer(0x80), 30, 200), 200);
+        // Color 1 at the period start, color 0 half a period later.
+        let swing = [
+            ("render.var.15", Value::Integer(1)),
+            ("render.var.16", Value::Integer(100)),
+            ("render.color.0", tint(0)),
+            ("render.color.1", tint(0x80)),
+        ];
+        assert_eq!(filtered(&swing, 0, 100), 100);
+        assert_eq!(filtered(&swing, 50, 100), 0);
+        // Without a period nothing is drawn.
+        assert_eq!(filtered(&swing[1..], 50, 100), 100);
+    }
+    #[test]
+    fn simple_flush_transitions_back_to_identity_and_stops() {
+        let mut layer: BTreeMap<String, Value> = [
+            ("render.var.15", Value::Integer(1)),
+            ("render.var.16", Value::Integer(100)),
+            ("render.color.0", Value::Integer(0x802f_2f2fu32 as i32)),
+            ("render.color.1", Value::Integer(0x802f_2f2fu32 as i32)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        let before = FlushState::at(&layer, 1000);
+        layer.insert(
+            "render.flush_from.11".into(),
+            Value::Integer(dword(before.target)),
+        );
+        layer.insert(
+            "render.flush_from.12".into(),
+            Value::Integer(dword(before.base)),
+        );
+        layer.insert(
+            "render.color.11".into(),
+            Value::Integer(0x8080_8080u32 as i32),
+        );
+        layer.insert(
+            "render.color.12".into(),
+            Value::Integer(0x8080_8080u32 as i32),
+        );
+        layer.insert("render.var.10".into(), Value::Integer(800));
+        layer.insert("render.flush_tween.start".into(), Value::Integer(1000));
+        let half = FlushState::at(&layer, 1400);
+        assert_eq!(half.target[0], 0x2f + (0x80 - 0x2f) / 2);
+        assert!(!half.finished(&layer, 1400));
+        let end = FlushState::at(&layer, 1800);
+        assert_eq!(end.target[..3], [0x80; 3]);
+        assert!(end.finished(&layer, 1800));
+    }
+    #[test]
+    fn simple_flush_mode_0_overexposes_once_for_its_on_time() {
+        // Retail SC15: on 50 ms, off 50 ms, one cycle, strength 2.
+        let layer = [
+            ("render.var.1", Value::Integer(50)),
+            ("render.var.2", Value::Integer(50)),
+            ("render.var.3", Value::Integer(1)),
+            ("render.var.4", Value::Integer(2)),
+        ];
+        let bright = filtered(&layer, 10, 128);
+        assert!(bright == 255 || bright == 128, "{bright}");
+        assert_eq!(filtered(&layer, 10, 6), 0, "dark tones crush");
+        assert_eq!(filtered(&layer, 70, 128), 128, "off phase");
+        let p: BTreeMap<String, Value> = layer
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect();
+        assert!(!FlushState::at(&p, 70).finished(&p, 70));
+        assert!(FlushState::at(&p, 120).finished(&p, 120));
     }
     #[test]
     fn weather_ramps_from_its_previous_strength_and_draws_particles() {

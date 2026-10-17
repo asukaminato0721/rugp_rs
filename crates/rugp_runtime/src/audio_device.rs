@@ -37,9 +37,10 @@ struct PlaybackStart {
     stop_after_ms: Option<u32>,
     stereo: StereoGains,
 }
-/// BGM gain while a voice plays when ducking is on. The retail setting
-/// (CSoundManEx bSmallBgmInPlayVoice) exists; its native factor is not ported,
-/// so this is a -6 dB approximation.
+/// BGM gain while a voice plays when ducking is on (CSoundManEx
+/// bSmallBgmInPlayVoice). Retail A/B recordings with the option on and off
+/// show the BGM bass band about 6 dB lower during voiced lines and unchanged
+/// elsewhere, with partial values at the line edges.
 const DUCKED_BGM: f64 = 0.5;
 const DUCK_TWEEN_MS: u64 = 300;
 

@@ -786,6 +786,7 @@ impl Game {
             {
                 let key = number(&fields, "識別値", 0)?;
                 let data = fields.get("データ").context("color data missing")?;
+                self.flush_parameter(id, true, key);
                 self.objects
                     .entry(id)
                     .or_default()
@@ -994,7 +995,10 @@ impl Game {
                     // in the world; style 0 also clears the box's images,
                     // as the startup logo fade to white requires.
                     let fade = number(&fields, "総処理時間基", 0)?;
-                    if number(&fields, "スタイル", 0)? == 0 && fade > 0 && self.outgoing_scene.is_none() {
+                    if number(&fields, "スタイル", 0)? == 0
+                        && fade > 0
+                        && self.outgoing_scene.is_none()
+                    {
                         self.outgoing_scene = Some((self.objects.clone(), fade as u32));
                     }
                     for object in self
@@ -1032,10 +1036,21 @@ impl Game {
                     object.layers.clear();
                     // Weather belongs to the cleared background; retail
                     // scripts re-issue it for each new one (SC155 calls).
+                    // A running CLayerSimpleFlush filter ends with it too,
+                    // unless it was only started in this tick (retail SC3
+                    // tints the next background: the dimmed softball).
+                    let flush_running =
+                        object
+                            .properties
+                            .get("render.flush.start")
+                            .is_some_and(|start| {
+                                start.integer().unwrap_or(0) < object.effect_clock() as i32
+                            });
                     object.properties.retain(|name, _| {
                         !name.starts_with("native.layer.")
                             && !name.starts_with("render.weather.")
                             && !name.starts_with("render.weather_ramp.")
+                            && !(flush_running && name.starts_with("render.flush."))
                     });
                     object.menu = None;
                     self.buffers.remove(&id);
@@ -1529,4 +1544,3 @@ impl Game {
         Ok(RunState::Running)
     }
 }
-

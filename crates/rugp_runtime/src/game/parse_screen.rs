@@ -134,7 +134,11 @@ impl Game {
             cameras,
             elapsed: 0,
             duration,
-            outgoing: if cameras_present { self.outgoing_scene.take() } else { None },
+            outgoing: if cameras_present {
+                self.outgoing_scene.take()
+            } else {
+                None
+            },
         });
         self.outgoing_scene = None;
         self.transition = None;
@@ -180,11 +184,14 @@ impl Game {
             }
         }
         if let Some((scene, fade_ms)) = &parse.outgoing {
-            let remaining = 256 - (u64::from(parse.elapsed) * 256 / u64::from((*fade_ms).max(1))).min(256) as u32;
+            let remaining = 256
+                - (u64::from(parse.elapsed) * 256 / u64::from((*fade_ms).max(1))).min(256) as u32;
             if remaining > 0 {
                 let old = Self::render_objects_mode(scene, size, self.rasterize_scene)?;
                 for (out, &from) in next.rgba.iter_mut().zip(&old.rgba) {
-                    *out = ((u32::from(from) * remaining + u32::from(*out) * (256 - remaining) + 128) >> 8) as u8;
+                    *out =
+                        ((u32::from(from) * remaining + u32::from(*out) * (256 - remaining) + 128)
+                            >> 8) as u8;
                 }
             }
         }
