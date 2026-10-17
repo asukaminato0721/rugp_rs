@@ -8,47 +8,56 @@ use std::{collections::BTreeMap, path::PathBuf};
 ))]
 mod desktop;
 
+/// Without a subcommand, run the native desktop game host using the
+/// original retail assets.
 #[derive(Parser)]
-#[command(about = "Native Rust rUGP archive and engine tools", version)]
+#[command(about = "Native Rust rUGP game host and archive tools", version)]
 struct Args {
     #[arg(long, default_value = ".", global = true)]
     project_dir: PathBuf,
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// Run the native desktop game host using original retail assets.
     #[cfg(all(
         feature = "desktop",
         any(target_os = "linux", target_os = "windows", target_os = "macos")
     ))]
-    Play {
-        #[arg(long)]
-        quit_after_ms: Option<u32>,
-        /// User-owned configuration/progress root; never written into the game archive directory.
-        #[arg(long)]
-        user_data_dir: Option<PathBuf>,
-        /// Original Windows Vmreg directory. Detect its location when omitted.
-        #[arg(long)]
-        save_dir: Option<PathBuf>,
-        /// Development diagnostic: execute the real VM on a muted virtual clock before opening a window.
-        #[arg(long)]
-        fast_forward_ms: Option<u32>,
-        /// Import a Windows v19 UUC dialogue checkpoint before opening the window.
-        #[arg(long)]
-        load_uuc: Option<PathBuf>,
-        /// Native route selector ID after New Game. Repeat for each choice.
-        #[arg(long)]
-        choice: Vec<u32>,
-        /// Japanese outline font; no font file is distributed with this port.
-        #[arg(long)]
-        font: Option<PathBuf>,
-        /// Face within a TTF/OTF/TTC collection supplied with --font.
-        #[arg(long, default_value_t = 0, requires = "font")]
-        font_index: u32,
-    },
+    #[command(flatten)]
+    play: PlayArgs,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[cfg(all(
+    feature = "desktop",
+    any(target_os = "linux", target_os = "windows", target_os = "macos")
+))]
+#[derive(clap::Args)]
+struct PlayArgs {
+    #[arg(long)]
+    quit_after_ms: Option<u32>,
+    /// User-owned configuration/progress root; never written into the game archive directory.
+    #[arg(long)]
+    user_data_dir: Option<PathBuf>,
+    /// Original Windows Vmreg directory. Detect its location when omitted.
+    #[arg(long)]
+    save_dir: Option<PathBuf>,
+    /// Development diagnostic: execute the real VM on a muted virtual clock before opening a window.
+    #[arg(long)]
+    fast_forward_ms: Option<u32>,
+    /// Import a Windows v19 UUC dialogue checkpoint before opening the window.
+    #[arg(long)]
+    load_uuc: Option<PathBuf>,
+    /// Native route selector ID after New Game. Repeat for each choice.
+    #[arg(long)]
+    choice: Vec<u32>,
+    /// Japanese outline font; no font file is distributed with this port.
+    #[arg(long)]
+    font: Option<PathBuf>,
+    /// Face within a TTF/OTF/TTC collection supplied with --font.
+    #[arg(long, default_value_t = 0, requires = "font")]
+    font_index: u32,
+}
+
+#[derive(Subcommand)]
+enum Command {
     /// Run the current runtime headlessly and export its RGBA frame (development diagnostic).
     Frame {
         output: PathBuf,
@@ -136,58 +145,19 @@ fn main() -> Result<()> {
         .path
         .parent()
         .context("game root missing")?;
-    match args.command {
+    let Some(command) = args.command else {
         #[cfg(all(
             feature = "desktop",
             any(target_os = "linux", target_os = "windows", target_os = "macos")
         ))]
-        Command::Play {
-            quit_after_ms,
-            user_data_dir,
-            fast_forward_ms,
-            save_dir,
-            load_uuc,
-            choice,
-            font,
-            font_index,
-        } => {
-            let directory =
-                user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
-            let project_dir = args.project_dir.clone();
-            let reopen = move || -> Result<rugp_runtime::Game> {
-                let mut game = rugp_runtime::Game::open_persistent(&project_dir, &directory)?;
-                if let Some(path) = &font {
-                    game.set_font_file(path, font_index)?;
-                }
-                Ok(game)
-            };
-            let mut game = reopen()?;
-            if let Some(time) = fast_forward_ms {
-                advance_muted(&mut game, time)?;
-            }
-            let mut initial_audio = Vec::new();
-            if let Some(path) = load_uuc {
-                let mut resources =
-                    rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
-                initial_audio = game.import_uuc(&path, &choice, &mut resources)?;
-                eprintln!("Imported UUC at {:?}", game.vm.cursor());
-            } else if fast_forward_ms.is_some() {
-                let mut resources =
-                    rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
-                initial_audio = game.rebuild_audio_output(&mut resources)?;
-            }
-            if let Some(path) = game.user_data_dir() {
-                eprintln!("User data: {}", path.display());
-            }
-            desktop::run(
-                game,
-                Box::new(reopen),
-                quit_after_ms,
-                initial_audio,
-                save_dir,
-                choice,
-            )?;
-        }
+        return play(&args.project_dir, args.play);
+        #[cfg(not(all(
+            feature = "desktop",
+            any(target_os = "linux", target_os = "windows", target_os = "macos")
+        )))]
+        anyhow::bail!("built without the desktop host; choose a subcommand (see --help)");
+    };
+    match command {
         Command::Frame {
             output,
             time_ms,
@@ -716,6 +686,60 @@ fn main() -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "desktop",
+    any(target_os = "linux", target_os = "windows", target_os = "macos")
+))]
+fn play(project_dir: &std::path::Path, args: PlayArgs) -> Result<()> {
+    let PlayArgs {
+        quit_after_ms,
+        user_data_dir,
+        save_dir,
+        fast_forward_ms,
+        load_uuc,
+        choice,
+        font,
+        font_index,
+    } = args;
+    let directory =
+        user_data_dir.map_or_else(rugp_runtime::profile_store::default_data_root, Ok)?;
+    let project_dir = project_dir.to_path_buf();
+    let reopen = move || -> Result<rugp_runtime::Game> {
+        let mut game = rugp_runtime::Game::open_persistent(&project_dir, &directory)?;
+        if let Some(path) = &font {
+            game.set_font_file(path, font_index)?;
+        }
+        Ok(game)
+    };
+    let mut game = reopen()?;
+    if let Some(time) = fast_forward_ms {
+        advance_muted(&mut game, time)?;
+    }
+    let mut initial_audio = Vec::new();
+    if let Some(path) = load_uuc {
+        let mut resources =
+            rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
+        initial_audio = game.import_uuc(&path, &choice, &mut resources)?;
+        eprintln!("Imported UUC at {:?}", game.vm.cursor());
+    } else if fast_forward_ms.is_some() {
+        let mut resources =
+            rugp_runtime::audio::AudioResources::new(std::sync::Arc::clone(&game.archive))?;
+        initial_audio = game.rebuild_audio_output(&mut resources)?;
+    }
+    if let Some(path) = game.user_data_dir() {
+        eprintln!("User data: {}", path.display());
+    }
+    desktop::run(
+        game,
+        Box::new(reopen),
+        quit_after_ms,
+        initial_audio,
+        save_dir,
+        choice,
+    )?;
     Ok(())
 }
 
