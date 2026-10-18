@@ -96,6 +96,37 @@ impl Profile {
         self.text = next;
         Ok(())
     }
+    /// Append each of `other`'s entries whose key this profile lacks, keeping
+    /// existing values and the original entry text, nested values included.
+    pub fn merge_missing(&mut self, other: &Profile) -> Result<()> {
+        let mut next = self.text.clone();
+        let text = other.text();
+        let mut start = 0;
+        while start < text.len() {
+            let Some(equals) = text[start..].find(['=', ';']).map(|i| start + i) else {
+                break;
+            };
+            let end = if text[equals..].starts_with('=') {
+                section_end(text, equals + 1)
+            } else {
+                equals
+            };
+            let key = text[start..equals].trim_start_matches([' ', '\t', '\r', '\n']);
+            if equals < end && !key.is_empty() && self.locate(key).is_none() {
+                if !next.is_empty() {
+                    next.push(';');
+                }
+                next.push_str(text[start..end].trim_start_matches([' ', '\t', '\r', '\n']));
+            }
+            start = end + 1;
+        }
+        ensure!(
+            next.len() <= 16 * 1024 * 1024,
+            "profile exceeds memory limit"
+        );
+        self.text = next;
+        Ok(())
+    }
 }
 fn balanced_end(body: &str, open: char, close: char) -> Option<usize> {
     let mut depth = 1usize;
@@ -155,6 +186,23 @@ mod tests {
         assert_eq!(p.read_string("new", "0"), "6");
         assert!(p.text().contains(";count={99}"));
         assert!(p.write_string("invalid;key", "1").is_err());
+        Ok(())
+    }
+    #[test]
+    fn merge_keeps_existing_values_and_copies_missing_entries_whole() -> Result<()> {
+        let mut p = Profile::from_text("kept={port};seen={1}".into())?;
+        let other = Profile::from_text(
+            "kept={retail}; 新={inside;{nested}};number=#17;broken;seen={0};last={2}".into(),
+        )?;
+        p.merge_missing(&other)?;
+        assert_eq!(
+            p.text(),
+            "kept={port};seen={1};新={inside;{nested}};number=#17;last={2}"
+        );
+        assert_eq!(p.read_string("新", ""), "inside;{nested}");
+        let mut empty = Profile::default();
+        empty.merge_missing(&other)?;
+        assert_eq!(empty.read_string("kept", ""), "retail");
         Ok(())
     }
     #[test]

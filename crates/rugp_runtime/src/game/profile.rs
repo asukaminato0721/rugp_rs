@@ -17,12 +17,37 @@ impl Game {
             Profile::parse_object(&self.archive.read_at(id, size as usize)?)
         })
     }
+    /// Carry over progress from the original game's `Vmreg/gdb.uuc`, such as
+    /// chapter clears that unlock the title's Premium. Its first profile is
+    /// merged into the database the scripts read and write when they first
+    /// access it; keys this runtime already stores keep their values, and the
+    /// original file is never written. Returns false if the file is absent.
+    pub fn import_retail_progress(&mut self, path: &Path) -> Result<bool> {
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error).context("open original global database"),
+        };
+        let profiles = rugp_assets::uuc::read_global_database(file)
+            .context("read original global database")?;
+        let text = profiles
+            .into_iter()
+            .next()
+            .context("original global database is empty")?;
+        self.retail_progress = Some(Profile::from_text(text)?);
+        Ok(true)
+    }
     pub(super) fn access_profile(
         &mut self,
         target: &ObjectRef,
         class: &str,
         fields: &BTreeMap<String, Value>,
     ) -> Result<()> {
+        self.profile_database(target)?;
+        if let Some(retail) = self.retail_progress.take() {
+            let id = target.offset.context("profile offset missing")?;
+            self.profiles.merge_missing(id, &retail)?;
+        }
         let profile = self.profile_database(target)?;
         let text = |name: &str| -> Result<&str> {
             match fields.get(name) {
@@ -164,6 +189,51 @@ mod tests {
         std::fs::remove_file(actual_directory.join("profiles.lock"))?;
         std::fs::remove_dir(actual_directory)?;
         std::fs::remove_dir(directory)?;
+        Ok(())
+    }
+}
+#[cfg(test)]
+mod retail_import_tests {
+    use super::*;
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR (contains gdb.uuc)"]
+    fn retail_global_progress_gates_title_premium_without_writing_original() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("RUGP_TEST_GAME missing")?;
+        let saves = std::path::PathBuf::from(
+            std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?,
+        );
+        let path = saves.join("gdb.uuc");
+        let original = std::fs::read(&path)?;
+        // The title script enables Premium only for this exact clear value.
+        let retail = rugp_assets::uuc::read_global_database(original.as_slice())?;
+        let cleared =
+            Profile::from_text(retail[0].clone())?.read_string("002_2章をクリアした", "0") == "1";
+        let directory = std::env::temp_dir().join(format!(
+            "rugp-retail-import-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let premium = |import: bool| -> Result<bool> {
+            let mut game = Game::open_persistent(root.as_ref(), &directory)?;
+            if import {
+                assert!(game.import_retail_progress(&path)?);
+            }
+            let mut audio = None;
+            super::super::test_support::wait_selection(&mut game, &mut audio)?;
+            let target = game.selection.as_ref().context("title selection")?.target;
+            let menu = game.objects[&target].menu.context("title menu")?;
+            Ok(game.menus[&menu]
+                .data
+                .selectors
+                .iter()
+                .any(|s| s.id == 3 && s.status & 1 != 0))
+        };
+        assert!(!premium(false)?, "fresh profile already unlocked Premium");
+        assert_eq!(premium(true)?, cleared);
+        assert!(!Game::open(root.as_ref())?.import_retail_progress(&directory.join("absent"))?);
+        assert_eq!(std::fs::read(&path)?, original);
         Ok(())
     }
 }

@@ -83,19 +83,29 @@ fn encrypted_size(size: usize) -> Result<usize> {
 }
 
 fn encrypt_into(bytes: &[u8], output: &mut Vec<u8>) {
-    output.extend((!(bytes.len() as u32) ^ 0xc92e568b).to_le_bytes());
-    // Native engine build 0x431 sets bit 2 in the redundant size word.
-    output.extend((((bytes.len() as u32 * 8) | 4) ^ 0xc92e568f).to_le_bytes());
-    let mut key = KEY;
+    cipher_encrypt_into(bytes, output, &SAVE);
+}
+
+fn cipher_encrypt_into(bytes: &[u8], output: &mut Vec<u8>, cipher: &Cipher) {
+    output.extend((!(bytes.len() as u32) ^ cipher.size).to_le_bytes());
+    // Both writers store size * 8 under the same mask. Native readers XOR
+    // with mask ^ 4 (saves) or mask ^ 5 (global), ignoring the low 3 bits.
+    output.extend(((bytes.len() as u32 * 8) ^ cipher.size).to_le_bytes());
+    let mut key = cipher.key;
     for block in bytes.chunks(32) {
         let checksum = block.iter().enumerate().fold(0u16, |sum, (index, &byte)| {
-            sum.wrapping_add(u16::from(byte) * (block.len() - index) as u16)
+            let term = if cipher.signed {
+                i16::from(byte as i8) as u16
+            } else {
+                u16::from(byte)
+            };
+            sum.wrapping_add(term.wrapping_mul((block.len() - index) as u16))
         });
         for &byte in block {
             output.push(byte ^ key as u8);
             key = !(key
                 .wrapping_mul(2)
-                .wrapping_add(0xa3b376c9)
+                .wrapping_add(cipher.step)
                 .wrapping_add((key >> 15) & 1));
         }
         output.extend(checksum.to_le_bytes());
@@ -110,18 +120,43 @@ pub struct NativeSave {
     pub navigation: String,
 }
 
+/// One UUC stream cipher. Slot saves come from Vm60; `gdb.uuc` comes from
+/// UnivUI 1003016b, whose constants differ and whose checksum adds signed bytes.
+struct Cipher {
+    size: u32,
+    key: u32,
+    step: u32,
+    signed: bool,
+}
+const SAVE: Cipher = Cipher {
+    size: 0xc92e568b,
+    key: KEY,
+    step: 0xa3b376c9,
+    signed: false,
+};
+const GLOBAL: Cipher = Cipher {
+    size: 0x7ea25cbd,
+    key: 0x0073e26b,
+    step: 0x0736f2a5,
+    signed: true,
+};
+
 // UUC includes a checksum after a short final block. RIO omits that checksum.
 fn chunk(input: &mut Reader<'_>) -> Result<Vec<u8>> {
-    let size = !(input.u32()? ^ 0xc92e568b) as usize;
+    cipher_chunk(input, &SAVE)
+}
+
+fn cipher_chunk(input: &mut Reader<'_>, cipher: &Cipher) -> Result<Vec<u8>> {
+    let size = !(input.u32()? ^ cipher.size) as usize;
     ensure!(
-        (input.u32()? ^ 0xc92e568f) >> 3 == size as u32 && size <= MAX_BYTES,
+        (input.u32()? ^ cipher.size) >> 3 == size as u32 && size <= MAX_BYTES,
         "invalid UUC chunk length"
     );
     ensure!(
         size + size.div_ceil(32) * 2 <= input.remaining(),
         "truncated UUC chunk"
     );
-    let mut key = KEY;
+    let mut key = cipher.key;
     let mut output = Vec::with_capacity(size);
     while output.len() < size {
         let count = (size - output.len()).min(32);
@@ -129,15 +164,38 @@ fn chunk(input: &mut Reader<'_>) -> Result<Vec<u8>> {
         for index in 0..count {
             let value = input.u8()? ^ key as u8;
             output.push(value);
-            checksum = checksum.wrapping_add(u16::from(value) * (count - index) as u16);
+            let term = if cipher.signed {
+                i16::from(value as i8) as u16
+            } else {
+                u16::from(value)
+            };
+            checksum = checksum.wrapping_add(term.wrapping_mul((count - index) as u16));
             key = !(key
                 .wrapping_mul(2)
-                .wrapping_add(0xa3b376c9)
+                .wrapping_add(cipher.step)
                 .wrapping_add((key >> 15) & 1));
         }
         ensure!(input.u16()? == checksum, "UUC checksum mismatch");
     }
     Ok(output)
+}
+
+/// The original global database (`Vmreg/gdb.uuc`): one CProfile text per
+/// stream. The first holds the scripts' clear flags and system settings.
+pub fn read_global_database(input: impl Read) -> Result<Vec<String>> {
+    let mut bytes = Vec::new();
+    input.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= MAX_BYTES,
+        "global database exceeds size limit"
+    );
+    let mut encrypted = Reader::new(&bytes);
+    let mut profiles = Vec::new();
+    while encrypted.remaining() > 0 {
+        let text = cipher_chunk(&mut encrypted, &GLOBAL)?;
+        profiles.push(crate::binary::decode_text(&text));
+    }
+    Ok(profiles)
 }
 
 impl NativeSave {
@@ -307,6 +365,47 @@ mod tests {
             output.extend(checksum.to_le_bytes());
         }
         output
+    }
+
+    #[test]
+    fn global_database_streams_decode_shift_jis_with_signed_checksums() -> Result<()> {
+        // High bytes make the signed checksum differ from the save cipher's.
+        let first = encoding_rs::SHIFT_JIS
+            .encode("002_2章をクリアした={1};CSysStDlg_nUsoMode={0}")
+            .0
+            .into_owned();
+        let second = vec![b'P'; 40];
+        let mut encoded = Vec::new();
+        cipher_encrypt_into(&first, &mut encoded, &GLOBAL);
+        cipher_encrypt_into(&second, &mut encoded, &GLOBAL);
+        assert_eq!(
+            read_global_database(encoded.as_slice())?,
+            [
+                "002_2章をクリアした={1};CSysStDlg_nUsoMode={0}".to_owned(),
+                "P".repeat(40)
+            ]
+        );
+        for index in [0, 8, 20, encoded.len() - 1] {
+            let mut corrupt = encoded.clone();
+            corrupt[index] ^= 1;
+            assert!(read_global_database(corrupt.as_slice()).is_err());
+        }
+        // A slot save's cipher is not accepted as a global database.
+        assert!(read_global_database(encrypt(&first).as_slice()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "set RUGP_TEST_UUC_DIR to the original Vmreg directory"]
+    fn retail_global_database_reads_original_profiles() -> Result<()> {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?,
+        );
+        let profiles = read_global_database(std::fs::File::open(root.join("gdb.uuc"))?)?;
+        assert_eq!(profiles.len(), 2);
+        assert!(profiles[0].starts_with("CSysStDlg_bOffBiLinier={"));
+        assert!(profiles[0].contains("CTxtStDlg_arraySerifSetting={"));
+        Ok(())
     }
 
     #[test]

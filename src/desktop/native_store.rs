@@ -60,6 +60,16 @@ impl NativeStore {
             .unwrap_or_else(|| candidates[0].clone());
         Ok(Self { directory, choices })
     }
+    /// Carry over the original game's clears (gdb.uuc) before the first
+    /// step. A damaged file only loses that progress, not the session.
+    pub fn import_progress(&self, game: &mut Game) {
+        let path = self.directory.join("gdb.uuc");
+        match game.import_retail_progress(&path) {
+            Ok(true) => eprintln!("Original progress: {}", path.display()),
+            Ok(false) => {}
+            Err(error) => eprintln!("Ignoring original progress {}: {error:#}", path.display()),
+        }
+    }
     pub fn path(&self, slot: u32) -> PathBuf {
         self.directory.join(format!("vmr{slot:05}.uuc"))
     }

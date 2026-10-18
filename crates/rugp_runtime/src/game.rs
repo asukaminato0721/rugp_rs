@@ -284,6 +284,9 @@ pub struct Game {
     async_images: Vec<async_image::ImageFade>,
     image_wait: Option<rugp_assets::object::InlineIdentity>,
     profiles: crate::profile_store::ProfileStore,
+    /// The original game's global progress, merged into the script database
+    /// when the scripts first access it. See [`Self::import_retail_progress`].
+    retail_progress: Option<rugp_assets::profile::Profile>,
     /// Immutable original-program gallery bindings, not rewindable save state.
     gallery: gallery::Gallery,
     menus: BTreeMap<u64, crate::menu::MenuState>,
@@ -358,6 +361,7 @@ impl Game {
             async_images: Vec::new(),
             image_wait: None,
             profiles: crate::profile_store::ProfileStore::default(),
+            retail_progress: None,
             gallery,
             menus: BTreeMap::new(),
             selection: None,

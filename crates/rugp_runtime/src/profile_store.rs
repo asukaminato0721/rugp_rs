@@ -88,6 +88,26 @@ impl ProfileStore {
         }
         Ok(&self.profiles[&id])
     }
+    /// Add `other`'s missing entries to a loaded profile in memory only; they
+    /// reach disk with the next write.
+    pub fn merge_missing(&mut self, id: u64, other: &Profile) -> Result<()> {
+        let old = self
+            .profiles
+            .get(&id)
+            .context("profile database not loaded")?;
+        let mut next = old.clone();
+        next.merge_missing(other)?;
+        let total = self
+            .profiles
+            .values()
+            .map(|p| p.text().len())
+            .sum::<usize>()
+            - old.text().len()
+            + next.text().len();
+        ensure!(total <= Self::LIMIT, "profile cache limit exceeded");
+        self.profiles.insert(id, next);
+        Ok(())
+    }
     pub fn write_string(&mut self, id: u64, key: &str, value: &str) -> Result<()> {
         let old = self
             .profiles

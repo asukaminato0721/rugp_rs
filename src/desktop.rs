@@ -36,7 +36,7 @@ use save_window::{Action as BrowserAction, Browser, Mode as BrowserMode, SaveWin
 
 pub type Reopen = Box<dyn Fn() -> Result<Game>>;
 pub fn run(
-    game: Game,
+    mut game: Game,
     reopen: Reopen,
     quit_after_ms: Option<u32>,
     initial_audio: Vec<rugp_runtime::audio_state::snapshot::PlaybackResume>,
@@ -48,6 +48,7 @@ pub fn run(
     let read_log = read_log::ReadLog::load(game.user_data_dir())?;
     let native_saves = native_store::NativeStore::detect(&game, save_dir, choices)?;
     eprintln!("Original saves: {}", native_saves.directory.display());
+    native_saves.import_progress(&mut game);
     let mut app = App::new(game, quit_after_ms, native_saves);
     app.read_log = read_log;
     app.reopen = Some(reopen);
@@ -507,7 +508,8 @@ impl App {
         let Some(reopen) = &self.reopen else {
             return self.close_panel();
         };
-        let game = reopen()?;
+        let mut game = reopen()?;
+        self.native_saves.import_progress(&mut game);
         self.panel_audio.clear();
         self.close_panel()?;
         self.game = game;
