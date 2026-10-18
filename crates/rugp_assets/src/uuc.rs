@@ -180,8 +180,33 @@ fn cipher_chunk(input: &mut Reader<'_>, cipher: &Cipher) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+/// Decode one key of the global database's second profile: a stored object
+/// reference in RIO cache numbering (root at entry 3), with scrambled class
+/// names, written one nibble per letter from `A` (low nibble first).
+pub fn global_reference_key(key: &str, shift: u32) -> Result<crate::object::ObjectRef> {
+    ensure!(
+        key.len().is_multiple_of(2) && key.len() <= 4096 && key.bytes().all(|c| (b'A'..=b'P').contains(&c)),
+        "invalid global database reference key"
+    );
+    let bytes: Vec<u8> = key
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| (pair[0] - b'A') | ((pair[1] - b'A') << 4))
+        .collect();
+    let mut reader = ObjectReader::new(&bytes);
+    reader.scrambled = true;
+    reader.pad(2)?;
+    let reference = reader.reference_without_count(shift)?;
+    ensure!(
+        reader.input.remaining() == 0,
+        "trailing data in global database reference key"
+    );
+    Ok(reference)
+}
+
 /// The original global database (`Vmreg/gdb.uuc`): one CProfile text per
-/// stream. The first holds the scripts' clear flags and system settings.
+/// stream. The first holds the scripts' clear flags and system settings; the
+/// second marks images shown, keyed by [`global_reference_key`].
 pub fn read_global_database(input: impl Read) -> Result<Vec<String>> {
     let mut bytes = Vec::new();
     input.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
@@ -396,6 +421,41 @@ mod tests {
     }
 
     #[test]
+    fn global_reference_keys_decode_nibbles_scrambled_classes_and_owners() -> Result<()> {
+        // The original database's key for the title logo (Cr6Ti@0xcdefba).
+        let key = "PPPPDAAAEAANKHBEOPIABMLIKFJMDKLHEEGADPPPPPBAAAIACJMPFAEKJEECABGPIABMOAFLJMDKLPJDGLHOFAAIIABMKJAFJMDKLPJDGLHODAAAAAAAAA";
+        let reference = global_reference_key(key, 0)?;
+        let class = reference.class.as_ref().context("class")?;
+        assert_eq!((class.name.as_str(), class.schema), ("Cr6Ti", 3));
+        assert_eq!(
+            (
+                reference.flags,
+                reference.offset,
+                reference.size,
+                reference.selector
+            ),
+            (0xc108, Some(0xcdefba), Some(23171), 0)
+        );
+        let owner = reference.owner.as_deref().context("owner")?;
+        assert_eq!(
+            owner.class.as_ref().map(|c| c.name.as_str()),
+            Some("CObjectOcean")
+        );
+        assert_eq!(owner.offset, Some(13519421));
+        // Later owners reuse the cached class; the chain ends at the root.
+        let mut root = owner;
+        while let Some(next) = root.owner.as_deref() {
+            root = next;
+        }
+        assert_eq!((root.class.as_ref(), root.cache_index), (None, Some(3)));
+        for bad in [&key[..key.len() - 2], &key[..key.len() - 1], "PPPZ", ""] {
+            assert!(global_reference_key(bad, 0).is_err(), "{bad}");
+        }
+        assert!(global_reference_key(&format!("{key}AA"), 0).is_err());
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "set RUGP_TEST_UUC_DIR to the original Vmreg directory"]
     fn retail_global_database_reads_original_profiles() -> Result<()> {
         let root = std::path::PathBuf::from(
@@ -405,6 +465,14 @@ mod tests {
         assert_eq!(profiles.len(), 2);
         assert!(profiles[0].starts_with("CSysStDlg_bOffBiLinier={"));
         assert!(profiles[0].contains("CTxtStDlg_arraySerifSetting={"));
+        let mut images = 0;
+        for entry in profiles[1].split(';').filter(|e| !e.is_empty()) {
+            let (key, value) = entry.split_once('=').context("entry")?;
+            assert_eq!(value, "{1}");
+            let reference = global_reference_key(key, 0)?;
+            images += usize::from(reference.class.is_some_and(|c| c.name == "Cr6Ti"));
+        }
+        assert!(images > 0);
         Ok(())
     }
 

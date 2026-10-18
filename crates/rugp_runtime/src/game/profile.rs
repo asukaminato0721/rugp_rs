@@ -11,17 +11,23 @@ impl Game {
             "unsupported profile database class"
         );
         let id = target.offset.context("profile database offset missing")?;
-        self.profiles.load(id, || {
+        let load = || {
             let size = target.size.context("profile database extent missing")?;
             ensure!(size <= 16 * 1024 * 1024, "oversized profile database");
             Profile::parse_object(&self.archive.read_at(id, size as usize)?)
-        })
+        };
+        self.profiles.load(id, load)?;
+        if let Some(seen) = self.retail_seen.remove(&id) {
+            self.profiles.merge_missing(id, &seen)?;
+        }
+        self.profiles.load(id, load)
     }
-    /// Carry over progress from the original game's `Vmreg/gdb.uuc`, such as
-    /// chapter clears that unlock the title's Premium. Its first profile is
-    /// merged into the database the scripts read and write when they first
-    /// access it; keys this runtime already stores keep their values, and the
-    /// original file is never written. Returns false if the file is absent.
+    /// Carry over progress from the original game's `Vmreg/gdb.uuc`: chapter
+    /// clears that unlock the title's Premium, and seen gallery images. The
+    /// first profile is merged into the database the scripts read and write
+    /// when they first access it; seen images reach their gallery databases
+    /// when those load. Keys this runtime already stores keep their values,
+    /// and the original file is never written. Returns false if it is absent.
     pub fn import_retail_progress(&mut self, path: &Path) -> Result<bool> {
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
@@ -30,11 +36,25 @@ impl Game {
         };
         let profiles = rugp_assets::uuc::read_global_database(file)
             .context("read original global database")?;
+        let mut profiles = profiles.into_iter();
         let text = profiles
-            .into_iter()
             .next()
             .context("original global database is empty")?;
-        self.retail_progress = Some(Profile::from_text(text)?);
+        let progress = Profile::from_text(text)?;
+        let mut images = Vec::new();
+        for entry in profiles.next().iter().flat_map(|text| text.split(';')) {
+            // Skip anything that is not a shown image's reference key.
+            let Some((key, "{1}")) = entry.split_once('=') else {
+                continue;
+            };
+            if let Ok(image) =
+                rugp_assets::uuc::global_reference_key(key, self.archive.address_shift)
+            {
+                images.push(image);
+            }
+        }
+        self.retail_seen = self.gallery.seen_entries(&images)?;
+        self.retail_progress = Some(progress);
         Ok(true)
     }
     pub(super) fn access_profile(

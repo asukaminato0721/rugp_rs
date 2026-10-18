@@ -3,6 +3,7 @@
 //! same original selector packets to successfully used story images, without
 //! depending on cache addresses, decoding/preloading, or rewinding global data.
 use super::*;
+use rugp_assets::profile::Profile;
 use rugp_scene_vm::Argument;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -126,6 +127,24 @@ impl Gallery {
             }
         }
         Ok(result)
+    }
+    /// Seen entries for each bound database, from images the original game
+    /// recorded as shown. Images without a gallery binding are not recorded,
+    /// as [`Game::record_gallery_images`] does not record them either.
+    pub(super) fn seen_entries(&self, images: &[ObjectRef]) -> Result<BTreeMap<u64, Profile>> {
+        let mut entries = BTreeMap::<u64, Profile>::new();
+        for image in images {
+            let Some(id) = ImageId::of(image)? else {
+                continue;
+            };
+            for &database in self.bindings.get(&id).into_iter().flat_map(|b| b.keys()) {
+                entries
+                    .entry(database)
+                    .or_default()
+                    .write_string(&id.key(), "1")?;
+            }
+        }
+        Ok(entries)
     }
 }
 impl Game {
@@ -421,6 +440,69 @@ mod tests {
             !game.gallery.bindings.is_empty() && game.gallery.bindings.len() <= 256,
             "gallery image catalogue missing"
         );
+        Ok(())
+    }
+    #[test]
+    #[ignore = "set RUGP_TEST_GAME and RUGP_TEST_UUC_DIR (contains gdb.uuc)"]
+    fn retail_original_seen_images_unlock_exactly_their_gallery_selectors() -> Result<()> {
+        let root = std::env::var_os("RUGP_TEST_GAME").context("game root")?;
+        let saves = std::path::PathBuf::from(
+            std::env::var_os("RUGP_TEST_UUC_DIR").context("UUC directory")?,
+        );
+        let path = saves.join("gdb.uuc");
+        let original = std::fs::read(&path)?;
+        // Independent expectation: the stored identities the original lists.
+        let profiles = rugp_assets::uuc::read_global_database(original.as_slice())?;
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in profiles[1].split(';').filter(|e| !e.is_empty()) {
+            let (key, value) = entry.split_once('=').context("entry")?;
+            assert_eq!(value, "{1}");
+            let r = rugp_assets::uuc::global_reference_key(key, 0)?;
+            let class = r.class.context("class")?;
+            seen.insert((class.name, class.schema, r.offset, r.size, r.selector));
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "rugp-gallery-import-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let mut game = Game::open_persistent(root.as_ref(), &directory)?;
+        assert!(game.import_retail_progress(&path)?);
+        let native = NativeSchema::from_directory(root.as_ref())?;
+        let (mut unlocked, mut count) = (0, 0);
+        for scene in [239, 242] {
+            let code = Scenario::decode_with_schema(
+                &Script::load(&game.archive, scene)?,
+                game.archive.address_shift,
+                Some(&native),
+            )?;
+            for instruction in &code.instructions {
+                if !instruction.arguments.iter().any(|a| matches!(a,
+                    Argument::Message { class, .. } if class.name.ends_with("OM_SetSelecterByDatabase"))) { continue; }
+                let message = game.vm.message(instruction)?;
+                let expected = match &message.fields["キー名となるオブジェクト"] {
+                    Value::Reference(r) => {
+                        let class = r.class.clone().context("class")?;
+                        seen.contains(&(class.name, class.schema, r.offset, r.size, r.selector))
+                    }
+                    _ => false,
+                };
+                let status = status(&mut game, instruction)?;
+                assert_eq!(
+                    status & 1 != 0,
+                    expected,
+                    "{scene}:{:#x}",
+                    instruction.address
+                );
+                unlocked += usize::from(expected);
+                count += 1;
+            }
+        }
+        assert_eq!(count, 263);
+        eprintln!("{unlocked} of {count} gallery selectors seen in the original");
+        assert_eq!(std::fs::read(&path)?, original);
         Ok(())
     }
     #[test]

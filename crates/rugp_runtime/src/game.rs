@@ -287,6 +287,9 @@ pub struct Game {
     /// The original game's global progress, merged into the script database
     /// when the scripts first access it. See [`Self::import_retail_progress`].
     retail_progress: Option<rugp_assets::profile::Profile>,
+    /// The original game's seen gallery images, merged into each bound
+    /// database when it loads.
+    retail_seen: BTreeMap<u64, rugp_assets::profile::Profile>,
     /// Immutable original-program gallery bindings, not rewindable save state.
     gallery: gallery::Gallery,
     menus: BTreeMap<u64, crate::menu::MenuState>,
@@ -362,6 +365,7 @@ impl Game {
             image_wait: None,
             profiles: crate::profile_store::ProfileStore::default(),
             retail_progress: None,
+            retail_seen: BTreeMap::new(),
             gallery,
             menus: BTreeMap::new(),
             selection: None,
